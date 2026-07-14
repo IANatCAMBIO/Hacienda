@@ -1,0 +1,19 @@
+# Blue Tasks — default settings, copied into the live blue_tasks.ini on
+# first launch.  The live ini is rewritten by the app and is gitignored.
+# Everything here is editable in-app via File → Settings…
+[blue-tasks]
+# Google Tasks sync — the OAuth client identifying this app (create a
+# "Desktop app" OAuth client in the Google Cloud console with the Google
+# Tasks API enabled), editable in File → Settings….  These identify the
+# app; they grant nothing by themselves.  Signing in (once, in the
+# browser) stores a sync-only refresh token here as
+# gtasks_refresh_token — Sign Out removes it, and it can be revoked at
+# myaccount.google.com/permissions.
+google_client_id=
+google_client_secret=
+# Minutes between automatic syncs while signed in (0 disables the
+# timer; the toolbar Sync button always works).
+sync_interval_min=5
+# Move the menu into the native macOS menu bar (1|0; needs a build with
+# gtk-mac-integration-gtk3 — see Settings → Appearance).
+native_menubar=0
