@@ -6,21 +6,70 @@
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
- * exec() — run one statement with no results; failures are logged, not
- * fatal (the schema statements below are the only callers that must not
- * fail, and they run against a database we just created/verified).
+ * exec() — run one or more statements with no results; failures are
+ * logged, not fatal.  Returns TRUE when everything ran.
  * ------------------------------------------------------------------------- */
-static void
+static gboolean
 exec(BtDatabase *db, const gchar *sql)
 {
     gchar *msg = NULL;               /* sqlite's error text                 */
     if (sqlite3_exec(db->sq, sql, NULL, NULL, &msg) != SQLITE_OK) {
         g_warning("db: %s: %s", sql, msg != NULL ? msg : "?");
         sqlite3_free(msg);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/* ---------------------------------------------------------------------------
+ * exec_txn() — run `sql` (one or more statements) inside a transaction,
+ * ROLLING BACK on failure.  A bare "BEGIN;…;COMMIT;" through exec()
+ * would leave the connection stuck inside an open transaction when a
+ * middle statement fails (e.g. SQLITE_BUSY against the sync worker) —
+ * every later BEGIN would then fail and writes would silently vanish
+ * until the connection closes.
+ * ------------------------------------------------------------------------- */
+static void
+exec_txn(BtDatabase *db, const gchar *sql)
+{
+    if (!exec(db, "BEGIN IMMEDIATE"))
+        return;
+    if (exec(db, sql)) {
+        if (!exec(db, "COMMIT"))
+            exec(db, "ROLLBACK");
+    } else {
+        exec(db, "ROLLBACK");
     }
 }
 
-/* column_text_dup() — g_strdup a TEXT column, NULL when SQL NULL.           */
+/* ---------------------------------------------------------------------------
+ * step_done() — run a prepared WRITE statement to completion, logging
+ * sqlite's message when it fails (SQLITE_BUSY against the sync worker,
+ * constraint violations, I/O errors) — silent write loss is the one
+ * unacceptable outcome.
+ *   db  — the connection (for the error text).
+ *   st  — the prepared, bound statement, or NULL when the PREPARE
+ *         itself failed (also logged); the caller finalizes either way.
+ *   ctx — short operation name for the log line.
+ * Returns TRUE when the statement completed.
+ * ------------------------------------------------------------------------- */
+static gboolean
+step_done(BtDatabase *db, sqlite3_stmt *st, const gchar *ctx)
+{
+    if (st == NULL) {
+        g_warning("db: %s: prepare failed: %s", ctx,
+                  sqlite3_errmsg(db->sq));
+        return FALSE;
+    }
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        g_warning("db: %s: %s", ctx, sqlite3_errmsg(db->sq));
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/* column_text_dup() — g_strdup a TEXT column, NULL when SQL NULL.
+ *   st/col — the row being read and the 0-based column index.               */
 static gchar *
 column_text_dup(sqlite3_stmt *st, int col)
 {
@@ -49,6 +98,7 @@ bt_list_free(BtList *l)
     g_free(l);
 }
 
+/* bt_task_free() — free one task and its owned strings.  NULL-safe.        */
 void
 bt_task_free(BtTask *t)
 {
@@ -57,10 +107,15 @@ bt_task_free(BtTask *t)
     g_free(t->title);
     g_free(t->notes);
     g_free(t->gtasks_id);
+    g_free(t->etag);
+    g_free(t->web_link);
+    g_free(t->glinks);
+    g_free(t->assigned);
     g_free(t);
 }
 
-void
+/* bt_attachment_free() — free one attachment row.  NULL-safe.               */
+static void
 bt_attachment_free(BtAttachment *a)
 {
     if (a == NULL)
@@ -69,6 +124,7 @@ bt_attachment_free(BtAttachment *a)
     g_free(a);
 }
 
+/* bt_ptr_array_free_lists() — free an array of BtList*.  NULL-safe.         */
 void
 bt_ptr_array_free_lists(GPtrArray *a)
 {
@@ -79,6 +135,7 @@ bt_ptr_array_free_lists(GPtrArray *a)
     g_ptr_array_free(a, TRUE);
 }
 
+/* bt_ptr_array_free_tasks() — free an array of BtTask*.  NULL-safe.         */
 void
 bt_ptr_array_free_tasks(GPtrArray *a)
 {
@@ -89,6 +146,7 @@ bt_ptr_array_free_tasks(GPtrArray *a)
     g_ptr_array_free(a, TRUE);
 }
 
+/* bt_ptr_array_free_attachments() — free BtAttachment*s.  NULL-safe.        */
 void
 bt_ptr_array_free_attachments(GPtrArray *a)
 {
@@ -146,18 +204,23 @@ bt_db_open(const gchar *path, GError **err)
         "  deleted    INTEGER NOT NULL DEFAULT 0)");
     exec(db,
         "CREATE TABLE IF NOT EXISTS tasks ("
-        "  id         INTEGER PRIMARY KEY,"
-        "  list_id    INTEGER NOT NULL REFERENCES lists(id),"
-        "  parent_id  INTEGER REFERENCES tasks(id),"
-        "  title      TEXT    NOT NULL DEFAULT '',"
-        "  notes      TEXT    NOT NULL DEFAULT '',"
-        "  due        INTEGER NOT NULL DEFAULT 0,"
-        "  done       INTEGER NOT NULL DEFAULT 0,"
-        "  pinned     INTEGER NOT NULL DEFAULT 0,"
-        "  position   INTEGER NOT NULL DEFAULT 0,"
-        "  gtasks_id  TEXT,"
-        "  updated_at INTEGER NOT NULL DEFAULT 0,"
-        "  deleted    INTEGER NOT NULL DEFAULT 0)");
+        "  id           INTEGER PRIMARY KEY,"
+        "  list_id      INTEGER NOT NULL REFERENCES lists(id),"
+        "  parent_id    INTEGER REFERENCES tasks(id),"
+        "  title        TEXT    NOT NULL DEFAULT '',"
+        "  notes        TEXT    NOT NULL DEFAULT '',"
+        "  due          INTEGER NOT NULL DEFAULT 0,"
+        "  done         INTEGER NOT NULL DEFAULT 0,"
+        "  pinned       INTEGER NOT NULL DEFAULT 0,"
+        "  position     INTEGER NOT NULL DEFAULT 0,"
+        "  gtasks_id    TEXT,"
+        "  updated_at   INTEGER NOT NULL DEFAULT 0,"
+        "  deleted      INTEGER NOT NULL DEFAULT 0,"
+        "  completed_at INTEGER NOT NULL DEFAULT 0,"
+        "  etag         TEXT,"
+        "  web_link     TEXT,"
+        "  glinks       TEXT,"
+        "  assigned     TEXT)");
     exec(db,
         "CREATE TABLE IF NOT EXISTS attachments ("
         "  id         INTEGER PRIMARY KEY,"
@@ -172,8 +235,9 @@ bt_db_open(const gchar *path, GError **err)
     exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_list "
              "ON tasks(list_id, parent_id, position)");
 
-    /* v2 migration: lists.emoji (pre-existing files lack the column; on
-     * fresh files the ALTER fails silently — CREATE already has it).        */
+    /* Guarded migrations (on fresh files the ALTERs fail silently —
+     * CREATE already has the columns): v2 = lists.emoji; v3 = the five
+     * Google-mirror task columns.                                           */
     sqlite3_stmt *vst = NULL;
     gint uv = 0;                     /* the file's schema version           */
     if (sqlite3_prepare_v2(sq, "PRAGMA user_version", -1, &vst, NULL)
@@ -183,7 +247,19 @@ bt_db_open(const gchar *path, GError **err)
     if (uv < 2)
         sqlite3_exec(sq, "ALTER TABLE lists ADD COLUMN emoji TEXT "
                      "NOT NULL DEFAULT ''", NULL, NULL, NULL);
-    exec(db, "PRAGMA user_version = 2");
+    if (uv < 3) {
+        sqlite3_exec(sq, "ALTER TABLE tasks ADD COLUMN completed_at "
+                     "INTEGER NOT NULL DEFAULT 0", NULL, NULL, NULL);
+        sqlite3_exec(sq, "ALTER TABLE tasks ADD COLUMN etag TEXT",
+                     NULL, NULL, NULL);
+        sqlite3_exec(sq, "ALTER TABLE tasks ADD COLUMN web_link TEXT",
+                     NULL, NULL, NULL);
+        sqlite3_exec(sq, "ALTER TABLE tasks ADD COLUMN glinks TEXT",
+                     NULL, NULL, NULL);
+        sqlite3_exec(sq, "ALTER TABLE tasks ADD COLUMN assigned TEXT",
+                     NULL, NULL, NULL);
+    }
+    exec(db, "PRAGMA user_version = 3");
     return db;
 }
 
@@ -238,6 +314,8 @@ bt_db_lists(BtDatabase *db, gboolean include_deleted)
     if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK)
         while (sqlite3_step(st) == SQLITE_ROW)
             g_ptr_array_add(out, read_list(st));
+    else
+        step_done(db, NULL, "lists query");
     sqlite3_finalize(st);
     return out;
 }
@@ -276,8 +354,10 @@ bt_db_list_create(BtDatabase *db, const gchar *name, const gchar *emoji)
         sqlite3_bind_text(st, 2, emoji != NULL ? emoji : "", -1,
                           SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 3, now());
-        if (sqlite3_step(st) == SQLITE_DONE)
+        if (step_done(db, st, "list create"))
             id = sqlite3_last_insert_rowid(db->sq);
+    } else {
+        step_done(db, NULL, "list create");
     }
     sqlite3_finalize(st);
     return id;
@@ -297,7 +377,9 @@ bt_db_list_update(BtDatabase *db, gint64 id, const gchar *name,
                           SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 3, now());
         sqlite3_bind_int64(st, 4, id);
-        sqlite3_step(st);
+        step_done(db, st, "list update");
+    } else {
+        step_done(db, NULL, "list update");
     }
     sqlite3_finalize(st);
 }
@@ -309,13 +391,11 @@ void
 bt_db_list_delete(BtDatabase *db, gint64 id)
 {
     gchar *sql = sqlite3_mprintf(
-        "BEGIN;"
         "UPDATE tasks SET deleted = 1, updated_at = %lld "
         "  WHERE list_id = %lld;"
-        "UPDATE lists SET deleted = 1, updated_at = %lld WHERE id = %lld;"
-        "COMMIT;",
+        "UPDATE lists SET deleted = 1, updated_at = %lld WHERE id = %lld;",
         (long long)now(), (long long)id, (long long)now(), (long long)id);
-    exec(db, sql);
+    exec_txn(db, sql);
     sqlite3_free(sql);
 }
 
@@ -323,31 +403,45 @@ bt_db_list_delete(BtDatabase *db, gint64 id)
  * read_task() — build a BtTask from the standard tasks SELECT.
  * ------------------------------------------------------------------------- */
 #define TASK_COLS "id, list_id, COALESCE(parent_id, 0), title, notes, due, " \
-                  "done, pinned, position, gtasks_id, updated_at, deleted"
+                  "done, pinned, position, gtasks_id, updated_at, deleted, " \
+                  "completed_at, etag, web_link, glinks, assigned"
 
 static BtTask *
 read_task(sqlite3_stmt *st)
 {
     BtTask *t = g_new0(BtTask, 1);
-    t->id         = sqlite3_column_int64(st, 0);
-    t->list_id    = sqlite3_column_int64(st, 1);
-    t->parent_id  = sqlite3_column_int64(st, 2);
-    t->title      = column_text_dup(st, 3);
-    t->notes      = column_text_dup(st, 4);
-    t->due        = sqlite3_column_int64(st, 5);
-    t->done       = sqlite3_column_int(st, 6) != 0;
-    t->pinned     = sqlite3_column_int(st, 7) != 0;
-    t->position   = sqlite3_column_int(st, 8);
-    t->gtasks_id  = column_text_dup(st, 9);
-    t->updated_at = sqlite3_column_int64(st, 10);
-    t->deleted    = sqlite3_column_int(st, 11) != 0;
+    t->id           = sqlite3_column_int64(st, 0);
+    t->list_id      = sqlite3_column_int64(st, 1);
+    t->parent_id    = sqlite3_column_int64(st, 2);
+    t->title        = column_text_dup(st, 3);
+    t->notes        = column_text_dup(st, 4);
+    t->due          = sqlite3_column_int64(st, 5);
+    t->done         = sqlite3_column_int(st, 6) != 0;
+    t->pinned       = sqlite3_column_int(st, 7) != 0;
+    t->position     = sqlite3_column_int(st, 8);
+    t->gtasks_id    = column_text_dup(st, 9);
+    t->updated_at   = sqlite3_column_int64(st, 10);
+    t->deleted      = sqlite3_column_int(st, 11) != 0;
+    t->completed_at = sqlite3_column_int64(st, 12);
+    t->etag         = column_text_dup(st, 13);
+    t->web_link     = column_text_dup(st, 14);
+    t->glinks       = column_text_dup(st, 15);
+    t->assigned     = column_text_dup(st, 16);
     if (t->title == NULL) t->title = g_strdup("");
     if (t->notes == NULL) t->notes = g_strdup("");
     return t;
 }
 
-/* task_query() — run a tasks SELECT (already using TASK_COLS) with up to
- * two int64 parameters (pass 0 count for none) and collect the rows.        */
+/* ---------------------------------------------------------------------------
+ * task_query() — run a tasks SELECT (already using TASK_COLS) and
+ * collect the rows.
+ *   db    — the connection.
+ *   sql   — the full statement text.
+ *   nbind — how many of a/b to bind as int64 parameters ?1/?2 (0-2).
+ * Returns a GPtrArray of BtTask* (possibly empty, never NULL); free
+ * with bt_ptr_array_free_tasks.  Prepare failures are logged and yield
+ * the empty array.
+ * ------------------------------------------------------------------------- */
 static GPtrArray *
 task_query(BtDatabase *db, const gchar *sql, gint nbind, gint64 a, gint64 b)
 {
@@ -358,6 +452,8 @@ task_query(BtDatabase *db, const gchar *sql, gint nbind, gint64 a, gint64 b)
         if (nbind >= 2) sqlite3_bind_int64(st, 2, b);
         while (sqlite3_step(st) == SQLITE_ROW)
             g_ptr_array_add(out, read_task(st));
+    } else {
+        step_done(db, NULL, "task query");
     }
     sqlite3_finalize(st);
     return out;
@@ -393,6 +489,15 @@ bt_db_subtasks(BtDatabase *db, gint64 parent_id)
         "deleted = 0 ORDER BY position, id", 1, parent_id, 0);
 }
 
+/* bt_db_subtasks_all_visible() — every visible subtask, one query.          */
+GPtrArray *
+bt_db_subtasks_all_visible(BtDatabase *db)
+{
+    return task_query(db,
+        "SELECT " TASK_COLS " FROM tasks WHERE parent_id IS NOT NULL AND "
+        "deleted = 0 ORDER BY parent_id, position, id", 0, 0, 0);
+}
+
 /* bt_db_tasks_pinned() — the Pinned Tasks meta list.                        */
 GPtrArray *
 bt_db_tasks_pinned(BtDatabase *db)
@@ -421,13 +526,14 @@ bt_db_tasks_due_between(BtDatabase *db, gint64 lo, gint64 hi)
         "deleted = 0 ORDER BY due, list_id, position", 2, lo, hi);
 }
 
-/* bt_db_tasks_all() — every row incl. tombstones (sync).                    */
+/* bt_db_tasks_in_list_all() — one list's rows incl. tombstones (sync),
+ * parents before subtasks.                                                  */
 GPtrArray *
-bt_db_tasks_all(BtDatabase *db)
+bt_db_tasks_in_list_all(BtDatabase *db, gint64 list_id)
 {
     return task_query(db,
-        "SELECT " TASK_COLS " FROM tasks ORDER BY list_id, "
-        "parent_id IS NOT NULL, position, id", 0, 0, 0);
+        "SELECT " TASK_COLS " FROM tasks WHERE list_id = ? ORDER BY "
+        "parent_id IS NOT NULL, position, id", 1, list_id, 0);
 }
 
 /* ---------------------------------------------------------------------------
@@ -462,8 +568,10 @@ bt_db_task_create(BtDatabase *db, gint64 list_id, gint64 parent_id,
             sqlite3_bind_null(st, 2);
         sqlite3_bind_text(st, 3, title, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 4, now());
-        if (sqlite3_step(st) == SQLITE_DONE)
+        if (step_done(db, st, "task create"))
             id = sqlite3_last_insert_rowid(db->sq);
+    } else {
+        step_done(db, NULL, "task create");
     }
     sqlite3_finalize(st);
     return id;
@@ -475,10 +583,15 @@ bt_db_task_create(BtDatabase *db, gint64 list_id, gint64 parent_id,
 void
 bt_db_task_update(BtDatabase *db, const BtTask *t)
 {
+    /* completed_at follows done: stamped when done flips on (the CASE
+     * reads the OLD row values), cleared when it flips off.                  */
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq,
-            "UPDATE tasks SET title = ?, notes = ?, due = ?, done = ?, "
-            "pinned = ?, updated_at = ? WHERE id = ?", -1,
+            "UPDATE tasks SET title = ?1, notes = ?2, due = ?3, "
+            "completed_at = CASE WHEN ?4 = 1 AND done = 0 THEN ?6 "
+            "                    WHEN ?4 = 0 THEN 0 "
+            "                    ELSE completed_at END, "
+            "done = ?4, pinned = ?5, updated_at = ?6 WHERE id = ?7", -1,
             &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, t->title, -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(st, 2, t->notes, -1, SQLITE_TRANSIENT);
@@ -487,33 +600,37 @@ bt_db_task_update(BtDatabase *db, const BtTask *t)
         sqlite3_bind_int(st, 5, t->pinned ? 1 : 0);
         sqlite3_bind_int64(st, 6, now());
         sqlite3_bind_int64(st, 7, t->id);
-        sqlite3_step(st);
+        step_done(db, st, "task update");
+    } else {
+        step_done(db, NULL, "task update");
     }
     sqlite3_finalize(st);
 }
 
-/* set_int_field() — shared body of the done/pinned toggles.                 */
-static void
-set_int_field(BtDatabase *db, const gchar *field, gint64 id, gint value)
+/* bt_db_task_set_done() — toggle done, stamping/clearing completed_at
+ * and updated_at (see db.h).                                                */
+void
+bt_db_task_set_done(BtDatabase *db, gint64 id, gboolean done)
 {
-    /* field is one of two compile-time constants — safe to format in.       */
+    gint64 ts = now();
     gchar *sql = g_strdup_printf(
-        "UPDATE tasks SET %s = %d, updated_at = %lld WHERE id = %lld",
-        field, value, (long long)now(), (long long)id);
+        "UPDATE tasks SET completed_at = %lld, done = %d, "
+        "updated_at = %lld WHERE id = %lld",
+        done ? (long long)ts : 0LL, done ? 1 : 0,
+        (long long)ts, (long long)id);
     exec(db, sql);
     g_free(sql);
 }
 
-void
-bt_db_task_set_done(BtDatabase *db, gint64 id, gboolean done)
-{
-    set_int_field(db, "done", id, done ? 1 : 0);
-}
-
+/* bt_db_task_set_pinned() — toggle the local-only pin (see db.h).           */
 void
 bt_db_task_set_pinned(BtDatabase *db, gint64 id, gboolean pinned)
 {
-    set_int_field(db, "pinned", id, pinned ? 1 : 0);
+    gchar *sql = g_strdup_printf(
+        "UPDATE tasks SET pinned = %d, updated_at = %lld WHERE id = %lld",
+        pinned ? 1 : 0, (long long)now(), (long long)id);
+    exec(db, sql);
+    g_free(sql);
 }
 
 /* ---------------------------------------------------------------------------
@@ -523,13 +640,11 @@ void
 bt_db_task_delete(BtDatabase *db, gint64 id)
 {
     gchar *sql = sqlite3_mprintf(
-        "BEGIN;"
         "UPDATE tasks SET deleted = 1, updated_at = %lld "
         "  WHERE parent_id = %lld;"
-        "UPDATE tasks SET deleted = 1, updated_at = %lld WHERE id = %lld;"
-        "COMMIT;",
+        "UPDATE tasks SET deleted = 1, updated_at = %lld WHERE id = %lld;",
         (long long)now(), (long long)id, (long long)now(), (long long)id);
-    exec(db, sql);
+    exec_txn(db, sql);
     sqlite3_free(sql);
 }
 
@@ -557,6 +672,8 @@ bt_db_attachments(BtDatabase *db, gint64 task_id)
     return out;
 }
 
+/* bt_db_attachment_add() — new attachment row; the new id, 0 on
+ * failure (see db.h).                                                       */
 gint64
 bt_db_attachment_add(BtDatabase *db, gint64 task_id, const gchar *path)
 {
@@ -568,13 +685,16 @@ bt_db_attachment_add(BtDatabase *db, gint64 task_id, const gchar *path)
         sqlite3_bind_int64(st, 1, task_id);
         sqlite3_bind_text(st, 2, path, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 3, now());
-        if (sqlite3_step(st) == SQLITE_DONE)
+        if (step_done(db, st, "attachment add"))
             id = sqlite3_last_insert_rowid(db->sq);
+    } else {
+        step_done(db, NULL, "attachment add");
     }
     sqlite3_finalize(st);
     return id;
 }
 
+/* bt_db_attachment_remove() — drop one attachment row (see db.h).           */
 void
 bt_db_attachment_remove(BtDatabase *db, gint64 id)
 {
@@ -620,6 +740,7 @@ bt_db_state_get(BtDatabase *db, const gchar *key)
     return val;
 }
 
+/* bt_db_state_set() — upsert one sync_state row (see db.h).                 */
 void
 bt_db_state_set(BtDatabase *db, const gchar *key, const gchar *value)
 {
@@ -630,7 +751,9 @@ bt_db_state_set(BtDatabase *db, const gchar *key, const gchar *value)
             &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, key, -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(st, 2, value, -1, SQLITE_TRANSIENT);
-        sqlite3_step(st);
+        step_done(db, st, "sync state set");
+    } else {
+        step_done(db, NULL, "sync state set");
     }
     sqlite3_finalize(st);
 }
@@ -646,18 +769,23 @@ set_gtasks_id(BtDatabase *db, const gchar *table, gint64 id,
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, gid, -1, SQLITE_TRANSIENT);
-        sqlite3_step(st);
+        step_done(db, st, "gtasks id set");
+    } else {
+        step_done(db, NULL, "gtasks id set");
     }
     sqlite3_finalize(st);
     g_free(sql);
 }
 
+/* bt_db_list_set_gtasks_id() — bind a list to its Google id WITHOUT
+ * stamping updated_at (see db.h).                                           */
 void
 bt_db_list_set_gtasks_id(BtDatabase *db, gint64 id, const gchar *gid)
 {
     set_gtasks_id(db, "lists", id, gid);
 }
 
+/* bt_db_task_set_gtasks_id() — task variant of the above (see db.h).        */
 void
 bt_db_task_set_gtasks_id(BtDatabase *db, gint64 id, const gchar *gid)
 {
@@ -677,27 +805,97 @@ bt_db_list_apply_remote(BtDatabase *db, gint64 id, const gchar *name,
         sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 2, updated_at);
         sqlite3_bind_int64(st, 3, id);
-        sqlite3_step(st);
+        step_done(db, st, "list apply remote");
+    } else {
+        step_done(db, NULL, "list apply remote");
     }
     sqlite3_finalize(st);
 }
 
 /* bt_db_task_apply_remote() — overwrite the synced fields (title, notes,
- * due, done) from remote data; pinned is local-only and untouched.           */
+ * due, done) plus the Google-mirror metadata (completed_at, etag,
+ * web_link, glinks, assigned) from remote data; pinned is local-only
+ * and untouched.                                                             */
 void
 bt_db_task_apply_remote(BtDatabase *db, const BtTask *t)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq,
             "UPDATE tasks SET title = ?, notes = ?, due = ?, done = ?, "
-            "updated_at = ? WHERE id = ?", -1, &st, NULL) == SQLITE_OK) {
+            "updated_at = ?, completed_at = ?, etag = ?, web_link = ?, "
+            "glinks = ?, assigned = ? WHERE id = ?", -1, &st, NULL)
+        == SQLITE_OK) {
         sqlite3_bind_text(st, 1, t->title, -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(st, 2, t->notes, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 3, t->due);
         sqlite3_bind_int(st, 4, t->done ? 1 : 0);
         sqlite3_bind_int64(st, 5, t->updated_at);
-        sqlite3_bind_int64(st, 6, t->id);
-        sqlite3_step(st);
+        sqlite3_bind_int64(st, 6, t->completed_at);
+        sqlite3_bind_text(st, 7, t->etag, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 8, t->web_link, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 9, t->glinks, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 10, t->assigned, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 11, t->id);
+        step_done(db, st, "task apply remote");
+    } else {
+        step_done(db, NULL, "task apply remote");
+    }
+    sqlite3_finalize(st);
+}
+
+/* ---------------------------------------------------------------------------
+ * bt_db_task_move_list() — cross-list move (see db.h).
+ * ------------------------------------------------------------------------- */
+void
+bt_db_task_move_list(BtDatabase *db, gint64 id, gint64 dest_list)
+{
+    gchar *sql = sqlite3_mprintf(
+        "UPDATE tasks SET list_id = %lld, updated_at = %lld, "
+        "  position = (SELECT COALESCE(MAX(position), 0) + 1 FROM tasks "
+        "              WHERE list_id = %lld AND parent_id IS NULL) "
+        "  WHERE id = %lld;"
+        "UPDATE tasks SET list_id = %lld, updated_at = %lld "
+        "  WHERE parent_id = %lld;",
+        (long long)dest_list, (long long)now(), (long long)dest_list,
+        (long long)id,
+        (long long)dest_list, (long long)now(), (long long)id);
+    exec_txn(db, sql);
+    sqlite3_free(sql);
+}
+
+/* ---------------------------------------------------------------------------
+ * bt_db_purge_done() — remove a list's completed tasks (see db.h).
+ * ------------------------------------------------------------------------- */
+void
+bt_db_purge_done(BtDatabase *db, gint64 list_id)
+{
+    gchar *sql = sqlite3_mprintf(
+        "DELETE FROM tasks WHERE list_id = %lld AND parent_id IN "
+        "  (SELECT id FROM tasks WHERE list_id = %lld AND done = 1);"
+        "DELETE FROM tasks WHERE list_id = %lld AND done = 1;",
+        (long long)list_id, (long long)list_id, (long long)list_id);
+    exec_txn(db, sql);
+    sqlite3_free(sql);
+}
+
+/* ---------------------------------------------------------------------------
+ * bt_db_insert_remote_tombstone() — offline-move stub (see db.h).
+ * ------------------------------------------------------------------------- */
+void
+bt_db_insert_remote_tombstone(BtDatabase *db, gint64 list_id,
+                              const gchar *gtasks_id)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db->sq,
+            "INSERT INTO tasks(list_id, title, deleted, gtasks_id, "
+            "updated_at) VALUES(?, '', 1, ?, ?)", -1,
+            &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, list_id);
+        sqlite3_bind_text(st, 2, gtasks_id, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 3, now());
+        step_done(db, st, "remote tombstone insert");
+    } else {
+        step_done(db, NULL, "remote tombstone insert");
     }
     sqlite3_finalize(st);
 }
@@ -708,13 +906,11 @@ void
 bt_db_list_purge(BtDatabase *db, gint64 id)
 {
     gchar *sql = sqlite3_mprintf(
-        "BEGIN;"
         "DELETE FROM tasks WHERE list_id = %lld AND parent_id IS NOT NULL;"
         "DELETE FROM tasks WHERE list_id = %lld;"
-        "DELETE FROM lists WHERE id = %lld;"
-        "COMMIT;",
+        "DELETE FROM lists WHERE id = %lld;",
         (long long)id, (long long)id, (long long)id);
-    exec(db, sql);
+    exec_txn(db, sql);
     sqlite3_free(sql);
 }
 
@@ -723,11 +919,9 @@ void
 bt_db_task_purge(BtDatabase *db, gint64 id)
 {
     gchar *sql = sqlite3_mprintf(
-        "BEGIN;"
         "DELETE FROM tasks WHERE parent_id = %lld;"
-        "DELETE FROM tasks WHERE id = %lld;"
-        "COMMIT;",
+        "DELETE FROM tasks WHERE id = %lld;",
         (long long)id, (long long)id);
-    exec(db, sql);
+    exec_txn(db, sql);
     sqlite3_free(sql);
 }

@@ -67,44 +67,6 @@ bt_app_confirm(GtkWindow *parent, const gchar *title, const gchar *fmt, ...)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_app_prompt_text() — modal one-line text prompt (see app.h).
- * ------------------------------------------------------------------------- */
-gchar *
-bt_app_prompt_text(GtkWindow *parent, const gchar *title,
-                   const gchar *label, const gchar *initial)
-{
-    GtkWidget *dlg = gtk_dialog_new_with_buttons(title, parent,
-        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-        "_Cancel", GTK_RESPONSE_CANCEL, "_OK", GTK_RESPONSE_OK, NULL);
-    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
-
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    gtk_container_set_border_width(GTK_CONTAINER(box), 12);
-    gtk_box_pack_start(GTK_BOX(box), gtk_label_new(label), FALSE, FALSE, 0);
-    GtkWidget *entry = gtk_entry_new();
-    gtk_entry_set_width_chars(GTK_ENTRY(entry), 32);
-    gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
-    if (initial != NULL)
-        gtk_entry_set_text(GTK_ENTRY(entry), initial);
-    gtk_box_pack_start(GTK_BOX(box), entry, FALSE, FALSE, 0);
-    gtk_box_pack_start(
-        GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dlg))),
-        box, TRUE, TRUE, 0);
-    gtk_widget_show_all(dlg);
-
-    gchar *out = NULL;               /* the accepted, trimmed text          */
-    if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_OK) {
-        gchar *t = g_strstrip(g_strdup(gtk_entry_get_text(GTK_ENTRY(entry))));
-        if (*t != '\0')
-            out = t;
-        else
-            g_free(t);
-    }
-    gtk_widget_destroy(dlg);
-    return out;
-}
-
-/* ---------------------------------------------------------------------------
  * bt_app_widget_add_css() — one-off CSS on a single widget (see app.h).
  * ------------------------------------------------------------------------- */
 void
@@ -300,6 +262,11 @@ toolbar_context_menu(GtkToolbar *toolbar, gint x, gint y, gint button,
     };
     GtkWidget *menu = gtk_menu_new();
     gtk_menu_attach_to_widget(GTK_MENU(menu), GTK_WIDGET(toolbar), NULL);
+    /* One menu is built per right-click; without this it would stay
+     * attached (= alive) until the toolbar dies.  selection-done fires
+     * after the chosen item's activate, so destroying there is safe.        */
+    g_signal_connect(menu, "selection-done",
+                     G_CALLBACK(gtk_widget_destroy), NULL);
     GSList *group = NULL;            /* the radio group                     */
     for (gsize i = 0; i < G_N_ELEMENTS(CHOICES); i++) {
         GtkWidget *item =
@@ -355,15 +322,7 @@ bt_app_config_init(const gchar *argv0)
     if (config_kf != NULL)
         return;
 
-    gchar *exe_dir;                  /* directory holding the binary        */
-    if (argv0 != NULL && strchr(argv0, '/') != NULL) {
-        gchar *abs = g_canonicalize_filename(argv0, NULL);
-        exe_dir = g_path_get_dirname(abs);
-        g_free(abs);
-    } else {
-        exe_dir = g_get_current_dir();
-    }
-
+    gchar *exe_dir = exe_dir_from_argv0(argv0);
     gchar *local = g_build_filename(exe_dir, "blue_tasks.ini", NULL);
     if (g_file_test(local, G_FILE_TEST_EXISTS) ||
         g_access(exe_dir, W_OK) == 0) {

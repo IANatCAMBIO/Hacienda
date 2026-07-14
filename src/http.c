@@ -21,7 +21,8 @@ write_cb(char *data, size_t size, size_t nmemb, void *user)
 gchar *
 bt_http_request(const gchar *method, const gchar *url,
                 const gchar *bearer, const gchar *content_type,
-                const gchar *body, glong *status, gchar **err)
+                const gchar *extra_header, const gchar *body,
+                glong *status, gchar **err)
 {
     *status = 0;
     if (err != NULL)
@@ -48,6 +49,8 @@ bt_http_request(const gchar *method, const gchar *url,
         hdrs = curl_slist_append(hdrs, h);
         g_free(h);
     }
+    if (extra_header != NULL)
+        hdrs = curl_slist_append(hdrs, extra_header);
 
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);

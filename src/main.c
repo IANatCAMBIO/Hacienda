@@ -8,6 +8,7 @@
  * =========================================================================== */
 
 #include <gtk/gtk.h>
+#include <curl/curl.h>
 #include "app.h"
 #include "db.h"
 #include "oauth.h"
@@ -68,6 +69,11 @@ main(int argc, char **argv)
     /* Config first: everything else may read it.                            */
     bt_app_config_init(argc > 0 ? argv[0] : NULL);
 
+    /* libcurl's global init is NOT thread-safe when left to the first
+     * curl_easy_init — and ours happen on sync/OAuth worker threads,
+     * possibly concurrently.  Initialize once before any thread exists.     */
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+
     gchar *db_path = bt_db_default_path();
     GError *gerr = NULL;
     BtDatabase *db = bt_db_open(db_path, &gerr);
@@ -102,8 +108,10 @@ main(int argc, char **argv)
     g_object_unref(app->gtk_app);
     g_hash_table_destroy(app->editors);
     g_hash_table_destroy(app->bn_editors);
+    g_ptr_array_free(app->toolbars, TRUE);
     bt_db_close(app->db);
     g_free(app);
     g_free(db_path);
+    curl_global_cleanup();
     return status;
 }

@@ -67,4 +67,12 @@ BtJson      *bt_json_at(BtJson *arr, guint i);             /* array element  */
  * ------------------------------------------------------------------------- */
 void bt_json_escape(GString *out, const gchar *s);
 
+/* ---------------------------------------------------------------------------
+ * bt_json_write() — append `v`'s compact JSON serialization to `out`
+ * (round-trips anything bt_json_parse produced).  Used to persist
+ * read-only API substructures (Google task links/assignment info)
+ * verbatim in the database.  NULL-safe (emits `null`).
+ * ------------------------------------------------------------------------- */
+void bt_json_write(GString *out, BtJson *v);
+
 #endif /* BT_JSON_H */

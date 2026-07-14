@@ -120,11 +120,10 @@ on_signout(GtkWidget *w, gpointer data)
                   "was removed and syncing stopped");
 }
 
-/* on_bn_changed() — the Blue Notes section's write-through: persist the
- * toggle + CLI path and refresh the library (the Action Items row
- * appears/disappears immediately).                                          */
+/* on_bn_toggled() — the Blue Notes enable checkbox: persist + refresh
+ * (the Action Items row appears/disappears immediately).                    */
 static void
-on_bn_changed(GtkWidget *w, gpointer data)
+on_bn_toggled(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtSettings *sw = data;
@@ -132,12 +131,43 @@ on_bn_changed(GtkWidget *w, gpointer data)
         return;
     gboolean on = gtk_toggle_button_get_active(
         GTK_TOGGLE_BUTTON(sw->bn_check));
-    const gchar *cli =
-        gtk_entry_get_text(GTK_ENTRY(sw->bn_cli_entry));
     bt_app_config_set("blue_notes_sync", on ? "1" : "0");
-    bt_app_config_set("blue_notes_cli", *cli != '\0' ? cli : NULL);
     if (sw->app->notify_changed != NULL)
         sw->app->notify_changed(sw->app);
+}
+
+/* on_bn_cli_changed() — the CLI path entry: persist ONLY.  The library
+ * refresh happens on commit (focus-out/Enter) — refreshing per
+ * keystroke would synchronously spawn the half-typed command with the
+ * Blue Notes view visible.                                                  */
+static void
+on_bn_cli_changed(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    BtSettings *sw = data;
+    if (sw->loading)
+        return;
+    const gchar *cli = gtk_entry_get_text(GTK_ENTRY(sw->bn_cli_entry));
+    bt_app_config_set("blue_notes_cli", *cli != '\0' ? cli : NULL);
+}
+
+/* on_bn_cli_commit() — Enter in the CLI path entry: refresh now.            */
+static void
+on_bn_cli_commit(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    BtSettings *sw = data;
+    if (!sw->loading && sw->app->notify_changed != NULL)
+        sw->app->notify_changed(sw->app);
+}
+
+/* on_bn_cli_focus_out() — leaving the CLI path entry: refresh now.          */
+static gboolean
+on_bn_cli_focus_out(GtkWidget *w, GdkEventFocus *event, gpointer data)
+{
+    (void)event;
+    on_bn_cli_commit(w, data);
+    return FALSE;                    /* propagate                           */
 }
 
 /* on_toolbar_style_changed() — the Appearance combo: apply the chosen
@@ -323,7 +353,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     sw->bn_check = gtk_check_button_new_with_label(
         "Show Blue Notes action items");
     g_signal_connect(sw->bn_check, "toggled",
-                     G_CALLBACK(on_bn_changed), sw);
+                     G_CALLBACK(on_bn_toggled), sw);
     gtk_box_pack_start(GTK_BOX(vbox), sw->bn_check, FALSE, FALSE, 0);
 
     GtkWidget *bn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
@@ -335,7 +365,11 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
                                    "blue_notes (searched on PATH)");
     gtk_widget_set_hexpand(sw->bn_cli_entry, TRUE);
     g_signal_connect(sw->bn_cli_entry, "changed",
-                     G_CALLBACK(on_bn_changed), sw);
+                     G_CALLBACK(on_bn_cli_changed), sw);
+    g_signal_connect(sw->bn_cli_entry, "activate",
+                     G_CALLBACK(on_bn_cli_commit), sw);
+    g_signal_connect(sw->bn_cli_entry, "focus-out-event",
+                     G_CALLBACK(on_bn_cli_focus_out), sw);
     gtk_box_pack_start(GTK_BOX(bn_row), sw->bn_cli_entry, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), bn_row, FALSE, FALSE, 0);
 

@@ -29,10 +29,6 @@ typedef struct {
     gboolean  done;
 } BtNoteAction;
 
-/* bt_bnotes_cli_path() — the resolved blue_notes binary (new string,
- * g_free it), or NULL when neither the setting nor PATH yields one.         */
-gchar *bt_bnotes_cli_path(void);
-
 /* ---------------------------------------------------------------------------
  * bt_bnotes_actions() — run `blue_notes action list` and parse the rows
  * (list order preserved: newest note first, like Blue Notes prints it).

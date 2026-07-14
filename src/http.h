@@ -19,6 +19,7 @@
  *   bearer       — OAuth access token for "Authorization: Bearer …",
  *                  or NULL for none.
  *   content_type — Content-Type header for `body`, or NULL.
+ *   extra_header — one additional raw header ("If-Match: …"), or NULL.
  *   body         — request body, or NULL (ignored for GET/DELETE).
  *   status       — out: the HTTP status code (0 on transport failure).
  *   err          — out: transport-level error message (owned by caller),
@@ -29,6 +30,7 @@
  * ------------------------------------------------------------------------- */
 gchar *bt_http_request(const gchar *method, const gchar *url,
                        const gchar *bearer, const gchar *content_type,
-                       const gchar *body, glong *status, gchar **err);
+                       const gchar *extra_header, const gchar *body,
+                       glong *status, gchar **err);
 
 #endif /* BT_HTTP_H */

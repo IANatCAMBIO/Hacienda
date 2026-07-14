@@ -7,9 +7,11 @@
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
- * bt_bnotes_cli_path() — resolve the blue_notes binary (see bnotes.h).
+ * bt_bnotes_cli_path() — resolve the blue_notes binary: the
+ * "blue_notes_cli" setting (path or bare command name), else PATH.
+ * Returns a new string (g_free), or NULL when nothing resolves.
  * ------------------------------------------------------------------------- */
-gchar *
+static gchar *
 bt_bnotes_cli_path(void)
 {
     gchar *configured = bt_app_config_get("blue_notes_cli");
@@ -76,6 +78,7 @@ run_cli(const gchar *a1, const gchar *a2, const gchar *a3,
     return TRUE;
 }
 
+/* bt_bnotes_actions_free() — free an array of BtNoteAction*.  NULL-safe.    */
 void
 bt_bnotes_actions_free(GPtrArray *a)
 {

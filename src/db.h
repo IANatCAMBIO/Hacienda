@@ -46,7 +46,11 @@ typedef struct {
     gboolean  deleted;
 } BtList;
 
-/* One task or subtask.  Strings are owned by the struct.                    */
+/* One task or subtask.  Strings are owned by the struct.  The last five
+ * fields mirror read-only (or Google-managed) Task resource data pulled
+ * by the sync: completion time, the concurrency etag, the deep link
+ * into Google's own UI, and the links[]/assignmentInfo substructures
+ * kept as their raw JSON.                                                   */
 typedef struct {
     gint64    id;
     gint64    list_id;
@@ -60,6 +64,11 @@ typedef struct {
     gchar    *gtasks_id;             /* Google task id, or NULL             */
     gint64    updated_at;
     gboolean  deleted;
+    gint64    completed_at;          /* unix; 0 = never / not done         */
+    gchar    *etag;                  /* Google etag, or NULL                */
+    gchar    *web_link;              /* Google Tasks UI URL, or NULL        */
+    gchar    *glinks;                /* links[] as raw JSON, or NULL        */
+    gchar    *assigned;              /* assignmentInfo as raw JSON, / NULL  */
 } BtTask;
 
 /* One file attachment on a task.                                            */
@@ -71,7 +80,6 @@ typedef struct {
 
 void bt_list_free(BtList *l);
 void bt_task_free(BtTask *t);
-void bt_attachment_free(BtAttachment *a);
 
 /* ---------------------------------------------------------------------------
  * bt_db_open() — open (creating/migrating as needed) the database at
@@ -120,6 +128,10 @@ GPtrArray *bt_db_tasks_toplevel(BtDatabase *db, gint64 list_id);
 /* Visible subtasks of one task, ordered by position.                        */
 GPtrArray *bt_db_subtasks(BtDatabase *db, gint64 parent_id);
 
+/* ALL visible subtasks (every list), ordered by parent then position —
+ * one query for the task pane instead of one per top-level row.             */
+GPtrArray *bt_db_subtasks_all_visible(BtDatabase *db);
+
 /* Visible pinned tasks across all lists (any level), pinned order = list
  * then position.                                                            */
 GPtrArray *bt_db_tasks_pinned(BtDatabase *db);
@@ -131,8 +143,10 @@ GPtrArray *bt_db_tasks_all_visible(BtDatabase *db);
 /* Visible tasks (any level) with lo <= due < hi, soonest first.             */
 GPtrArray *bt_db_tasks_due_between(BtDatabase *db, gint64 lo, gint64 hi);
 
-/* Every task row including subtasks and tombstones (sync).                  */
-GPtrArray *bt_db_tasks_all(BtDatabase *db);
+/* Every task row of ONE list, including subtasks and tombstones, parents
+ * before subtasks (sync — a new parent must own a gtasks_id before its
+ * children push).                                                           */
+GPtrArray *bt_db_tasks_in_list_all(BtDatabase *db, gint64 list_id);
 
 /* Create a task ('' title allowed).  parent_id = 0 for top-level; the
  * parent must itself be top-level (one nesting level — enforced here).
@@ -150,6 +164,21 @@ void bt_db_task_set_pinned(BtDatabase *db, gint64 id, gboolean pinned);
 
 /* Tombstone the task and its subtasks.                                      */
 void bt_db_task_delete(BtDatabase *db, gint64 id);
+
+/* Move a top-level task (and its subtasks) to another list, appended at
+ * the end; stamps updated_at.                                               */
+void bt_db_task_move_list(BtDatabase *db, gint64 id, gint64 dest_list);
+
+/* Physically remove every DONE task of a list (and their subtasks) —
+ * the local half of "Clear Completed" (the remote half is tasks.clear,
+ * which hides them on Google's side, so no tombstones are needed).          */
+void bt_db_purge_done(BtDatabase *db, gint64 list_id);
+
+/* Insert a bare tombstone carrying a Google task id — the offline
+ * fallback for cross-list moves: the moved row starts a NEW remote
+ * task while this stub deletes the old remote copy on the next sync.        */
+void bt_db_insert_remote_tombstone(BtDatabase *db, gint64 list_id,
+                                   const gchar *gtasks_id);
 
 /* ------------------------------ attachments ------------------------------ */
 

@@ -68,12 +68,24 @@ and silently exchanged for fresh access tokens as they expire, so the
 browser never reappears unless you Sign Out or revoke the grant at
 myaccount.google.com/permissions.
 
-Sync mechanics: every row carries its Google id plus an `updated_at`
-stamp; deletes are tombstones until pushed.  Conflicts resolve
+Sync mechanics: every row carries its Google id, etag and an
+`updated_at` stamp; deletes are tombstones until pushed.  After the
+first full pass syncs run **incrementally** (`updatedMin` — only items
+changed since the last pass transfer).  Pushes are etag-guarded
+(`If-Match`; a 412 defers to the remote copy).  Conflicts resolve
 newest-wins per item; deletions win over concurrent edits.  A periodic
 auto-sync runs while signed in (`sync_interval_min`, default 5 minutes,
 0 = off).  The sync runs on a worker thread with its own SQLite
 connection; the GUI stays live throughout.
+
+Beyond field sync, the full API surface is wired up: right-click a task
+for **Open in Google Tasks** (`webViewLink`) and **Move to List**
+(server-side `tasks.move` with `destinationTasklist`, with an offline
+delete-and-recreate fallback); File → **Clear Completed Tasks** uses
+`tasks.clear`; and the editor's read-only **From Google** section shows
+the completion time, Docs/Chat assignment origin (`assignmentInfo`),
+and any Google-attached `links[]` (e.g. the Gmail message a task was
+created from).
 
 ## Configuration
 

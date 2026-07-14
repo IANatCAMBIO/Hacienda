@@ -58,4 +58,20 @@ void bt_sync_start(BtApp *app, const gchar *db_path,
  * ------------------------------------------------------------------------- */
 void bt_sync_auto_start(BtApp *app, const gchar *db_path);
 
+/* ---------------------------------------------------------------------------
+ * bt_gtasks_move_task() — move a TOP-LEVEL task (and its subtasks) to
+ * another list.  Local move is immediate; the Google side moves via
+ * tasks.move with destinationTasklist on a worker thread when both
+ * lists are synced and the user is signed in, else falls back to
+ * delete-old + create-new on the next sync.  Main thread only.
+ * ------------------------------------------------------------------------- */
+void bt_gtasks_move_task(BtApp *app, gint64 task_id, gint64 dest_list_id);
+
+/* ---------------------------------------------------------------------------
+ * bt_gtasks_clear_completed() — archive a list's completed tasks:
+ * Google's tasks.clear (hides them in Google Tasks) plus a local purge
+ * when possible, tombstone deletion otherwise.  Main thread only.
+ * ------------------------------------------------------------------------- */
+void bt_gtasks_clear_completed(BtApp *app, gint64 list_id);
+
 #endif /* BT_GTASKS_H */

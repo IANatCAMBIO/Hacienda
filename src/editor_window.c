@@ -4,6 +4,7 @@
 
 #include "editor_window.h"
 #include "bnotes.h"
+#include "json.h"
 #include <string.h>
 
 /* Columns of the subtasks list store.                                       */
@@ -40,9 +41,49 @@ typedef struct {
     GtkWidget    *sub_view;
     GtkListStore *att_store;
     GtkWidget    *att_view;
+    GtkWidget    *google_box;        /* "From Google" section, or NULL      */
+    GtkWidget    *google_info;       /* completed/assignment label          */
+    GtkWidget    *glinks_box;        /* link buttons container              */
     guint         save_source;       /* pending debounce save, or 0         */
     gboolean      loading;           /* suppress change handlers            */
+    gboolean      bn_done;           /* Blue Notes editors: last loaded     */
+    gint64        bn_due;            /* state, so saves only shell the CLI  */
+                                     /* for fields that actually changed    */
 } BtEditor;
+
+/* editor_notify() — tell the library something changed.  Editor saves
+ * use the LIGHT hook (task pane only): they can never change the
+ * sidebar, and the saving editor is itself the source of truth — the
+ * full notify would reload every open editor (and re-run the Blue Notes
+ * CLI) per autosave.                                                        */
+static void
+editor_notify(BtEditor *ed)
+{
+    if (ed->app->notify_tasks != NULL)
+        ed->app->notify_tasks(ed->app);
+    else if (ed->app->notify_changed != NULL)
+        ed->app->notify_changed(ed->app);
+}
+
+/* editor_due_entry_parse() — the due entry's text as a timestamp, with
+ * the mid-typing guard: blank clears (0), a valid date parses, and
+ * PARTIAL/invalid text keeps `current` — a debounced save firing while
+ * the user is still typing must not wipe the stored date.                   */
+static gint64
+editor_due_entry_parse(BtEditor *ed, gint64 current)
+{
+    gchar *trim = g_strstrip(
+        g_strdup(gtk_entry_get_text(GTK_ENTRY(ed->due_entry))));
+    gint64 due;                      /* the value to store                  */
+    if (*trim == '\0')
+        due = 0;
+    else {
+        gint64 parsed = bt_due_parse(trim);
+        due = parsed != 0 ? parsed : current;
+    }
+    g_free(trim);
+    return due;
+}
 
 static void editor_load(BtEditor *ed);
 
@@ -75,21 +116,26 @@ editor_save_now(BtEditor *ed)
     if (ed->bn_ref != NULL) {
         gboolean done = gtk_toggle_button_get_active(
                             GTK_TOGGLE_BUTTON(ed->done_check));
-        gint64 due = bt_due_parse(
-            gtk_entry_get_text(GTK_ENTRY(ed->due_entry)));
+        gint64 due = editor_due_entry_parse(ed, ed->bn_due);
         gchar *err = NULL;
-        gboolean ok = bt_bnotes_action_set_done(ed->bn_ref, done, &err);
-        if (ok) {
+        gboolean ok = TRUE;
+        if (done != ed->bn_done) {   /* only shell the CLI for real changes */
+            ok = bt_bnotes_action_set_done(ed->bn_ref, done, &err);
+            if (ok)
+                ed->bn_done = done;
+        }
+        if (ok && due != ed->bn_due) {
             g_clear_pointer(&err, g_free);
             ok = bt_bnotes_action_set_due(ed->bn_ref, due, &err);
+            if (ok)
+                ed->bn_due = due;
         }
         if (!ok)
             bt_app_status(ed->app, "%s",
                           err != NULL ? err : "Blue Notes update failed");
         g_free(err);
         editor_title_refresh(ed);
-        if (ed->app->notify_changed != NULL)
-            ed->app->notify_changed(ed->app);
+        editor_notify(ed);
         return;
     }
     BtTask *t = bt_db_task_get(ed->app->db, ed->task_id);
@@ -105,12 +151,11 @@ editor_save_now(BtEditor *ed)
                     GTK_TOGGLE_BUTTON(ed->done_check));
     t->pinned = gtk_toggle_button_get_active(
                     GTK_TOGGLE_BUTTON(ed->pinned_check));
-    t->due    = bt_due_parse(gtk_entry_get_text(GTK_ENTRY(ed->due_entry)));
+    t->due    = editor_due_entry_parse(ed, t->due);
     bt_db_task_update(ed->app->db, t);
     bt_task_free(t);
     editor_title_refresh(ed);
-    if (ed->app->notify_changed != NULL)
-        ed->app->notify_changed(ed->app);
+    editor_notify(ed);
 }
 
 /* save_timeout() — the debounce timer body.                                 */
@@ -252,11 +297,12 @@ on_sub_add(GtkWidget *w, gpointer data)
     gint64 id = bt_db_task_create(ed->app->db, t->list_id, ed->task_id,
                                   "New subtask");
     bt_task_free(t);
-    if (id == 0)
+    if (id == 0) {                   /* refused (nesting) or write failed   */
+        bt_app_status(ed->app, "Could not create the subtask");
         return;
+    }
     sub_refresh(ed);
-    if (ed->app->notify_changed != NULL)
-        ed->app->notify_changed(ed->app);
+    editor_notify(ed);
 
     /* Put the fresh row's title straight into edit mode.                    */
     GtkTreeModel *model = GTK_TREE_MODEL(ed->sub_store);
@@ -289,8 +335,7 @@ on_sub_remove(GtkWidget *w, gpointer data)
         return;
     bt_db_task_delete(ed->app->db, id);
     sub_refresh(ed);
-    if (ed->app->notify_changed != NULL)
-        ed->app->notify_changed(ed->app);
+    editor_notify(ed);
 }
 
 /* on_sub_toggled() — the subtask done checkbox in the list.                 */
@@ -308,8 +353,7 @@ on_sub_toggled(GtkCellRendererToggle *cell, gchar *path_str, gpointer data)
     gtk_tree_model_get(model, &iter, SUB_ID, &id, SUB_DONE, &done, -1);
     bt_db_task_set_done(ed->app->db, id, !done);
     gtk_list_store_set(ed->sub_store, &iter, SUB_DONE, !done, -1);
-    if (ed->app->notify_changed != NULL)
-        ed->app->notify_changed(ed->app);
+    editor_notify(ed);
 }
 
 /* on_sub_title_edited() — in-place subtask rename.                          */
@@ -333,8 +377,7 @@ on_sub_title_edited(GtkCellRendererText *cell, gchar *path_str,
     bt_db_task_update(ed->app->db, t);
     bt_task_free(t);
     gtk_list_store_set(ed->sub_store, &iter, SUB_TITLE, new_text, -1);
-    if (ed->app->notify_changed != NULL)
-        ed->app->notify_changed(ed->app);
+    editor_notify(ed);
 }
 
 /* ===========================================================================
@@ -396,8 +439,7 @@ on_att_add(GtkWidget *w, gpointer data)
             bt_db_attachment_add(ed->app->db, ed->task_id, path);
             g_free(path);
             att_refresh(ed);
-            if (ed->app->notify_changed != NULL)
-                ed->app->notify_changed(ed->app);
+            editor_notify(ed);
         }
     }
     gtk_widget_destroy(dlg);
@@ -415,8 +457,7 @@ on_att_remove(GtkWidget *w, gpointer data)
         return;
     bt_db_attachment_remove(ed->app->db, id);
     att_refresh(ed);
-    if (ed->app->notify_changed != NULL)
-        ed->app->notify_changed(ed->app);
+    editor_notify(ed);
 }
 
 /* att_open_path() — hand a path to the platform's default opener.           */
@@ -505,18 +546,105 @@ editor_load_bnote(BtEditor *ed)
     set_entry_if_differs(ed->title_entry, found->text);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->done_check),
                                  found->done);
-    gchar *due = g_strdup("");
-    if (found->due != 0) {
-        GDateTime *dt = g_date_time_new_from_unix_local(found->due);
+    /* Never rewrite the due entry while the user is typing in it — the
+     * stored canonical form would replace their half-typed text.            */
+    if (!gtk_widget_has_focus(ed->due_entry)) {
+        gchar *due = g_strdup("");
+        if (found->due != 0) {
+            GDateTime *dt = g_date_time_new_from_unix_local(found->due);
+            g_free(due);
+            due = g_date_time_format(dt, "%Y-%m-%d");
+            g_date_time_unref(dt);
+        }
+        set_entry_if_differs(ed->due_entry, due);
         g_free(due);
-        due = g_date_time_format(dt, "%Y-%m-%d");
-        g_date_time_unref(dt);
     }
-    set_entry_if_differs(ed->due_entry, due);
-    g_free(due);
+    ed->bn_done = found->done;       /* the change-detection baseline       */
+    ed->bn_due  = found->due;
     editor_title_refresh(ed);
     ed->loading = FALSE;
     bt_bnotes_actions_free(acts);
+}
+
+/* clear_children() — empty a container.                                     */
+static void
+clear_children(GtkWidget *box)
+{
+    GList *kids = gtk_container_get_children(GTK_CONTAINER(box));
+    for (GList *l = kids; l != NULL; l = l->next)
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(kids);
+}
+
+/* add_link_button() — a left-aligned GtkLinkButton row.                      */
+static void
+add_link_button(GtkWidget *box, const gchar *uri, const gchar *label)
+{
+    GtkWidget *btn = gtk_link_button_new_with_label(uri,
+        label != NULL && *label != '\0' ? label : uri);
+    gtk_widget_set_halign(btn, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(box), btn, FALSE, FALSE, 0);
+}
+
+/* ---------------------------------------------------------------------------
+ * google_section_load() — fill the read-only "From Google" section from
+ * the task's synced metadata; hidden when there is nothing to show.
+ *   completed time · assignment origin (Docs/Chat) · Google-attached
+ *   links[] · the webViewLink deep link.
+ * ------------------------------------------------------------------------- */
+static void
+google_section_load(BtEditor *ed, const BtTask *t)
+{
+    if (ed->google_box == NULL)
+        return;
+    GString *info = g_string_new(NULL);
+    if (t->done && t->completed_at != 0) {
+        GDateTime *dt = g_date_time_new_from_unix_local(t->completed_at);
+        gchar *when = g_date_time_format(dt, "%b %-e, %Y at %H:%M");
+        g_string_append_printf(info, "Completed %s", when);
+        g_free(when);
+        g_date_time_unref(dt);
+    }
+    if (t->assigned != NULL) {
+        BtJson *ai = bt_json_parse(t->assigned, -1);
+        const gchar *surface = bt_json_str(ai, "surfaceType");
+        if (info->len > 0)
+            g_string_append_c(info, '\n');
+        g_string_append_printf(info, "Assigned task (from %s)",
+            g_strcmp0(surface, "DOCUMENT") == 0 ? "Google Docs"
+            : g_strcmp0(surface, "SPACE") == 0  ? "Google Chat"
+                                                : "Google Workspace");
+        bt_json_free(ai);
+    }
+    gtk_label_set_text(GTK_LABEL(ed->google_info), info->str);
+    gtk_widget_set_visible(ed->google_info, info->len > 0);
+
+    clear_children(ed->glinks_box);
+    if (t->glinks != NULL) {
+        BtJson *links = bt_json_parse(t->glinks, -1);
+        for (guint i = 0; i < bt_json_len(links); i++) {
+            BtJson *lk = bt_json_at(links, i);
+            const gchar *uri = bt_json_str(lk, "link");
+            if (uri != NULL)
+                add_link_button(ed->glinks_box, uri,
+                                bt_json_str(lk, "description"));
+        }
+        bt_json_free(links);
+    }
+    if (t->web_link != NULL)
+        add_link_button(ed->glinks_box, t->web_link,
+                        "Open in Google Tasks");
+
+    gboolean any = info->len > 0 || t->web_link != NULL ||
+                   t->glinks != NULL;
+    g_string_free(info, TRUE);
+    if (any)
+        gtk_widget_show_all(ed->google_box);
+    else
+        gtk_widget_hide(ed->google_box);
+    gtk_widget_set_visible(ed->google_info,
+        gtk_widget_get_visible(ed->google_box) &&
+        *gtk_label_get_text(GTK_LABEL(ed->google_info)) != '\0');
 }
 
 /* ---------------------------------------------------------------------------
@@ -541,18 +669,21 @@ editor_load(BtEditor *ed)
                                  t->done);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->pinned_check),
                                  t->pinned);
-    gchar *due = g_strdup("");
-    if (t->due != 0) {
-        GDateTime *dt = g_date_time_new_from_unix_local(t->due);
+    /* Same mid-typing guard as the Blue Notes loader.                       */
+    if (!gtk_widget_has_focus(ed->due_entry)) {
+        gchar *due = g_strdup("");
+        if (t->due != 0) {
+            GDateTime *dt = g_date_time_new_from_unix_local(t->due);
+            g_free(due);
+            due = g_strdup_printf("%04d-%02d-%02d",
+                                  g_date_time_get_year(dt),
+                                  g_date_time_get_month(dt),
+                                  g_date_time_get_day_of_month(dt));
+            g_date_time_unref(dt);
+        }
+        set_entry_if_differs(ed->due_entry, due);
         g_free(due);
-        due = g_strdup_printf("%04d-%02d-%02d",
-                              g_date_time_get_year(dt),
-                              g_date_time_get_month(dt),
-                              g_date_time_get_day_of_month(dt));
-        g_date_time_unref(dt);
     }
-    set_entry_if_differs(ed->due_entry, due);
-    g_free(due);
 
     GtkTextIter a, b;
     gtk_text_buffer_get_bounds(ed->notes_buf, &a, &b);
@@ -563,6 +694,7 @@ editor_load(BtEditor *ed)
 
     sub_refresh(ed);
     att_refresh(ed);
+    google_section_load(ed, t);
     editor_title_refresh(ed);
     ed->loading = FALSE;
     bt_task_free(t);
@@ -810,6 +942,31 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
     if (bn)
         gtk_widget_set_sensitive(att_section, FALSE);
     gtk_box_pack_start(GTK_BOX(vbox), att_section, FALSE, FALSE, 0);
+
+    /* "From Google" — read-only metadata pulled by the sync (completed
+     * time, Docs/Chat assignment, Google-attached links, the deep link
+     * into Google Tasks).  Task editors only; shown only when present.      */
+    if (!bn) {
+        ed->google_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        GtkWidget *heading = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(heading), "<b>From Google</b>");
+        gtk_widget_set_halign(heading, GTK_ALIGN_START);
+        gtk_box_pack_start(GTK_BOX(ed->google_box), heading,
+                           FALSE, FALSE, 0);
+        ed->google_info = gtk_label_new("");
+        gtk_label_set_line_wrap(GTK_LABEL(ed->google_info), TRUE);
+        gtk_widget_set_halign(ed->google_info, GTK_ALIGN_START);
+        bt_app_widget_add_css(ed->google_info,
+                              "label { font-size: 85%; }");
+        gtk_box_pack_start(GTK_BOX(ed->google_box), ed->google_info,
+                           FALSE, FALSE, 0);
+        ed->glinks_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        gtk_box_pack_start(GTK_BOX(ed->google_box), ed->glinks_box,
+                           FALSE, FALSE, 0);
+        gtk_widget_set_no_show_all(ed->google_box, TRUE);
+        gtk_box_pack_start(GTK_BOX(vbox), ed->google_box,
+                           FALSE, FALSE, 0);
+    }
 
     g_signal_connect(ed->window, "destroy",
                      G_CALLBACK(on_editor_destroy), ed);

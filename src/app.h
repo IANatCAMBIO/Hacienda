@@ -31,8 +31,17 @@
  *                    by their "NOTEID:ORD" address (owned gchar* keys,
  *                    GtkWindow* values).
  *   library_window — the (single) library window, or NULL before startup.
- *   notify_changed — hook installed by the library window: full refresh
- *                    (sidebar + task pane).  May be NULL.
+ *   notify_changed — hook installed by the library window: FULL refresh
+ *                    (sidebar + task pane + open editors).  For
+ *                    structural changes: lists created/renamed/deleted,
+ *                    sync applied.  May be NULL.
+ *   notify_tasks   — lighter hook, also installed by the library window:
+ *                    refreshes only the task pane.  Editor saves and
+ *                    subtask/attachment edits use this — they can never
+ *                    change the sidebar, and the saving editor is itself
+ *                    the source of truth (reloading every editor per
+ *                    autosave would also re-run the Blue Notes CLI).
+ *                    May be NULL.
  *   notify_status  — hook installed by the library window: shows an event
  *                    message on its status bar.  Post through
  *                    bt_app_status(), which handles the hook being NULL.
@@ -54,6 +63,7 @@ typedef struct BtApp {
     GHashTable      *bn_editors;
     GtkWidget       *library_window;
     void           (*notify_changed)(struct BtApp *app);
+    void           (*notify_tasks)(struct BtApp *app);
     void           (*notify_status)(struct BtApp *app, const gchar *message);
     gboolean         sync_running;
     guint            sync_timer;
@@ -133,14 +143,6 @@ void bt_app_notice(GtkWindow *parent, GtkMessageType type,
  * ------------------------------------------------------------------------- */
 gboolean bt_app_confirm(GtkWindow *parent, const gchar *title,
                         const gchar *fmt, ...) G_GNUC_PRINTF(3, 4);
-
-/* ---------------------------------------------------------------------------
- * bt_app_prompt_text() — modal one-line text prompt (used by New List /
- * Rename List).  Returns the entered string (g_free; never empty), or
- * NULL if cancelled.  `initial` pre-fills the entry (may be NULL).
- * ------------------------------------------------------------------------- */
-gchar *bt_app_prompt_text(GtkWindow *parent, const gchar *title,
-                          const gchar *label, const gchar *initial);
 
 /* ---------------------------------------------------------------------------
  * Config — same model as Blue Notes: an ini next to the binary (portable

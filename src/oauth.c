@@ -31,6 +31,10 @@
 #define BT_GOOGLE_CLIENT_SECRET ""
 #endif
 
+static gboolean token_post(const gchar *form, gchar **access,
+                           gchar **refresh, gint64 *expires_in,
+                           gchar **error);
+
 /* ---------------------------------------------------------------------------
  * Client credentials + tokens — written on the main thread (bt_oauth_init
  * and the flow completion), read/refreshed by the sync worker under the
@@ -145,45 +149,35 @@ bt_oauth_access_token(gchar **err)
         "grant_type=refresh_token&refresh_token=%s&client_id=%s"
         "&client_secret=%s",
         rtok_esc, cid, csec != NULL ? csec : "");
-    glong status = 0;
-    gchar *terr = NULL;
-    gchar *body = bt_http_request("POST", BT_OAUTH_TOKEN_URL, NULL,
-                                  "application/x-www-form-urlencoded",
-                                  form, &status, &terr);
+    gchar  *access = NULL;           /* the refreshed token                 */
+    gint64  expires_in = 0;
+    gchar  *perr = NULL;             /* token_post's failure reason         */
+    gboolean ok = token_post(form, &access, NULL, &expires_in, &perr);
     g_free(form);
     g_free(rtok_esc);
     g_free(rtok);
     g_free(cid);
     g_free(csec);
 
-    gchar *access = NULL;            /* the refreshed token                 */
-    if (body == NULL) {
-        *err = terr != NULL ? terr : g_strdup("network failure");
+    if (!ok) {
+        *err = g_strdup_printf("%s \xe2\x80\x94 sign in again from File "
+                               "\xe2\x86\x92 Settings\xe2\x80\xa6",
+                               perr != NULL ? perr : "token refresh failed");
+        g_free(perr);
         return NULL;
     }
-    g_free(terr);
-    BtJson *root = bt_json_parse(body, -1);
-    if (status == 200 && bt_json_str(root, "access_token") != NULL) {
-        access = g_strdup(bt_json_str(root, "access_token"));
-        BtJson *exp = bt_json_get(root, "expires_in");
-        gint64 expires_in = (exp != NULL && exp->type == BT_JSON_NUMBER)
-                            ? (gint64)exp->num : 3600;
-        g_mutex_lock(&cred_lock);
+
+    /* Cache only while still signed in: Sign Out may have cleared the
+     * refresh token while this round trip was in flight, and re-caching
+     * would resurrect the "signed-out" session for another hour.            */
+    g_mutex_lock(&cred_lock);
+    if (cred_refresh_token != NULL) {
         g_free(session_access);
         session_access = g_strdup(access);
         session_expiry = g_get_real_time() / G_USEC_PER_SEC +
                          expires_in - 60;
-        g_mutex_unlock(&cred_lock);
-    } else {
-        const gchar *desc = bt_json_str(root, "error_description");
-        const gchar *code = bt_json_str(root, "error");
-        *err = g_strdup_printf(
-            "token refresh failed (HTTP %ld): %s \xe2\x80\x94 sign in "
-            "again from File \xe2\x86\x92 Settings\xe2\x80\xa6", status,
-            desc != NULL ? desc : code != NULL ? code : "unknown error");
     }
-    bt_json_free(root);
-    g_free(body);
+    g_mutex_unlock(&cred_lock);
     return access;
 }
 
@@ -257,6 +251,55 @@ flow_finish(gboolean ok, const gchar *error)
         done(ok, error, user);
 }
 
+/* ---------------------------------------------------------------------------
+ * token_post() — POST a form body to the token endpoint and parse the
+ * token fields out of the JSON reply (shared by the code exchange and
+ * the silent refresh — the two paths previously duplicated all of this).
+ * `refresh` may be NULL when the caller doesn't expect one.  Returns
+ * TRUE with the access token and expiry set; FALSE with the error set
+ * (g_free).  BLOCKING; worker threads only.
+ * ------------------------------------------------------------------------- */
+static gboolean
+token_post(const gchar *form, gchar **access, gchar **refresh,
+           gint64 *expires_in, gchar **error)
+{
+    *access = NULL;
+    *error = NULL;
+    if (refresh != NULL)
+        *refresh = NULL;
+    glong status = 0;
+    gchar *terr = NULL;
+    gchar *body = bt_http_request("POST", BT_OAUTH_TOKEN_URL, NULL,
+                                  "application/x-www-form-urlencoded",
+                                  NULL, form, &status, &terr);
+    if (body == NULL) {
+        *error = terr != NULL ? terr : g_strdup("network failure");
+        return FALSE;
+    }
+    g_free(terr);
+    BtJson *root = bt_json_parse(body, -1);
+    gboolean ok = FALSE;
+    if (status == 200 && bt_json_str(root, "access_token") != NULL) {
+        *access = g_strdup(bt_json_str(root, "access_token"));
+        if (refresh != NULL)
+            *refresh = g_strdup(bt_json_str(root, "refresh_token"));
+        BtJson *exp = bt_json_get(root, "expires_in");
+        *expires_in = (exp != NULL && exp->type == BT_JSON_NUMBER)
+                      ? (gint64)exp->num : 3600;
+        ok = TRUE;
+    } else {
+        const gchar *desc = bt_json_str(root, "error_description");
+        const gchar *code = bt_json_str(root, "error");
+        *error = g_strdup_printf("token request failed (HTTP %ld): %s",
+                                 status,
+                                 desc != NULL ? desc
+                                 : code != NULL ? code : "unknown error");
+    }
+    bt_json_free(root);
+    g_free(body);
+    return ok;
+}
+
 /* --------------------------------------------------------------------------
  * The token exchange runs on a short-lived worker thread (it is an HTTPS
  * round trip); its result is marshalled back to the main thread.
@@ -273,11 +316,24 @@ typedef struct {
 
 /* exchange_apply() — main-thread completion: cache the session token,
  * persist the refresh token (sign in once, stay signed in), finish the
- * flow.                                                                     */
+ * flow.  When the flow already ended (the 5-minute timeout fired while
+ * the exchange was in flight), the tokens are DISCARDED — the user was
+ * just told sign-in failed, and silently storing a grant anyway would
+ * leave the UI saying signed-out while the app syncs.                       */
 static gboolean
 exchange_apply(gpointer data)
 {
     ExchangeJob *job = data;
+    if (flow.service == NULL) {
+        g_free(job->code);
+        g_free(job->redirect_uri);
+        g_free(job->verifier);
+        g_free(job->access);
+        g_free(job->refresh);
+        g_free(job->error);
+        g_free(job);
+        return G_SOURCE_REMOVE;
+    }
     if (job->error == NULL && job->access != NULL) {
         if (job->refresh != NULL)
             bt_app_config_set("gtasks_refresh_token", job->refresh);
@@ -323,35 +379,8 @@ exchange_thread(gpointer data)
         "&client_secret=%s&redirect_uri=%s&code_verifier=%s",
         code_esc, cid != NULL ? cid : "", csec != NULL ? csec : "",
         uri_esc, job->verifier);
-
-    glong status = 0;
-    gchar *terr = NULL;
-    gchar *body = bt_http_request("POST", BT_OAUTH_TOKEN_URL, NULL,
-                                  "application/x-www-form-urlencoded",
-                                  form, &status, &terr);
-    if (body == NULL) {
-        job->error = terr != NULL ? terr : g_strdup("network failure");
-    } else {
-        g_free(terr);
-        BtJson *root = bt_json_parse(body, -1);
-        if (status == 200 && bt_json_str(root, "access_token") != NULL) {
-            job->access  = g_strdup(bt_json_str(root, "access_token"));
-            job->refresh = g_strdup(bt_json_str(root, "refresh_token"));
-            BtJson *exp = bt_json_get(root, "expires_in");
-            job->expires_in = (exp != NULL &&
-                               exp->type == BT_JSON_NUMBER)
-                              ? (gint64)exp->num : 3600;
-        } else {
-            const gchar *desc = bt_json_str(root, "error_description");
-            const gchar *code = bt_json_str(root, "error");
-            job->error = g_strdup_printf(
-                "token request failed (HTTP %ld): %s", status,
-                desc != NULL ? desc
-                : code != NULL ? code : "unknown error");
-        }
-        bt_json_free(root);
-        g_free(body);
-    }
+    token_post(form, &job->access, &job->refresh, &job->expires_in,
+               &job->error);
     g_free(form);
     g_free(code_esc);
     g_free(uri_esc);

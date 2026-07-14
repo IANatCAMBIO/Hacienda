@@ -485,8 +485,24 @@ refresh_tasks(BtLibrary *lw)
         break;
     }
 
-    /* One pass of shared lookups (avoid per-row queries where easy).        */
+    /* One pass of shared lookups (avoid per-row queries).  Subtasks come
+     * as ONE query grouped in memory, not one query per top-level row.      */
     GHashTable *att_counts = bt_db_attachment_counts(lw->app->db);
+    GPtrArray *all_subs = bt_db_subtasks_all_visible(lw->app->db);
+    GHashTable *subs_by_parent =     /* parent id → GPtrArray of borrowed   */
+        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
+                              (GDestroyNotify)g_ptr_array_unref);
+    for (guint i = 0; i < all_subs->len; i++) {
+        BtTask *s = g_ptr_array_index(all_subs, i);
+        GPtrArray *bucket = g_hash_table_lookup(subs_by_parent,
+            GINT_TO_POINTER((gint)s->parent_id));
+        if (bucket == NULL) {
+            bucket = g_ptr_array_new();
+            g_hash_table_insert(subs_by_parent,
+                GINT_TO_POINTER((gint)s->parent_id), bucket);
+        }
+        g_ptr_array_add(bucket, s);
+    }
     GHashTable *list_names = NULL;   /* list id → name (virtual views)      */
     if (virtual_view) {
         list_names = g_hash_table_new_full(g_direct_hash, g_direct_equal,
@@ -504,7 +520,9 @@ refresh_tasks(BtLibrary *lw)
     for (guint i = 0; i < tasks->len; i++) {
         BtTask *t = g_ptr_array_index(tasks, i);
         GPtrArray *subs = t->parent_id == 0
-            ? bt_db_subtasks(lw->app->db, t->id) : NULL;
+            ? g_hash_table_lookup(subs_by_parent,
+                                  GINT_TO_POINTER((gint)t->id))
+            : NULL;
         const gchar *list_name = virtual_view && list_names != NULL
             ? g_hash_table_lookup(list_names,
                                   GINT_TO_POINTER((gint)t->list_id))
@@ -525,8 +543,6 @@ refresh_tasks(BtLibrary *lw)
                            -1);
         g_free(desc);
         g_free(due);
-        if (subs != NULL)
-            bt_ptr_array_free_tasks(subs);
     }
 
     /* Status bar left: where we are + how many rows.                        */
@@ -548,6 +564,8 @@ refresh_tasks(BtLibrary *lw)
     }
 
     g_hash_table_destroy(att_counts);
+    g_hash_table_destroy(subs_by_parent);
+    bt_ptr_array_free_tasks(all_subs);
     if (list_names != NULL)
         g_hash_table_destroy(list_names);
     bt_ptr_array_free_tasks(tasks);
@@ -562,13 +580,23 @@ full_refresh(BtLibrary *lw)
     bt_editor_refresh_all(lw->app);
 }
 
-/* notify_changed_hook() / notify_status_hook() — the BtApp hooks.           */
+/* notify_changed_hook() / notify_tasks_hook() / notify_status_hook() —
+ * the BtApp hooks.                                                          */
 static void
 notify_changed_hook(BtApp *app)
 {
     BtLibrary *lw = lib_of(app);
     if (lw != NULL)
         full_refresh(lw);
+}
+
+/* The light variant: task pane only (editor saves — see editor_notify).     */
+static void
+notify_tasks_hook(BtApp *app)
+{
+    BtLibrary *lw = lib_of(app);
+    if (lw != NULL)
+        refresh_tasks(lw);
 }
 
 static void
@@ -626,19 +654,28 @@ selected_list_id(BtLibrary *lw)
  * Task pane behavior.
  * =========================================================================== */
 
-/* selected_task_id() — id of the selected task row, or 0.                   */
-static gint64
-selected_task_id(BtLibrary *lw)
+/* selected_task_ids() — ids of every selected task row (the view is
+ * multi-select: Ctrl/Cmd-click and Shift-click extend).  Free with
+ * g_array_unref.  Blue Notes rows (id 0) are excluded.                      */
+static GArray *
+selected_task_ids(BtLibrary *lw)
 {
+    GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
     GtkTreeSelection *sel =
         gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->task_view));
-    GtkTreeModel *model;
-    GtkTreeIter iter;
-    if (!gtk_tree_selection_get_selected(sel, &model, &iter))
-        return 0;
-    gint64 id;
-    gtk_tree_model_get(model, &iter, TL_ID, &id, -1);
-    return id;
+    GtkTreeModel *model = NULL;
+    GList *rows = gtk_tree_selection_get_selected_rows(sel, &model);
+    for (GList *l = rows; l != NULL; l = l->next) {
+        GtkTreeIter iter;
+        if (gtk_tree_model_get_iter(model, &iter, l->data)) {
+            gint64 id;
+            gtk_tree_model_get(model, &iter, TL_ID, &id, -1);
+            if (id != 0)
+                g_array_append_val(ids, id);
+        }
+    }
+    g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
+    return ids;
 }
 
 /* on_task_activated() — double-click opens the editor window; Blue
@@ -691,7 +728,7 @@ on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
         if (ref != NULL &&
             bt_bnotes_action_set_done(ref, !done, &err)) {
             bt_app_status(lw->app, "Updated in Blue Notes");
-            refresh_tasks(lw);
+            full_refresh(lw);        /* incl. an open editor of this ref    */
         } else {
             bt_app_status(lw->app, "%s",
                           err != NULL ? err : "update failed");
@@ -933,11 +970,16 @@ on_new_list(GtkWidget *w, gpointer data)
     gchar *emoji = NULL;
     if (run_list_dialog(lw, "New List", &name, &emoji)) {
         gint64 id = bt_db_list_create(lw->app->db, name, emoji);
-        lw->sel_kind = SB_KIND_LIST;
-        lw->sel_id = id;
-        full_refresh(lw);
-        bt_app_status(lw->app,
-                      "Created list \xe2\x80\x9c%s\xe2\x80\x9d", name);
+        if (id == 0) {               /* write failed (logged by the db)     */
+            bt_app_status(lw->app, "Could not create the list \xe2\x80\x94 "
+                          "database write failed");
+        } else {
+            lw->sel_kind = SB_KIND_LIST;
+            lw->sel_id = id;
+            full_refresh(lw);
+            bt_app_status(lw->app,
+                          "Created list \xe2\x80\x9c%s\xe2\x80\x9d", name);
+        }
     }
     g_free(name);
     g_free(emoji);
@@ -1024,8 +1066,11 @@ on_new_task(GtkWidget *w, gpointer data)
         return;
     }
     gint64 id = bt_db_task_create(lw->app->db, list_id, 0, "New Task");
-    if (id == 0)
+    if (id == 0) {                   /* write failed (logged by the db)     */
+        bt_app_status(lw->app, "Could not create the task \xe2\x80\x94 "
+                      "database write failed");
         return;
+    }
     full_refresh(lw);
     bt_editor_open(lw->app, id);
 }
@@ -1041,47 +1086,281 @@ on_delete_task(GtkWidget *w, gpointer data)
                       "the note in Blue Notes");
         return;
     }
-    gint64 id = selected_task_id(lw);
-    if (id == 0) {
+    GArray *ids = selected_task_ids(lw);
+    if (ids->len == 0) {
         bt_app_status(lw->app, "Select a task to delete");
+        g_array_unref(ids);
         return;
     }
-    BtTask *t = bt_db_task_get(lw->app->db, id);
-    if (t == NULL)
-        return;
-    gboolean yes = bt_app_confirm(GTK_WINDOW(lw->window), "Delete Task",
-        "Delete \xe2\x80\x9c%s\xe2\x80\x9d%s?",
-        *t->title != '\0' ? t->title : "Untitled Task",
-        t->parent_id == 0 ? " and its subtasks" : "");
+
+    gboolean yes;                    /* confirmed?                          */
+    if (ids->len == 1) {
+        BtTask *t = bt_db_task_get(lw->app->db,
+                                   g_array_index(ids, gint64, 0));
+        if (t == NULL) {
+            g_array_unref(ids);
+            return;
+        }
+        yes = bt_app_confirm(GTK_WINDOW(lw->window), "Delete Task",
+            "Delete \xe2\x80\x9c%s\xe2\x80\x9d%s?",
+            *t->title != '\0' ? t->title : "Untitled Task",
+            t->parent_id == 0 ? " and its subtasks" : "");
+        bt_task_free(t);
+    } else {
+        yes = bt_app_confirm(GTK_WINDOW(lw->window), "Delete Tasks",
+            "Delete the %u selected tasks (and their subtasks)?",
+            ids->len);
+    }
     if (yes) {
-        GtkWindow *editor = g_hash_table_lookup(lw->app->editors, &id);
-        if (editor != NULL)
-            gtk_widget_destroy(GTK_WIDGET(editor));
-        bt_db_task_delete(lw->app->db, id);
+        for (guint i = 0; i < ids->len; i++) {
+            gint64 id = g_array_index(ids, gint64, i);
+            GtkWindow *editor =
+                g_hash_table_lookup(lw->app->editors, &id);
+            if (editor != NULL)
+                gtk_widget_destroy(GTK_WIDGET(editor));
+            bt_db_task_delete(lw->app->db, id);
+        }
         full_refresh(lw);
-        bt_app_status(lw->app, "Deleted \xe2\x80\x9c%s\xe2\x80\x9d",
-                      t->title);
+        bt_app_status(lw->app, "Deleted %u task%s", ids->len,
+                      ids->len == 1 ? "" : "s");
     }
-    bt_task_free(t);
+    g_array_unref(ids);
 }
 
-/* sync_done() — re-enable the Sync menu item after a run.                   */
+/* ===========================================================================
+ * Task context menu — Open in Google Tasks, Move to List, Delete.
+ * =========================================================================== */
+
+static GtkWidget *menu_item(GtkWidget *menu, const gchar *label,
+                            GCallback cb, gpointer data);
+
+/* on_ctx_open_google() — open the row's webViewLink in the browser.         */
+static void
+on_ctx_open_google(GtkWidget *item, gpointer data)
+{
+    BtLibrary *lw = data;
+    const gchar *url = g_object_get_data(G_OBJECT(item), "bt-url");
+    if (url == NULL)
+        return;
+    GError *gerr = NULL;
+    if (!gtk_show_uri_on_window(GTK_WINDOW(lw->window), url,
+                                GDK_CURRENT_TIME, &gerr)) {
+        bt_app_status(lw->app, "Cannot open browser: %s",
+                      gerr != NULL ? gerr->message : "?");
+        g_clear_error(&gerr);
+    }
+}
+
+/* item_ids() — the gint64 id array stashed on a context-menu item.          */
+static GArray *
+item_ids(GtkWidget *item)
+{
+    return g_object_get_data(G_OBJECT(item), "bt-ids");
+}
+
+/* on_ctx_set_done() — Mark Complete / Mark Incomplete on the selection.     */
+static void
+on_ctx_set_done(GtkWidget *item, gpointer data)
+{
+    BtLibrary *lw = data;
+    GArray *ids = item_ids(item);
+    gboolean done = GPOINTER_TO_INT(
+        g_object_get_data(G_OBJECT(item), "bt-done"));
+    for (guint i = 0; i < ids->len; i++)
+        bt_db_task_set_done(lw->app->db,
+                            g_array_index(ids, gint64, i), done);
+    full_refresh(lw);
+    bt_app_status(lw->app, "Marked %u task%s %s", ids->len,
+                  ids->len == 1 ? "" : "s",
+                  done ? "complete" : "incomplete");
+}
+
+/* on_ctx_move() — a destination picked in the Move to List menu: move
+ * every selected TOP-LEVEL task not already there (subtasks travel with
+ * their parents; a selected subtask on its own cannot move).                */
+static void
+on_ctx_move(GtkWidget *item, gpointer data)
+{
+    BtLibrary *lw = data;
+    GArray *ids = item_ids(item);
+    gint64 dest_id = *(gint64 *)g_object_get_data(G_OBJECT(item),
+                                                  "bt-dest-id");
+    guint moved = 0;                 /* how many actually went              */
+    for (guint i = 0; i < ids->len; i++) {
+        gint64 id = g_array_index(ids, gint64, i);
+        BtTask *t = bt_db_task_get(lw->app->db, id);
+        if (t != NULL && t->parent_id == 0 && t->list_id != dest_id) {
+            bt_gtasks_move_task(lw->app, id, dest_id);
+            moved++;
+        }
+        bt_task_free(t);
+    }
+    if (moved > 0) {
+        full_refresh(lw);
+        bt_app_status(lw->app, "Moved %u task%s", moved,
+                      moved == 1 ? "" : "s");
+    } else {
+        bt_app_status(lw->app, "Nothing to move (subtasks move with "
+                      "their parent task)");
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * on_task_button_press() — right-click on a task row: keep an existing
+ * multi-selection when clicked inside it (else select just that row)
+ * and show the context menu, whose actions apply to the whole
+ * selection.  Not offered in the Blue Notes view.
+ * ------------------------------------------------------------------------- */
+static gboolean
+on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
+{
+    BtLibrary *lw = data;
+    if (event->button != 3 || lw->sel_kind == SB_KIND_BN_ACTIONS)
+        return FALSE;
+
+    GtkTreePath *path = NULL;
+    if (!gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(view),
+                                       (gint)event->x, (gint)event->y,
+                                       &path, NULL, NULL, NULL))
+        return FALSE;
+    GtkTreeSelection *sel =
+        gtk_tree_view_get_selection(GTK_TREE_VIEW(view));
+    if (!gtk_tree_selection_path_is_selected(sel, path)) {
+        gtk_tree_selection_unselect_all(sel);
+        gtk_tree_selection_select_path(sel, path);
+    }
+    gtk_tree_path_free(path);
+
+    GArray *ids = selected_task_ids(lw);
+    if (ids->len == 0) {
+        g_array_unref(ids);
+        return FALSE;
+    }
+    gboolean single = ids->len == 1;
+    BtTask *t = single
+        ? bt_db_task_get(lw->app->db, g_array_index(ids, gint64, 0))
+        : NULL;
+
+    GtkWidget *menu = gtk_menu_new();
+    gtk_menu_attach_to_widget(GTK_MENU(menu), view, NULL);
+    g_signal_connect(menu, "selection-done",
+                     G_CALLBACK(gtk_widget_destroy), NULL);
+    /* The id array rides on the menu; items borrow it via extra refs.       */
+    g_object_set_data_full(G_OBJECT(menu), "bt-ids", g_array_ref(ids),
+                           (GDestroyNotify)g_array_unref);
+
+    /* Mark Complete / Mark Incomplete — the bulk staples.                   */
+    GtkWidget *done_item = gtk_menu_item_new_with_label(
+        single ? "Mark Complete" : "Mark All Complete");
+    g_object_set_data_full(G_OBJECT(done_item), "bt-ids",
+                           g_array_ref(ids),
+                           (GDestroyNotify)g_array_unref);
+    g_object_set_data(G_OBJECT(done_item), "bt-done",
+                      GINT_TO_POINTER(TRUE));
+    g_signal_connect(done_item, "activate",
+                     G_CALLBACK(on_ctx_set_done), lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), done_item);
+
+    GtkWidget *undone_item = gtk_menu_item_new_with_label(
+        single ? "Mark Incomplete" : "Mark All Incomplete");
+    g_object_set_data_full(G_OBJECT(undone_item), "bt-ids",
+                           g_array_ref(ids),
+                           (GDestroyNotify)g_array_unref);
+    g_object_set_data(G_OBJECT(undone_item), "bt-done",
+                      GINT_TO_POINTER(FALSE));
+    g_signal_connect(undone_item, "activate",
+                     G_CALLBACK(on_ctx_set_done), lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), undone_item);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu),
+                          gtk_separator_menu_item_new());
+
+    /* Open in Google Tasks — single, synced task only.                      */
+    GtkWidget *open_item =
+        gtk_menu_item_new_with_label("Open in Google Tasks");
+    if (single && t != NULL && t->web_link != NULL) {
+        g_object_set_data_full(G_OBJECT(open_item), "bt-url",
+                               g_strdup(t->web_link), g_free);
+        g_signal_connect(open_item, "activate",
+                         G_CALLBACK(on_ctx_open_google), lw);
+    } else {
+        gtk_widget_set_sensitive(open_item, FALSE);
+    }
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), open_item);
+
+    /* Move to List — applies to the selection's top-level tasks.            */
+    GtkWidget *move_item = gtk_menu_item_new_with_label("Move to List");
+    GtkWidget *submenu = gtk_menu_new();
+    GPtrArray *lists = bt_db_lists(lw->app->db, FALSE);
+    guint added = 0;                 /* destinations offered                */
+    for (guint i = 0; i < lists->len; i++) {
+        BtList *l = g_ptr_array_index(lists, i);
+        /* For a single selection its own list is pointless; keep every
+         * destination for multi (rows may span lists in virtual views).     */
+        if (single && t != NULL && l->id == t->list_id)
+            continue;
+        gchar *label = *l->emoji != '\0'
+            ? g_strdup_printf("%s  %s", l->emoji, l->name)
+            : g_strdup(l->name);
+        GtkWidget *dest = gtk_menu_item_new_with_label(label);
+        g_free(label);
+        gint64 *did = g_new(gint64, 1);
+        *did = l->id;
+        g_object_set_data_full(G_OBJECT(dest), "bt-dest-id", did,
+                               g_free);
+        g_object_set_data_full(G_OBJECT(dest), "bt-ids",
+                               g_array_ref(ids),
+                               (GDestroyNotify)g_array_unref);
+        g_signal_connect(dest, "activate",
+                         G_CALLBACK(on_ctx_move), lw);
+        gtk_menu_shell_append(GTK_MENU_SHELL(submenu), dest);
+        added++;
+    }
+    bt_ptr_array_free_lists(lists);
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(move_item), submenu);
+    gtk_widget_set_sensitive(move_item, added > 0 &&
+        !(single && t != NULL && t->parent_id != 0));
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), move_item);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu),
+                          gtk_separator_menu_item_new());
+    gchar *del_label = single
+        ? g_strdup("Delete Task")
+        : g_strdup_printf("Delete %u Tasks", ids->len);
+    menu_item(menu, del_label, G_CALLBACK(on_delete_task), lw);
+    g_free(del_label);
+
+    bt_task_free(t);
+    g_array_unref(ids);
+    gtk_widget_show_all(menu);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
+    return TRUE;
+}
+
+/* sync_done() — re-enable the Sync button after a run.  The library is
+ * re-resolved through the app context: the completion idle can fire
+ * AFTER the window was closed and its BtLibrary freed, so a captured lw
+ * pointer would dangle (the settings window guards the same way).           */
 static void
 sync_done(BtApp *app, gboolean ok, const gchar *message, gpointer data)
 {
-    (void)app; (void)ok; (void)message;
-    BtLibrary *lw = data;
-    gtk_widget_set_sensitive(lw->sync_item, TRUE);
+    (void)ok; (void)message; (void)data;
+    BtLibrary *lw = lib_of(app);
+    if (lw != NULL)
+        gtk_widget_set_sensitive(lw->sync_item, TRUE);
 }
 
 /* sync_after_signin() — the Sync button's browser flow finished: run the
- * actual sync, or report why not.                                           */
+ * actual sync, or report why not.  Same lifetime rule as sync_done.         */
 static void
 sync_after_signin(gboolean ok, const gchar *error, gpointer data)
 {
-    BtLibrary *lw = data;
+    BtApp *app = data;
+    BtLibrary *lw = lib_of(app);
+    if (lw == NULL)
+        return;                      /* window closed mid-flow              */
     if (ok) {
-        bt_sync_start(lw->app, lw->db_path, sync_done, lw);
+        bt_sync_start(app, lw->db_path, sync_done, NULL);
     } else {
         gtk_widget_set_sensitive(lw->sync_item, TRUE);
         bt_app_notice(GTK_WINDOW(lw->window), GTK_MESSAGE_ERROR,
@@ -1108,12 +1387,12 @@ on_sync(GtkWidget *w, gpointer data)
     }
     gtk_widget_set_sensitive(lw->sync_item, FALSE);
     if (bt_oauth_authenticated()) {
-        bt_sync_start(lw->app, lw->db_path, sync_done, lw);
+        bt_sync_start(lw->app, lw->db_path, sync_done, NULL);
     } else {
         bt_app_status(lw->app,
                       "Opening browser for Google sign-in\xe2\x80\xa6");
         bt_oauth_begin(lw->app, GTK_WINDOW(lw->window),
-                       sync_after_signin, lw);
+                       sync_after_signin, lw->app);
     }
 }
 
@@ -1135,6 +1414,29 @@ static void
 on_menu_sync(GtkWidget *w, gpointer data)
 {
     on_sync(w, data);
+}
+
+/* on_menu_clear_completed() — File → Clear Completed Tasks: archive the
+ * selected list's done tasks (Google's tasks.clear when synced).            */
+static void
+on_menu_clear_completed(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    BtLibrary *lw = data;
+    gint64 id = selected_list_id(lw);
+    if (id == 0) {
+        bt_app_status(lw->app,
+                      "Select a list to clear its completed tasks");
+        return;
+    }
+    BtList *l = bt_db_list_get(lw->app->db, id);
+    if (l == NULL)
+        return;
+    if (bt_app_confirm(GTK_WINDOW(lw->window), "Clear Completed",
+                       "Remove all completed tasks from \xe2\x80\x9c%s"
+                       "\xe2\x80\x9d?", l->name))
+        bt_gtasks_clear_completed(lw->app, id);
+    bt_list_free(l);
 }
 
 /* on_menu_about() — Help → About.                                           */
@@ -1248,10 +1550,16 @@ on_library_destroy(GtkWidget *w, gpointer data)
         bt_app_config_set("win_h", v);
         g_free(v);
     }
-    bt_editor_close_all(lw->app);
+    /* Hooks come down BEFORE the editors: a closing editor's final save
+     * would otherwise fire notify_changed → bt_editor_refresh_all, which
+     * can destroy sibling editors mid-teardown (a failing Blue Notes CLI
+     * closes its editors on reload) and leave close_all's snapshot list
+     * holding freed windows.                                                */
     lw->app->notify_changed = NULL;
+    lw->app->notify_tasks   = NULL;
     lw->app->notify_status  = NULL;
     lw->app->library_window = NULL;
+    bt_editor_close_all(lw->app);
     g_free(lw->db_path);
     g_free(lw);
 }
@@ -1291,6 +1599,8 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     GtkWidget *file_item = gtk_menu_item_new_with_label("File");
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(file_item), file_menu);
     menu_item(file_menu, "Sync Now", G_CALLBACK(on_menu_sync), lw);
+    menu_item(file_menu, "Clear Completed Tasks",
+              G_CALLBACK(on_menu_clear_completed), lw);
     menu_item(file_menu, "Settings\xe2\x80\xa6",
               G_CALLBACK(on_menu_settings), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
@@ -1431,8 +1741,16 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
         GTK_TREE_MODEL(lw->task_store));
     g_object_unref(lw->task_store);
     gtk_tree_view_set_enable_search(GTK_TREE_VIEW(lw->task_view), FALSE);
+    /* Multi-select: Ctrl-click (Cmd on macOS — GTK maps the platform's
+     * modify-selection modifier) and Shift-click extend; the context
+     * menu's actions apply to the whole selection.                          */
+    gtk_tree_selection_set_mode(
+        gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->task_view)),
+        GTK_SELECTION_MULTIPLE);
     g_signal_connect(lw->task_view, "row-activated",
                      G_CALLBACK(on_task_activated), lw);
+    g_signal_connect(lw->task_view, "button-press-event",
+                     G_CALLBACK(on_task_button_press), lw);
 
     /* Done checkbox column.  Every column's renderer also runs the
      * stripe data func — the alternating background must span the row.     */
@@ -1525,6 +1843,7 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     app->library_window = lw->window;
     g_object_set_data(G_OBJECT(lw->window), "bt-library", lw);
     app->notify_changed = notify_changed_hook;
+    app->notify_tasks   = notify_tasks_hook;
     app->notify_status  = notify_status_hook;
     g_signal_connect(lw->window, "destroy",
                      G_CALLBACK(on_library_destroy), lw);

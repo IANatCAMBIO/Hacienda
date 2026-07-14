@@ -156,15 +156,23 @@ fail:
 }
 
 /* parse_number() — parse a JSON number with strtod (a superset that is
- * fine here — the cursor advances by exactly the chars strtod consumed).   */
+ * fine here).  The candidate digits are copied into a bounded,
+ * NUL-terminated buffer first: strtod itself knows nothing of c->end,
+ * and in the explicit-length mode of bt_json_parse a document ending in
+ * digits would otherwise let it read past the buffer.                       */
 static BtJson *
 parse_number(BtJsonCursor *c)
 {
+    gchar buf[64];                   /* longer than any sane JSON number    */
+    gsize n = MIN((gsize)(c->end - c->p), sizeof buf - 1);
+    memcpy(buf, c->p, n);
+    buf[n] = '\0';
+
     gchar *after = NULL;             /* first char strtod didn't consume    */
-    gdouble d = g_ascii_strtod(c->p, &after);
-    if (after == c->p || after > c->end)
+    gdouble d = g_ascii_strtod(buf, &after);
+    if (after == buf)
         return NULL;
-    c->p = after;
+    c->p += after - buf;
     BtJson *v = json_new(BT_JSON_NUMBER);
     v->num = d;
     return v;
@@ -337,6 +345,55 @@ bt_json_at(BtJson *arr, guint i)
     if (arr == NULL || arr->type != BT_JSON_ARRAY || i >= arr->items->len)
         return NULL;
     return g_ptr_array_index(arr->items, i);
+}
+
+/* ---------------------------------------------------------------------------
+ * bt_json_write() — compact serializer (see json.h).
+ * ------------------------------------------------------------------------- */
+void
+bt_json_write(GString *out, BtJson *v)
+{
+    if (v == NULL) {
+        g_string_append(out, "null");
+        return;
+    }
+    switch (v->type) {
+    case BT_JSON_NULL:
+        g_string_append(out, "null");
+        break;
+    case BT_JSON_BOOL:
+        g_string_append(out, v->b ? "true" : "false");
+        break;
+    case BT_JSON_NUMBER: {
+        gchar buf[G_ASCII_DTOSTR_BUF_SIZE];
+        g_ascii_dtostr(buf, sizeof buf, v->num);
+        g_string_append(out, buf);
+        break;
+    }
+    case BT_JSON_STRING:
+        bt_json_escape(out, v->str);
+        break;
+    case BT_JSON_ARRAY:
+        g_string_append_c(out, '[');
+        for (guint i = 0; i < v->items->len; i++) {
+            if (i > 0)
+                g_string_append_c(out, ',');
+            bt_json_write(out, g_ptr_array_index(v->items, i));
+        }
+        g_string_append_c(out, ']');
+        break;
+    case BT_JSON_OBJECT:
+        g_string_append_c(out, '{');
+        for (guint i = 0; i < v->items->len; i++) {
+            if (i > 0)
+                g_string_append_c(out, ',');
+            bt_json_escape(out, g_ptr_array_index(v->keys, i));
+            g_string_append_c(out, ':');
+            bt_json_write(out, g_ptr_array_index(v->items, i));
+        }
+        g_string_append_c(out, '}');
+        break;
+    }
 }
 
 /* ---------------------------------------------------------------------------
