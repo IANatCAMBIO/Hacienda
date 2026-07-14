@@ -39,6 +39,7 @@ typedef struct {
 typedef struct {
     gint64    id;
     gchar    *name;
+    gchar    *emoji;                 /* optional display prefix ("")        */
     gchar    *gtasks_id;             /* Google tasklist id, or NULL         */
     gint64    updated_at;
     gint      position;
@@ -94,8 +95,16 @@ gchar *bt_db_default_path(void);
 GPtrArray *bt_db_lists(BtDatabase *db, gboolean include_deleted);
 
 BtList  *bt_db_list_get(BtDatabase *db, gint64 id);
-gint64   bt_db_list_create(BtDatabase *db, const gchar *name);
-void     bt_db_list_rename(BtDatabase *db, gint64 id, const gchar *name);
+
+/* Create a list.  `emoji` is the optional local-only display prefix
+ * (NULL/"" for none) — it is never part of the synced name.                 */
+gint64   bt_db_list_create(BtDatabase *db, const gchar *name,
+                           const gchar *emoji);
+
+/* Update a list's name + emoji (stamps updated_at; a changed name syncs
+ * to Google, the emoji never does).                                         */
+void     bt_db_list_update(BtDatabase *db, gint64 id, const gchar *name,
+                           const gchar *emoji);
 
 /* Tombstone the list AND every task in it (they must disappear from the
  * remote side too).                                                         */
@@ -114,6 +123,10 @@ GPtrArray *bt_db_subtasks(BtDatabase *db, gint64 parent_id);
 /* Visible pinned tasks across all lists (any level), pinned order = list
  * then position.                                                            */
 GPtrArray *bt_db_tasks_pinned(BtDatabase *db);
+
+/* Visible top-level tasks across ALL lists (the "All Tasks" meta list),
+ * ordered by list then position.                                            */
+GPtrArray *bt_db_tasks_all_visible(BtDatabase *db);
 
 /* Visible tasks (any level) with lo <= due < hi, soonest first.             */
 GPtrArray *bt_db_tasks_due_between(BtDatabase *db, gint64 lo, gint64 hi);

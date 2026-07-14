@@ -8,6 +8,7 @@
 #include "gtasks.h"
 #include "oauth.h"
 #include "settings_window.h"
+#include <stdlib.h>
 #include <string.h>
 #ifdef HAVE_GTKOSX
 #include <gtkosxapplication.h>
@@ -19,6 +20,7 @@
 /* Sidebar row kinds (SB_KIND column).                                       */
 enum {
     SB_KIND_PINNED = 0,              /* "Pinned Tasks" virtual list         */
+    SB_KIND_ALL,                     /* "All Tasks" virtual list            */
     SB_KIND_BN_ACTIONS,              /* Blue Notes "Action Items" list      */
     SB_KIND_TODAY,                   /* "Due Today" virtual list            */
     SB_KIND_TOMORROW,                /* "Due Tomorrow" virtual list         */
@@ -70,6 +72,8 @@ typedef struct {
     gint64        sel_id;
     gboolean      populating;
     gboolean      sb_populated;      /* first population expands Lists      */
+    gint          win_w, win_h;      /* live client size (persisted at
+                                      * close as the next launch's size)    */
 } BtLibrary;
 
 static void refresh_sidebar(BtLibrary *lw);
@@ -267,6 +271,7 @@ refresh_sidebar(BtLibrary *lw)
         const gchar *label;
     } metas[] = {
         { SB_KIND_PINNED,   "Pinned Tasks" },
+        { SB_KIND_ALL,      "All Tasks" },
         { SB_KIND_TODAY,    "Due Today" },
         { SB_KIND_TOMORROW, "Due Tomorrow" },
     };
@@ -296,13 +301,18 @@ refresh_sidebar(BtLibrary *lw)
     gboolean have_first = FALSE;
     for (guint i = 0; i < lists->len; i++) {
         BtList *l = g_ptr_array_index(lists, i);
+        /* The optional emoji prefixes the name, set off by two spaces.      */
+        gchar *label = *l->emoji != '\0'
+            ? g_strdup_printf("%s  %s", l->emoji, l->name)
+            : g_strdup(l->name);
         gtk_tree_store_append(lw->sb_store, &iter, &header);
         gtk_tree_store_set(lw->sb_store, &iter,
                            SB_KIND, SB_KIND_LIST,
                            SB_ID, l->id,
-                           SB_LABEL, l->name,
+                           SB_LABEL, label,
                            SB_WEIGHT, PANGO_WEIGHT_NORMAL,
                            -1);
+        g_free(label);
         if (!have_first) {
             first_list = iter;
             have_first = TRUE;
@@ -449,6 +459,10 @@ refresh_tasks(BtLibrary *lw)
     case SB_KIND_PINNED:
         tasks = bt_db_tasks_pinned(lw->app->db);
         view_name = "Pinned Tasks";
+        break;
+    case SB_KIND_ALL:
+        tasks = bt_db_tasks_all_visible(lw->app->db);
+        view_name = "All Tasks";
         break;
     case SB_KIND_TODAY: {
         gint64 lo, hi;
@@ -773,26 +787,192 @@ on_toggle_sidebar(GtkWidget *widget, gpointer data)
 {
     (void)widget;
     BtLibrary *lw = data;
-    gtk_widget_set_visible(lw->sidebar_box,
-                           !gtk_widget_get_visible(lw->sidebar_box));
+    gboolean show = !gtk_widget_get_visible(lw->sidebar_box);
+    gtk_widget_set_visible(lw->sidebar_box, show);
+    bt_app_config_set("sidebar_visible", show ? "1" : "0");
 }
 
-/* on_new_list() — prompt for a name, create, select.                        */
+/* on_emoji_chooser_closed() — picker dismissed: shrink the dialog back
+ * to its natural size (see on_emoji_box_pressed).                           */
+static void
+on_emoji_chooser_closed(GtkPopover *chooser, gpointer dlg)
+{
+    (void)chooser;
+    gtk_window_resize(GTK_WINDOW(dlg), 1, 1);
+}
+
+/* emoji_open_idle() — open the chooser AFTER the dialog's grow-resize
+ * has landed, so the popover measures against the enlarged window.          */
+static gboolean
+emoji_open_idle(gpointer entry)
+{
+    g_signal_emit_by_name(entry, "insert-emoji");
+
+    /* GtkEntry keeps its chooser as "gtk-emoji-chooser" object data;
+     * hook its close (once) to give the dialog its size back.               */
+    GtkWidget *chooser =
+        g_object_get_data(G_OBJECT(entry), "gtk-emoji-chooser");
+    GtkWidget *dlg = g_object_get_data(G_OBJECT(entry), "bt-dialog");
+    if (chooser != NULL && dlg != NULL &&
+        g_object_get_data(G_OBJECT(chooser), "bt-close-hooked") == NULL) {
+        g_signal_connect(chooser, "closed",
+                         G_CALLBACK(on_emoji_chooser_closed), dlg);
+        g_object_set_data(G_OBJECT(chooser), "bt-close-hooked",
+                          GINT_TO_POINTER(1));
+    }
+    return G_SOURCE_REMOVE;
+}
+
+/* on_emoji_box_pressed() — clicking the emoji box opens GTK's emoji
+ * chooser on the entry (clearing any previous pick, so choosing always
+ * replaces).  GTK3 popovers render INSIDE their toplevel and clip at
+ * its edges, so the dialog is grown first to give the chooser room; it
+ * shrinks back to natural size when the chooser closes.                     */
+static gboolean
+on_emoji_box_pressed(GtkWidget *entry, GdkEventButton *event,
+                     gpointer data)
+{
+    (void)event; (void)data;
+    gtk_entry_set_text(GTK_ENTRY(entry), "");
+    GtkWidget *dlg = g_object_get_data(G_OBJECT(entry), "bt-dialog");
+    if (dlg != NULL) {
+        gint w, h;                   /* current dialog frame                */
+        gtk_window_get_size(GTK_WINDOW(dlg), &w, &h);
+        gtk_window_resize(GTK_WINDOW(dlg), MAX(w, 440), 470);
+    }
+    g_idle_add(emoji_open_idle, entry);
+    return TRUE;                     /* the chooser owns this click         */
+}
+
+/* ---------------------------------------------------------------------------
+ * run_list_dialog() — the shared New List / Edit List dialog: an emoji
+ * box (click opens the picker) and a name entry, prefilled from the
+ * name/emoji in-out parameters when editing.  On OK with a non-empty
+ * name the trimmed values replace them (caller g_frees) and TRUE
+ * returns.
+ * ------------------------------------------------------------------------- */
+static gboolean
+run_list_dialog(BtLibrary *lw, const gchar *title,
+                gchar **name, gchar **emoji)
+{
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(title,
+        GTK_WINDOW(lw->window),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        "_Cancel", GTK_RESPONSE_CANCEL, "_OK", GTK_RESPONSE_OK, NULL);
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
+
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_container_set_border_width(GTK_CONTAINER(box), 12);
+
+    GtkWidget *emoji_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_pack_start(GTK_BOX(emoji_row),
+                       gtk_label_new("List Emoji:"), FALSE, FALSE, 0);
+    GtkWidget *emoji_entry = gtk_entry_new();
+    gtk_entry_set_width_chars(GTK_ENTRY(emoji_entry), 2);
+    gtk_entry_set_max_length(GTK_ENTRY(emoji_entry), 4);
+    gtk_entry_set_alignment(GTK_ENTRY(emoji_entry), 0.5f);
+    gtk_widget_set_halign(emoji_entry, GTK_ALIGN_START);
+    bt_app_widget_add_css(emoji_entry, "entry { font-size: 18px; }");
+    gtk_widget_set_tooltip_text(emoji_entry,
+        "Optional emoji \xe2\x80\x94 click to pick");
+    if (*emoji != NULL)
+        gtk_entry_set_text(GTK_ENTRY(emoji_entry), *emoji);
+    g_signal_connect(emoji_entry, "button-press-event",
+                     G_CALLBACK(on_emoji_box_pressed), NULL);
+    gtk_box_pack_start(GTK_BOX(emoji_row), emoji_entry, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), emoji_row, FALSE, FALSE, 0);
+
+    GtkWidget *name_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_pack_start(GTK_BOX(name_row), gtk_label_new("List name:"),
+                       FALSE, FALSE, 0);
+    GtkWidget *name_entry = gtk_entry_new();
+    gtk_entry_set_width_chars(GTK_ENTRY(name_entry), 28);
+    gtk_entry_set_activates_default(GTK_ENTRY(name_entry), TRUE);
+    if (*name != NULL)
+        gtk_entry_set_text(GTK_ENTRY(name_entry), *name);
+    gtk_box_pack_start(GTK_BOX(name_row), name_entry, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(box), name_row, FALSE, FALSE, 0);
+
+    /* The click handler grows the dialog so the chooser popover fits.       */
+    g_object_set_data(G_OBJECT(emoji_entry), "bt-dialog", dlg);
+
+    gtk_box_pack_start(
+        GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dlg))),
+        box, TRUE, TRUE, 0);
+    gtk_widget_grab_focus(name_entry);
+    gtk_widget_show_all(dlg);
+
+    gboolean ok = FALSE;             /* accepted with a usable name         */
+    if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_OK) {
+        gchar *new_name = g_strstrip(
+            g_strdup(gtk_entry_get_text(GTK_ENTRY(name_entry))));
+        gchar *new_emoji = g_strstrip(
+            g_strdup(gtk_entry_get_text(GTK_ENTRY(emoji_entry))));
+        if (*new_name != '\0') {
+            g_free(*name);
+            g_free(*emoji);
+            *name = new_name;
+            *emoji = new_emoji;
+            ok = TRUE;
+        } else {
+            g_free(new_name);
+            g_free(new_emoji);
+        }
+    }
+    gtk_widget_destroy(dlg);
+    return ok;
+}
+
+/* on_new_list() — prompt (name + optional emoji), create, select.           */
 static void
 on_new_list(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtLibrary *lw = data;
-    gchar *name = bt_app_prompt_text(GTK_WINDOW(lw->window),
-                                     "New List", "List name:", NULL);
-    if (name == NULL)
-        return;
-    gint64 id = bt_db_list_create(lw->app->db, name);
-    lw->sel_kind = SB_KIND_LIST;
-    lw->sel_id = id;
-    full_refresh(lw);
-    bt_app_status(lw->app, "Created list \xe2\x80\x9c%s\xe2\x80\x9d", name);
+    gchar *name = NULL;              /* dialog in/out values                */
+    gchar *emoji = NULL;
+    if (run_list_dialog(lw, "New List", &name, &emoji)) {
+        gint64 id = bt_db_list_create(lw->app->db, name, emoji);
+        lw->sel_kind = SB_KIND_LIST;
+        lw->sel_id = id;
+        full_refresh(lw);
+        bt_app_status(lw->app,
+                      "Created list \xe2\x80\x9c%s\xe2\x80\x9d", name);
+    }
     g_free(name);
+    g_free(emoji);
+}
+
+/* on_edit_list() — change the selected list's name and/or emoji.            */
+static void
+on_edit_list(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    BtLibrary *lw = data;
+    if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
+        bt_app_status(lw->app,
+                      "This list mirrors Blue Notes and cannot be edited");
+        return;
+    }
+    gint64 id = selected_list_id(lw);
+    if (id == 0) {
+        bt_app_status(lw->app, "Select a list to edit");
+        return;
+    }
+    BtList *l = bt_db_list_get(lw->app->db, id);
+    if (l == NULL)
+        return;
+    gchar *name  = g_strdup(l->name);
+    gchar *emoji = g_strdup(l->emoji);
+    bt_list_free(l);
+    if (run_list_dialog(lw, "Edit List", &name, &emoji)) {
+        bt_db_list_update(lw->app->db, id, name, emoji);
+        full_refresh(lw);
+        bt_app_status(lw->app,
+                      "Updated list \xe2\x80\x9c%s\xe2\x80\x9d", name);
+    }
+    g_free(name);
+    g_free(emoji);
 }
 
 /* on_delete_list() — confirm + tombstone the selected real list.            */
@@ -1043,12 +1223,31 @@ tool_button(BtLibrary *lw, GtkToolbar *bar, const gchar *icon,
     return item;
 }
 
+/* on_library_configure() — track the live client size for persistence.      */
+static gboolean
+on_library_configure(GtkWidget *w, GdkEventConfigure *event, gpointer data)
+{
+    (void)w; (void)event;
+    BtLibrary *lw = data;
+    gtk_window_get_size(GTK_WINDOW(lw->window), &lw->win_w, &lw->win_h);
+    return FALSE;                    /* propagate                           */
+}
+
 /* on_library_destroy() — tear down: editors first (flushing saves).         */
 static void
 on_library_destroy(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtLibrary *lw = data;
+    /* The closing size becomes the next launch's window size.               */
+    if (lw->win_w > 0 && lw->win_h > 0) {
+        gchar *v = g_strdup_printf("%d", lw->win_w);
+        bt_app_config_set("win_w", v);
+        g_free(v);
+        v = g_strdup_printf("%d", lw->win_h);
+        bt_app_config_set("win_h", v);
+        g_free(v);
+    }
     bt_editor_close_all(lw->app);
     lw->app->notify_changed = NULL;
     lw->app->notify_status  = NULL;
@@ -1070,7 +1269,17 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
 
     lw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(lw->window), "Blue Tasks - Library");
-    gtk_window_set_default_size(GTK_WINDOW(lw->window), 980, 640);
+    /* The last session's closing size (win_w/win_h), else the default.      */
+    gchar *ww = bt_app_config_get("win_w");
+    gchar *wh = bt_app_config_get("win_h");
+    gint w = ww != NULL ? atoi(ww) : 0;
+    gint hgt = wh != NULL ? atoi(wh) : 0;
+    gtk_window_set_default_size(GTK_WINDOW(lw->window),
+                                w > 0 ? w : 980, hgt > 0 ? hgt : 640);
+    g_free(ww);
+    g_free(wh);
+    g_signal_connect(lw->window, "configure-event",
+                     G_CALLBACK(on_library_configure), lw);
     gtk_application_add_window(app->gtk_app, GTK_WINDOW(lw->window));
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -1107,6 +1316,9 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
      * compact pattern) on the left, the task buttons pushed to the RIGHT
      * end by an invisible expanding separator.                              */
     GtkWidget *toolbar = gtk_toolbar_new();
+    /* Small-toolbar metrics — the Blue Notes bar height.                    */
+    gtk_toolbar_set_icon_size(GTK_TOOLBAR(toolbar),
+                              GTK_ICON_SIZE_SMALL_TOOLBAR);
     tool_button(lw, GTK_TOOLBAR(toolbar), "Selected/sidebar",
                 "\xe2\x97\xa7", "Sidebar", "Show or hide the lists pane",
                 G_CALLBACK(on_toggle_sidebar));
@@ -1129,6 +1341,10 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
                 G_CALLBACK(on_delete_task));
     bt_app_register_toolbar(app, toolbar);
     gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
+    /* Thin rule between the toolbar and the panes (Blue Notes look).        */
+    gtk_box_pack_start(GTK_BOX(vbox),
+                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
+                       FALSE, FALSE, 0);
 
     /* --- Paned: sidebar | tasks ------------------------------------------ */
     GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
@@ -1171,14 +1387,19 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(sb_scroll), lw->sb_view);
 
-    /* Mini action bar under the tree: compact +/\xe2\x88\x92 buttons for
-     * creating and deleting lists, blending into the sidebar grey.          */
+    /* Mini action bar under the tree: compact create (+), edit (pencil)
+     * and delete (minus) list buttons, right-aligned, blending into the
+     * sidebar grey.                                                         */
     GtkWidget *sb_actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     bt_app_widget_add_css(sb_actions,
         "box { background-color: rgb(230,230,230); }");
     GtkWidget *sb_add = gtk_button_new_with_label("+");
     gtk_widget_set_tooltip_text(sb_add, "Create a new task list");
     g_signal_connect(sb_add, "clicked", G_CALLBACK(on_new_list), lw);
+    GtkWidget *sb_edit = gtk_button_new_with_label("\xe2\x9c\x8e");
+    gtk_widget_set_tooltip_text(sb_edit,
+        "Edit the selected list's name or emoji");
+    g_signal_connect(sb_edit, "clicked", G_CALLBACK(on_edit_list), lw);
     GtkWidget *sb_del = gtk_button_new_with_label("\xe2\x88\x92");
     gtk_widget_set_tooltip_text(sb_del, "Delete the selected list");
     g_signal_connect(sb_del, "clicked", G_CALLBACK(on_delete_list), lw);
@@ -1186,15 +1407,14 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
         "button { padding: 0 10px; min-height: 22px; "
         "border-radius: 0; }";
     bt_app_widget_add_css(sb_add, mini_css);
+    bt_app_widget_add_css(sb_edit, mini_css);
     bt_app_widget_add_css(sb_del, mini_css);
     gtk_button_set_relief(GTK_BUTTON(sb_add), GTK_RELIEF_NONE);
+    gtk_button_set_relief(GTK_BUTTON(sb_edit), GTK_RELIEF_NONE);
     gtk_button_set_relief(GTK_BUTTON(sb_del), GTK_RELIEF_NONE);
-    /* The pair sits CENTERED in the bar (an inner box packed with
-     * expand-without-fill floats in the middle).                            */
-    GtkWidget *sb_pair = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_box_pack_start(GTK_BOX(sb_pair), sb_add, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(sb_pair), sb_del, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(sb_actions), sb_pair, TRUE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(sb_actions), sb_del, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(sb_actions), sb_edit, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(sb_actions), sb_add, FALSE, FALSE, 0);
 
     GtkWidget *sb_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_pack_start(GTK_BOX(sb_box), sb_scroll, TRUE, TRUE, 0);
@@ -1274,22 +1494,32 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     gtk_paned_pack2(GTK_PANED(paned), task_scroll, TRUE, FALSE);
 
     /* --- Status bar -------------------------------------------------------- */
+    /* Same geometry as the Blue Notes status bar: 8 px side margins,
+     * 3 px top/bottom (a border_width would add a pixel more on every
+     * edge and read visibly taller).                                        */
     GtkWidget *status = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-    gtk_container_set_border_width(GTK_CONTAINER(status), 4);
+    gtk_widget_set_margin_start(status, 8);
+    gtk_widget_set_margin_end(status, 8);
+    gtk_widget_set_margin_top(status, 3);
+    gtk_widget_set_margin_bottom(status, 3);
     lw->status_left = gtk_label_new("");
     gtk_label_set_ellipsize(GTK_LABEL(lw->status_left),
                             PANGO_ELLIPSIZE_END);
     gtk_widget_set_halign(lw->status_left, GTK_ALIGN_START);
-    gtk_box_pack_start(GTK_BOX(status), lw->status_left, TRUE, TRUE, 4);
+    gtk_box_pack_start(GTK_BOX(status), lw->status_left, TRUE, TRUE, 0);
     lw->status_right = gtk_label_new("");
     gtk_label_set_ellipsize(GTK_LABEL(lw->status_right),
                             PANGO_ELLIPSIZE_END);
     gtk_widget_set_halign(lw->status_right, GTK_ALIGN_END);
-    gtk_box_pack_end(GTK_BOX(status), lw->status_right, FALSE, FALSE, 4);
+    gtk_box_pack_end(GTK_BOX(status), lw->status_right, FALSE, FALSE, 0);
     /* Both labels a step smaller than the UI font (Blue Notes size).        */
     bt_app_widget_add_css(lw->status_left,  "label { font-size: 85%; }");
     bt_app_widget_add_css(lw->status_right, "label { font-size: 85%; }");
     gtk_box_pack_end(GTK_BOX(vbox), status, FALSE, FALSE, 0);
+    /* Matching thin rule above the status bar.                              */
+    gtk_box_pack_end(GTK_BOX(vbox),
+                     gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
+                     FALSE, FALSE, 0);
 
     /* --- Hooks + first population ------------------------------------------ */
     app->library_window = lw->window;
@@ -1302,5 +1532,9 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     refresh_sidebar(lw);
     refresh_tasks(lw);
     gtk_widget_show_all(lw->window);
+    /* The lists pane starts HIDDEN by default (toolbar Sidebar button
+     * brings it back); the toggle persists the user's last choice.          */
+    if (!bt_app_config_get_bool("sidebar_visible", FALSE))
+        gtk_widget_hide(lw->sidebar_box);
     return lw->window;
 }

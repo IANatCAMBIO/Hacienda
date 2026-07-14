@@ -44,6 +44,7 @@ bt_list_free(BtList *l)
     if (l == NULL)
         return;
     g_free(l->name);
+    g_free(l->emoji);
     g_free(l->gtasks_id);
     g_free(l);
 }
@@ -138,6 +139,7 @@ bt_db_open(const gchar *path, GError **err)
         "CREATE TABLE IF NOT EXISTS lists ("
         "  id         INTEGER PRIMARY KEY,"
         "  name       TEXT    NOT NULL DEFAULT '',"
+        "  emoji      TEXT    NOT NULL DEFAULT '',"
         "  position   INTEGER NOT NULL DEFAULT 0,"
         "  gtasks_id  TEXT,"
         "  updated_at INTEGER NOT NULL DEFAULT 0,"
@@ -169,7 +171,19 @@ bt_db_open(const gchar *path, GError **err)
         "  value TEXT)");
     exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_list "
              "ON tasks(list_id, parent_id, position)");
-    exec(db, "PRAGMA user_version = 1");
+
+    /* v2 migration: lists.emoji (pre-existing files lack the column; on
+     * fresh files the ALTER fails silently — CREATE already has it).        */
+    sqlite3_stmt *vst = NULL;
+    gint uv = 0;                     /* the file's schema version           */
+    if (sqlite3_prepare_v2(sq, "PRAGMA user_version", -1, &vst, NULL)
+        == SQLITE_OK && sqlite3_step(vst) == SQLITE_ROW)
+        uv = sqlite3_column_int(vst, 0);
+    sqlite3_finalize(vst);
+    if (uv < 2)
+        sqlite3_exec(sq, "ALTER TABLE lists ADD COLUMN emoji TEXT "
+                     "NOT NULL DEFAULT ''", NULL, NULL, NULL);
+    exec(db, "PRAGMA user_version = 2");
     return db;
 }
 
@@ -197,13 +211,17 @@ read_list(sqlite3_stmt *st)
     l->gtasks_id  = column_text_dup(st, 3);
     l->updated_at = sqlite3_column_int64(st, 4);
     l->deleted    = sqlite3_column_int(st, 5) != 0;
+    l->emoji      = column_text_dup(st, 6);
     if (l->name == NULL)
         l->name = g_strdup("");
+    if (l->emoji == NULL)
+        l->emoji = g_strdup("");
     return l;
 }
 
 /* The shared column list for read_list().                                   */
-#define LIST_COLS "id, name, position, gtasks_id, updated_at, deleted"
+#define LIST_COLS "id, name, position, gtasks_id, updated_at, deleted, " \
+                  "emoji"
 
 /* ---------------------------------------------------------------------------
  * bt_db_lists() — all (visible) lists (see db.h).
@@ -245,16 +263,19 @@ bt_db_list_get(BtDatabase *db, gint64 id)
  * bt_db_list_create() — append a new list (see db.h).
  * ------------------------------------------------------------------------- */
 gint64
-bt_db_list_create(BtDatabase *db, const gchar *name)
+bt_db_list_create(BtDatabase *db, const gchar *name, const gchar *emoji)
 {
     sqlite3_stmt *st = NULL;
     gint64 id = 0;                   /* the new rowid                       */
     if (sqlite3_prepare_v2(db->sq,
-            "INSERT INTO lists(name, position, updated_at) VALUES(?, "
+            "INSERT INTO lists(name, emoji, position, updated_at) "
+            "VALUES(?, ?, "
             "(SELECT COALESCE(MAX(position), 0) + 1 FROM lists), ?)", -1,
             &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 2, now());
+        sqlite3_bind_text(st, 2, emoji != NULL ? emoji : "", -1,
+                          SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 3, now());
         if (sqlite3_step(st) == SQLITE_DONE)
             id = sqlite3_last_insert_rowid(db->sq);
     }
@@ -262,17 +283,20 @@ bt_db_list_create(BtDatabase *db, const gchar *name)
     return id;
 }
 
-/* bt_db_list_rename() — rename + stamp.                                     */
+/* bt_db_list_update() — rename/re-emoji + stamp.                            */
 void
-bt_db_list_rename(BtDatabase *db, gint64 id, const gchar *name)
+bt_db_list_update(BtDatabase *db, gint64 id, const gchar *name,
+                  const gchar *emoji)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq,
-            "UPDATE lists SET name = ?, updated_at = ? WHERE id = ?", -1,
-            &st, NULL) == SQLITE_OK) {
+            "UPDATE lists SET name = ?, emoji = ?, updated_at = ? "
+            "WHERE id = ?", -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 2, now());
-        sqlite3_bind_int64(st, 3, id);
+        sqlite3_bind_text(st, 2, emoji != NULL ? emoji : "", -1,
+                          SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 3, now());
+        sqlite3_bind_int64(st, 4, id);
         sqlite3_step(st);
     }
     sqlite3_finalize(st);
@@ -376,6 +400,16 @@ bt_db_tasks_pinned(BtDatabase *db)
     return task_query(db,
         "SELECT " TASK_COLS " FROM tasks WHERE pinned = 1 AND deleted = 0 "
         "ORDER BY list_id, position, id", 0, 0, 0);
+}
+
+/* bt_db_tasks_all_visible() — the All Tasks meta list (top-level tasks
+ * of every list; their subtasks render inside the rows as usual).           */
+GPtrArray *
+bt_db_tasks_all_visible(BtDatabase *db)
+{
+    return task_query(db,
+        "SELECT " TASK_COLS " FROM tasks WHERE parent_id IS NULL AND "
+        "deleted = 0 ORDER BY list_id, position, id", 0, 0, 0);
 }
 
 /* bt_db_tasks_due_between() — the Due Today / Due Tomorrow meta lists.      */

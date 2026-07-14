@@ -436,7 +436,7 @@ sync_lists(BtDatabase *db, const gchar *token, gint64 last_sync,
         RemoteList *r = g_ptr_array_index(remote, j);
         if (r->matched)
             continue;
-        gint64 id = bt_db_list_create(db, r->title);
+        gint64 id = bt_db_list_create(db, r->title, "");
         if (id != 0) {
             bt_db_list_set_gtasks_id(db, id, r->gid);
             bt_db_list_apply_remote(db, id, r->title, r->updated);
