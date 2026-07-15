@@ -159,6 +159,10 @@ void      bt_app_config_set(const gchar *key, const gchar *value);
  * app only ever writes "0"/"1", so any other stored value reads as "1".     */
 gboolean  bt_app_config_get_bool(const gchar *key, gboolean def);
 
+/* bt_app_exe_dir() — the directory holding the binary, resolved once by
+ * bt_app_config_init().  Borrowed string; do not free.                      */
+const gchar *bt_app_exe_dir(void);
+
 /* ---------------------------------------------------------------------------
  * Date helpers shared by the two windows and the sync engine.
  * ------------------------------------------------------------------------- */

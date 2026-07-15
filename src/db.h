@@ -10,6 +10,8 @@
  *                pinned, position, gtasks_id, updated_at, deleted
  *   attachments  id, task_id, path, added_at   (local-only; never synced)
  *   sync_state   key, value                    (e.g. "last_sync")
+ *   bn_pins      ref                           (pinned Blue Notes action
+ *                                               items; local-only)
  *
  * Deletion is a SOFT flag everywhere (`deleted` = tombstone): the Google
  * Tasks sync needs to see "this existed and was deleted locally" to
@@ -118,6 +120,11 @@ void     bt_db_list_update(BtDatabase *db, gint64 id, const gchar *name,
  * remote side too).                                                         */
 void     bt_db_list_delete(BtDatabase *db, gint64 id);
 
+/* Undo a list tombstone: restore the list and its still-tombstoned
+ * tasks (used when Google refuses the deletion — its default tasklist
+ * cannot be deleted; remote remains the source of truth).                   */
+void     bt_db_list_restore(BtDatabase *db, gint64 id);
+
 /* --------------------------------- tasks --------------------------------- */
 
 BtTask    *bt_db_task_get(BtDatabase *db, gint64 id);
@@ -191,6 +198,24 @@ void       bt_db_attachment_remove(BtDatabase *db, gint64 id);
  * are packed into the pointers (GINT_TO_POINTER); free with
  * g_hash_table_destroy.                                                     */
 GHashTable *bt_db_attachment_counts(BtDatabase *db);
+
+/* ------------------------------ Blue Notes pins -------------------------- */
+
+/* Pinned state for Blue Notes action items (pinning is a Blue Tasks
+ * concept; Blue Notes has none, so membership lives in the local
+ * bn_pins table keyed by the item's "NOTEID:ORD" address).                  */
+gboolean    bt_db_bn_pin_get(BtDatabase *db, const gchar *ref);
+void        bt_db_bn_pin_set(BtDatabase *db, const gchar *ref,
+                             gboolean pinned);
+
+/* All pinned refs as a set (string keys, owned by the table); free with
+ * g_hash_table_destroy.                                                     */
+GHashTable *bt_db_bn_pins(BtDatabase *db);
+
+/* Drop every gtasks_id/etag of one list's tasks — used when the bound
+ * remote list vanished and the list is re-created remotely: its tasks
+ * must push as NEW remote tasks (non-destructive sync).                     */
+void        bt_db_tasks_clear_gtasks_ids(BtDatabase *db, gint64 list_id);
 
 /* ------------------------------- sync state ------------------------------ */
 

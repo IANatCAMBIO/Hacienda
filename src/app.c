@@ -309,6 +309,14 @@ bt_app_register_toolbar(BtApp *app, GtkWidget *toolbar)
 
 static GKeyFile *config_kf   = NULL; /* the in-memory config                */
 static gchar    *config_path = NULL; /* where it is written                 */
+static gchar    *exe_dir_cached = NULL;  /* binary's directory (owned)      */
+
+/* bt_app_exe_dir() — see app.h.                                             */
+const gchar *
+bt_app_exe_dir(void)
+{
+    return exe_dir_cached;
+}
 
 /* ---------------------------------------------------------------------------
  * bt_app_config_init() — resolve + load the config file once.  Portable
@@ -323,6 +331,7 @@ bt_app_config_init(const gchar *argv0)
         return;
 
     gchar *exe_dir = exe_dir_from_argv0(argv0);
+    exe_dir_cached = g_strdup(exe_dir);
     gchar *local = g_build_filename(exe_dir, "blue_tasks.ini", NULL);
     if (g_file_test(local, G_FILE_TEST_EXISTS) ||
         g_access(exe_dir, W_OK) == 0) {

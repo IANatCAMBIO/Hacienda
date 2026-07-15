@@ -3,3 +3,7 @@ blue_tasks
 blue_tasks.ini
 client_credentials.mk
 .DS_Store
+
+# The Google OAuth client file (downloaded from the Cloud console) —
+# credentials must never be committed.
+client_secret*.json

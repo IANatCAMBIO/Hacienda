@@ -232,6 +232,9 @@ bt_db_open(const gchar *path, GError **err)
         "CREATE TABLE IF NOT EXISTS sync_state ("
         "  key   TEXT PRIMARY KEY,"
         "  value TEXT)");
+    exec(db,
+        "CREATE TABLE IF NOT EXISTS bn_pins ("
+        "  ref TEXT PRIMARY KEY)");   /* pinned Blue Notes items          */
     exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_list "
              "ON tasks(list_id, parent_id, position)");
 
@@ -394,6 +397,23 @@ bt_db_list_delete(BtDatabase *db, gint64 id)
         "UPDATE tasks SET deleted = 1, updated_at = %lld "
         "  WHERE list_id = %lld;"
         "UPDATE lists SET deleted = 1, updated_at = %lld WHERE id = %lld;",
+        (long long)now(), (long long)id, (long long)now(), (long long)id);
+    exec_txn(db, sql);
+    sqlite3_free(sql);
+}
+
+/* ---------------------------------------------------------------------------
+ * bt_db_list_restore() — undo a list tombstone (see db.h).  Tombstones
+ * only persist until a sync pushes them, so any task tombstone still in
+ * the list belongs to the same refused deletion and is restored too.
+ * ------------------------------------------------------------------------- */
+void
+bt_db_list_restore(BtDatabase *db, gint64 id)
+{
+    gchar *sql = sqlite3_mprintf(
+        "UPDATE tasks SET deleted = 0, updated_at = %lld "
+        "  WHERE list_id = %lld AND deleted = 1;"
+        "UPDATE lists SET deleted = 0, updated_at = %lld WHERE id = %lld;",
         (long long)now(), (long long)id, (long long)now(), (long long)id);
     exec_txn(db, sql);
     sqlite3_free(sql);
@@ -875,6 +895,73 @@ bt_db_purge_done(BtDatabase *db, gint64 list_id)
         "DELETE FROM tasks WHERE list_id = %lld AND done = 1;",
         (long long)list_id, (long long)list_id, (long long)list_id);
     exec_txn(db, sql);
+    sqlite3_free(sql);
+}
+
+/* bt_db_bn_pin_get() — is this Blue Notes item pinned (see db.h)?           */
+gboolean
+bt_db_bn_pin_get(BtDatabase *db, const gchar *ref)
+{
+    sqlite3_stmt *st = NULL;
+    gboolean pinned = FALSE;
+    if (sqlite3_prepare_v2(db->sq,
+            "SELECT 1 FROM bn_pins WHERE ref = ?", -1,
+            &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, ref, -1, SQLITE_TRANSIENT);
+        pinned = sqlite3_step(st) == SQLITE_ROW;
+    } else {
+        step_done(db, NULL, "bn pin get");
+    }
+    sqlite3_finalize(st);
+    return pinned;
+}
+
+/* bt_db_bn_pin_set() — pin/unpin a Blue Notes item (see db.h).              */
+void
+bt_db_bn_pin_set(BtDatabase *db, const gchar *ref, gboolean pinned)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db->sq,
+            pinned ? "INSERT OR IGNORE INTO bn_pins(ref) VALUES(?)"
+                   : "DELETE FROM bn_pins WHERE ref = ?", -1,
+            &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, ref, -1, SQLITE_TRANSIENT);
+        step_done(db, st, "bn pin set");
+    } else {
+        step_done(db, NULL, "bn pin set");
+    }
+    sqlite3_finalize(st);
+}
+
+/* bt_db_bn_pins() — the pinned-refs set (see db.h).                         */
+GHashTable *
+bt_db_bn_pins(BtDatabase *db)
+{
+    GHashTable *set = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                            g_free, NULL);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db->sq, "SELECT ref FROM bn_pins", -1,
+                           &st, NULL) == SQLITE_OK) {
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            gchar *ref = column_text_dup(st, 0);
+            if (ref != NULL)
+                g_hash_table_add(set, ref);
+        }
+    } else {
+        step_done(db, NULL, "bn pins query");
+    }
+    sqlite3_finalize(st);
+    return set;
+}
+
+/* bt_db_tasks_clear_gtasks_ids() — unbind one list's tasks (see db.h).      */
+void
+bt_db_tasks_clear_gtasks_ids(BtDatabase *db, gint64 list_id)
+{
+    gchar *sql = sqlite3_mprintf(
+        "UPDATE tasks SET gtasks_id = NULL, etag = NULL "
+        "WHERE list_id = %lld", (long long)list_id);
+    exec(db, sql);
     sqlite3_free(sql);
 }
 

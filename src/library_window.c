@@ -110,17 +110,21 @@ append_line(GString *s, const gchar *markup)
  *                list (no need to repeat it).
  *   att_count  — the task's attachment count.
  *   subs       — the task's visible subtasks (may be NULL).
+ *   bold       — render the title in bold (the "bold_task_titles"
+ *                setting, read once per refresh by the caller).
  * ------------------------------------------------------------------------- */
 static gchar *
 task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
-                 GPtrArray *subs)
+                 GPtrArray *subs, gboolean bold)
 {
     GString *s = g_string_new(NULL);
     gchar *title = g_markup_escape_text(
         *t->title != '\0' ? t->title : "Untitled Task", -1);
+    const gchar *open  = bold ? "<b>" : "";
+    const gchar *close = bold ? "</b>" : "";
     gchar *line = t->done
-        ? g_strdup_printf("<b><s>%s</s></b>", title)
-        : g_strdup_printf("<b>%s</b>", title);
+        ? g_strdup_printf("%s<s>%s</s>%s", open, title, close)
+        : g_strdup_printf("%s%s%s", open, title, close);
     if (t->parent_id != 0) {         /* a subtask row in a virtual view     */
         gchar *sub = g_strdup_printf("\xe2\x86\xb3 %s", line);
         g_free(line);
@@ -269,11 +273,11 @@ refresh_sidebar(BtLibrary *lw)
     struct {
         gint kind;
         const gchar *label;
-    } metas[] = {
-        { SB_KIND_PINNED,   "Pinned Tasks" },
-        { SB_KIND_ALL,      "All Tasks" },
-        { SB_KIND_TODAY,    "Due Today" },
-        { SB_KIND_TOMORROW, "Due Tomorrow" },
+    } metas[] = {                    /* emoji + two spaces, like lists      */
+        { SB_KIND_PINNED,   "\xf0\x9f\x93\x8d  Pinned Tasks" },
+        { SB_KIND_ALL,      "\xf0\x9f\x94\xae  All Tasks" },
+        { SB_KIND_TODAY,    "\xf0\x9f\x8c\x9e  Due Today" },
+        { SB_KIND_TOMORROW, "\xf0\x9f\x8c\x99  Due Tomorrow" },
     };
     for (gsize i = 0; i < G_N_ELEMENTS(metas); i++) {
         gtk_tree_store_append(lw->sb_store, &iter, NULL);
@@ -332,7 +336,8 @@ refresh_sidebar(BtLibrary *lw)
         gtk_tree_store_set(lw->sb_store, &iter,
                            SB_KIND, SB_KIND_BN_ACTIONS,
                            SB_ID, (gint64)0,
-                           SB_LABEL, "Action Items (from Blue Notes)",
+                           SB_LABEL, "\xe2\x9d\x97\xef\xb8\x8f  "
+                                     "Action Items (from Blue Notes)",
                            SB_WEIGHT, PANGO_WEIGHT_NORMAL,
                            -1);
         if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
@@ -386,32 +391,43 @@ refresh_sidebar(BtLibrary *lw)
 }
 
 /* ---------------------------------------------------------------------------
- * refresh_bn_actions() — fill the task pane with Blue Notes action items
+ * append_bn_rows() — append Blue Notes action items to the task pane
  * (fetched through the blue_notes CLI; see bnotes.h).  Rows carry their
- * "NOTEID:ORD" address in TL_REF and 0 in TL_ID.
+ * "NOTEID:ORD" address in TL_REF and 0 in TL_ID; TL_PINNED comes from
+ * the local bn_pins table (pinning is a Blue Tasks concept).  With
+ * only_pinned, unpinned items are skipped (the Pinned Tasks view).
+ * Returns the number of rows appended, or -1 when the CLI failed (the
+ * error is posted to the status bar).
  * ------------------------------------------------------------------------- */
-static void
-refresh_bn_actions(BtLibrary *lw)
+static gint
+append_bn_rows(BtLibrary *lw, gboolean only_pinned)
 {
     gchar *err = NULL;
     GPtrArray *acts = bt_bnotes_actions(&err);
     if (acts == NULL) {
-        gtk_label_set_text(GTK_LABEL(lw->status_left),
-                           "Action Items (Blue Notes)");
         bt_app_status(lw->app, "%s", err);
         g_free(err);
-        return;
+        return -1;
     }
+    GHashTable *pins = bt_db_bn_pins(lw->app->db);
+    gboolean bold = bt_app_config_get_bool("bold_task_titles", FALSE);
+    gint shown = 0;
     for (guint i = 0; i < acts->len; i++) {
         BtNoteAction *na = g_ptr_array_index(acts, i);
+        gboolean pinned = g_hash_table_contains(pins, na->ref);
+        if (only_pinned && !pinned)
+            continue;
         gchar *esc = g_markup_escape_text(
             *na->text != '\0' ? na->text : "(empty item)", -1);
         gchar *note = g_strndup(na->ref, strcspn(na->ref, ":"));
+        const gchar *open  = bold ? (na->done ? "<b><s>" : "<b>")
+                                  : (na->done ? "<s>" : "");
+        const gchar *close = bold ? (na->done ? "</s></b>" : "</b>")
+                                  : (na->done ? "</s>" : "");
         gchar *desc = g_strdup_printf(
             "%s%s%s\n<small><span alpha=\"60%%\">Blue Notes \xc2\xb7 "
             "note %s</span></small>",
-            na->done ? "<b><s>" : "<b>", esc,
-            na->done ? "</s></b>" : "</b>", note);
+            open, esc, close, note);
         gchar *due = bt_due_format(na->due);
         GtkTreeIter iter;
         gtk_list_store_append(lw->task_store, &iter);
@@ -421,20 +437,36 @@ refresh_bn_actions(BtLibrary *lw)
                            TL_DESC, desc,
                            TL_DUE, due,
                            TL_DUE_RAW, na->due,
-                           TL_PINNED, FALSE,
+                           TL_PINNED, pinned,
                            TL_REF, na->ref,
                            -1);
         g_free(desc);
         g_free(due);
         g_free(esc);
         g_free(note);
+        shown++;
+    }
+    g_hash_table_destroy(pins);
+    bt_bnotes_actions_free(acts);
+    return shown;
+}
+
+/* refresh_bn_actions() — the Action Items list view: every item, plus
+ * the status-bar location line.                                             */
+static void
+refresh_bn_actions(BtLibrary *lw)
+{
+    gint n = append_bn_rows(lw, FALSE);
+    if (n < 0) {
+        gtk_label_set_text(GTK_LABEL(lw->status_left),
+                           "Action Items (Blue Notes)");
+        return;
     }
     gchar *loc = g_strdup_printf(
-        "Action Items (from Blue Notes) \xe2\x80\x94 %u item%s",
-        acts->len, acts->len == 1 ? "" : "s");
+        "Action Items (from Blue Notes) \xe2\x80\x94 %d item%s",
+        n, n == 1 ? "" : "s");
     gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
     g_free(loc);
-    bt_bnotes_actions_free(acts);
 }
 
 /* ---------------------------------------------------------------------------
@@ -517,6 +549,7 @@ refresh_tasks(BtLibrary *lw)
         bt_ptr_array_free_lists(lists);
     }
 
+    gboolean bold = bt_app_config_get_bool("bold_task_titles", FALSE);
     for (guint i = 0; i < tasks->len; i++) {
         BtTask *t = g_ptr_array_index(tasks, i);
         GPtrArray *subs = t->parent_id == 0
@@ -529,7 +562,8 @@ refresh_tasks(BtLibrary *lw)
             : NULL;
         gint att_count = GPOINTER_TO_INT(g_hash_table_lookup(att_counts,
             GINT_TO_POINTER((gint)t->id)));
-        gchar *desc = task_desc_markup(t, list_name, att_count, subs);
+        gchar *desc = task_desc_markup(t, list_name, att_count, subs,
+                                       bold);
         gchar *due  = bt_due_format(t->due);
         GtkTreeIter iter;
         gtk_list_store_append(lw->task_store, &iter);
@@ -545,11 +579,21 @@ refresh_tasks(BtLibrary *lw)
         g_free(due);
     }
 
+    /* Pinned Tasks also gathers pinned Blue Notes action items (their
+     * pin state is local — the bn_pins table).                              */
+    guint shown = tasks->len;        /* rows in the pane (for the status)   */
+    if (lw->sel_kind == SB_KIND_PINNED &&
+        bt_app_config_get_bool("blue_notes_sync", FALSE)) {
+        gint bn = append_bn_rows(lw, TRUE);
+        if (bn > 0)
+            shown += (guint)bn;
+    }
+
     /* Status bar left: where we are + how many rows.                        */
     if (virtual_view) {
         gchar *loc = g_strdup_printf("%s \xe2\x80\x94 %u task%s",
-                                     view_name, tasks->len,
-                                     tasks->len == 1 ? "" : "s");
+                                     view_name, shown,
+                                     shown == 1 ? "" : "s");
         gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
         g_free(loc);
     } else {
@@ -571,12 +615,16 @@ refresh_tasks(BtLibrary *lw)
     bt_ptr_array_free_tasks(tasks);
 }
 
-/* full_refresh() — sidebar + task pane + open editors.                      */
+/* full_refresh() — sidebar + task pane + open editors, plus the Sync
+ * button's visibility (hidden while the Google master switch is off —
+ * Settings fires a full notify when it flips).                              */
 static void
 full_refresh(BtLibrary *lw)
 {
     refresh_sidebar(lw);
     refresh_tasks(lw);
+    gtk_widget_set_visible(lw->sync_item,
+        bt_app_config_get_bool("google_sync_enabled", TRUE));
     bt_editor_refresh_all(lw->app);
 }
 
@@ -690,11 +738,13 @@ on_task_activated(GtkTreeView *view, GtkTreePath *path,
     GtkTreeIter iter;
     if (!gtk_tree_model_get_iter(model, &iter, path))
         return;
-    if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
-        gchar *ref = NULL;
-        gtk_tree_model_get(model, &iter, TL_REF, &ref, -1);
-        if (ref != NULL)
-            bt_editor_open_bnote(lw->app, ref);
+    /* A Blue Notes row (they carry a ref and id 0 — the Action Items
+     * list AND pinned items in the Pinned Tasks view) opens the reduced
+     * Blue Notes editor.                                                    */
+    gchar *ref = NULL;
+    gtk_tree_model_get(model, &iter, TL_REF, &ref, -1);
+    if (ref != NULL) {
+        bt_editor_open_bnote(lw->app, ref);
         g_free(ref);
         return;
     }
@@ -719,14 +769,14 @@ on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
     gboolean done;
     gtk_tree_model_get(model, &iter, TL_ID, &id, TL_DONE, &done, -1);
 
-    /* Blue Notes rows write back through the blue_notes CLI, which
-     * strikes/un-strikes the '!' line in the note itself.                   */
-    if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
-        gchar *ref = NULL;
-        gtk_tree_model_get(model, &iter, TL_REF, &ref, -1);
+    /* Blue Notes rows (any view they appear in) write back through the
+     * blue_notes CLI, which strikes/un-strikes the '!' line in the note
+     * itself.                                                               */
+    gchar *ref = NULL;
+    gtk_tree_model_get(model, &iter, TL_REF, &ref, -1);
+    if (ref != NULL) {
         gchar *err = NULL;
-        if (ref != NULL &&
-            bt_bnotes_action_set_done(ref, !done, &err)) {
+        if (bt_bnotes_action_set_done(ref, !done, &err)) {
             bt_app_status(lw->app, "Updated in Blue Notes");
             full_refresh(lw);        /* incl. an open editor of this ref    */
         } else {
@@ -747,19 +797,23 @@ on_task_pinned_toggled(GtkCellRendererToggle *cell, gchar *path_str,
 {
     (void)cell;
     BtLibrary *lw = data;
-    if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
-        bt_app_status(lw->app,
-                      "Blue Notes items cannot be pinned here");
-        return;
-    }
     GtkTreeIter iter;
     GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
     if (!gtk_tree_model_get_iter_from_string(model, &iter, path_str))
         return;
     gint64 id;
     gboolean pinned;
-    gtk_tree_model_get(model, &iter, TL_ID, &id, TL_PINNED, &pinned, -1);
-    bt_db_task_set_pinned(lw->app->db, id, !pinned);
+    gchar *ref = NULL;
+    gtk_tree_model_get(model, &iter, TL_ID, &id, TL_PINNED, &pinned,
+                       TL_REF, &ref, -1);
+    if (ref != NULL) {
+        /* Blue Notes row: the pin lives in the local bn_pins table
+         * (Blue Notes itself has no pin concept).                          */
+        bt_db_bn_pin_set(lw->app->db, ref, !pinned);
+        g_free(ref);
+    } else {
+        bt_db_task_set_pinned(lw->app->db, id, !pinned);
+    }
     full_refresh(lw);
 }
 
@@ -1037,6 +1091,18 @@ on_delete_list(GtkWidget *w, gpointer data)
     BtList *l = bt_db_list_get(lw->app->db, id);
     if (l == NULL)
         return;
+    /* Google's default tasklist cannot be deleted (the API refuses with
+     * 400 from any client) — block it here, like the Blue Notes list.       */
+    gchar *default_gid = bt_db_state_get(lw->app->db, "default_list_gid");
+    if (l->gtasks_id != NULL && default_gid != NULL &&
+        strcmp(l->gtasks_id, default_gid) == 0) {
+        bt_app_status(lw->app, "\xe2\x80\x9c%s\xe2\x80\x9d is Google's "
+                      "default list and cannot be deleted", l->name);
+        g_free(default_gid);
+        bt_list_free(l);
+        return;
+    }
+    g_free(default_gid);
     gboolean yes = bt_app_confirm(GTK_WINDOW(lw->window), "Delete List",
         "Delete the list \xe2\x80\x9c%s\xe2\x80\x9d and all of its "
         "tasks?", l->name);
@@ -1378,6 +1444,11 @@ on_sync(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtLibrary *lw = data;
+    if (!bt_app_config_get_bool("google_sync_enabled", TRUE)) {
+        bt_app_status(lw->app, "Google Tasks sync is disabled \xe2\x80\x94 "
+                      "enable it in File \xe2\x86\x92 Settings\xe2\x80\xa6");
+        return;
+    }
     if (!bt_oauth_have_client()) {
         bt_app_status(lw->app, "Google sync is not configured \xe2\x80\x94 "
                       "see File \xe2\x86\x92 Settings\xe2\x80\xa6");
@@ -1621,10 +1692,8 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
 
     /* --- Toolbar ---------------------------------------------------------- */
     /* Icon names are icons/-relative paths; the curated set lives in
-     * icons/Selected/ (case-exact for Linux).  Layout: sidebar toggle +
-     * the "Lists" menu button (New/Delete List, Sync — the Blue Notes
-     * compact pattern) on the left, the task buttons pushed to the RIGHT
-     * end by an invisible expanding separator.                              */
+     * icons/Selected/ (case-exact for Linux).  Layout: sidebar toggle,
+     * a drawn divider, then the task buttons and Sync.                      */
     GtkWidget *toolbar = gtk_toolbar_new();
     /* Small-toolbar metrics — the Blue Notes bar height.                    */
     gtk_toolbar_set_icon_size(GTK_TOOLBAR(toolbar),
@@ -1632,16 +1701,8 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     tool_button(lw, GTK_TOOLBAR(toolbar), "Selected/sidebar",
                 "\xe2\x97\xa7", "Sidebar", "Show or hide the lists pane",
                 G_CALLBACK(on_toggle_sidebar));
-
-    lw->sync_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
-        "Selected/cycle", "\xe2\x9f\xb3", "Sync",
-        "Sync with Google Tasks now", G_CALLBACK(on_sync)));
-
-    GtkToolItem *spring = gtk_separator_tool_item_new();
-    gtk_separator_tool_item_set_draw(GTK_SEPARATOR_TOOL_ITEM(spring),
-                                     FALSE);
-    gtk_tool_item_set_expand(spring, TRUE);
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), spring, -1);
+    gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
+                       gtk_separator_tool_item_new(), -1);
 
     tool_button(lw, GTK_TOOLBAR(toolbar), "Selected/add2", NULL,
                 "New Task", "Create a task in the selected list",
@@ -1649,6 +1710,10 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     tool_button(lw, GTK_TOOLBAR(toolbar), "Selected/remove", NULL,
                 "Delete Task", "Delete the selected task",
                 G_CALLBACK(on_delete_task));
+
+    lw->sync_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
+        "Selected/google-symbol", "\xe2\x9f\xb3", "Sync",
+        "Sync with Google Tasks now", G_CALLBACK(on_sync)));
     bt_app_register_toolbar(app, toolbar);
     gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
     /* Thin rule between the toolbar and the panes (Blue Notes look).        */
@@ -1855,5 +1920,8 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
      * brings it back); the toggle persists the user's last choice.          */
     if (!bt_app_config_get_bool("sidebar_visible", FALSE))
         gtk_widget_hide(lw->sidebar_box);
+    /* No Sync button while the Google master switch is off.                 */
+    if (!bt_app_config_get_bool("google_sync_enabled", TRUE))
+        gtk_widget_hide(lw->sync_item);
     return lw->window;
 }

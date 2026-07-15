@@ -59,20 +59,72 @@ static struct {
     gpointer        user_data;
 } flow;
 
+/* The Google Cloud console's downloaded OAuth client file, looked for
+ * next to the binary, then in the user config dir.  It is gitignored —
+ * never commit it.                                                          */
+#define BT_CLIENT_FILE "client_secret.apps.googleusercontent.com.json"
+
 /* ---------------------------------------------------------------------------
- * bt_oauth_init() — snapshot the client credentials (see oauth.h): the
- * optional ini override first, else the baked-in client.
+ * load_client_file() — read client id/secret out of Google's standard
+ * client-secret JSON ({"installed": {"client_id": …}}; "web" is
+ * accepted too).  Fills the id/secret out-params (g_free) and returns
+ * TRUE when a usable file was found.
+ * ------------------------------------------------------------------------- */
+static gboolean
+load_client_file(gchar **id, gchar **secret)
+{
+    const gchar *dirs[2] = { bt_app_exe_dir(), g_get_user_config_dir() };
+    for (gsize i = 0; i < G_N_ELEMENTS(dirs); i++) {
+        if (dirs[i] == NULL)
+            continue;
+        gchar *path = i == 0
+            ? g_build_filename(dirs[i], BT_CLIENT_FILE, NULL)
+            : g_build_filename(dirs[i], "blue_tasks", BT_CLIENT_FILE,
+                               NULL);
+        gchar *text = NULL;
+        gboolean loaded = g_file_get_contents(path, &text, NULL, NULL);
+        g_free(path);
+        if (!loaded)
+            continue;
+        BtJson *root = bt_json_parse(text, -1);
+        g_free(text);
+        BtJson *client = bt_json_get(root, "installed");
+        if (client == NULL)
+            client = bt_json_get(root, "web");
+        const gchar *cid = bt_json_str(client, "client_id");
+        if (cid != NULL) {
+            *id = g_strdup(cid);
+            *secret = g_strdup(bt_json_str(client, "client_secret"));
+            bt_json_free(root);
+            return TRUE;
+        }
+        bt_json_free(root);
+    }
+    return FALSE;
+}
+
+/* ---------------------------------------------------------------------------
+ * bt_oauth_init() — snapshot the client credentials (see oauth.h):
+ * Google's client-secret JSON file first, then the legacy ini keys,
+ * then the baked-in client.
  * ------------------------------------------------------------------------- */
 void
 bt_oauth_init(void)
 {
+    gchar *file_id = NULL, *file_secret = NULL;
+    load_client_file(&file_id, &file_secret);
+
     g_mutex_lock(&cred_lock);
     g_free(cred_client_id);
     g_free(cred_client_secret);
     g_free(cred_refresh_token);
-    cred_client_id     = bt_app_config_get("google_client_id");
-    cred_client_secret = bt_app_config_get("google_client_secret");
+    cred_client_id     = file_id;
+    cred_client_secret = file_secret;
     cred_refresh_token = bt_app_config_get("gtasks_refresh_token");
+    if (cred_client_id == NULL) {
+        cred_client_id     = bt_app_config_get("google_client_id");
+        cred_client_secret = bt_app_config_get("google_client_secret");
+    }
     if (cred_client_id == NULL && *BT_GOOGLE_CLIENT_ID != '\0')
         cred_client_id = g_strdup(BT_GOOGLE_CLIENT_ID);
     if (cred_client_secret == NULL && *BT_GOOGLE_CLIENT_SECRET != '\0')

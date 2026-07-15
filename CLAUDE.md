@@ -143,6 +143,16 @@ the user).  A logic test harness lives in the session scratchpad
   listing, "absent" means UNCHANGED (push if locally dirty), never
   deleted — deletions arrive as `deleted:true` items.  First-sync
   title dedup only runs against a full listing.
+- NON-DESTRUCTIVE by default: ABSENCE NEVER DELETES on either side.
+  Only explicit deletes propagate — a local tombstone DELETEs
+  remotely; a remote `deleted:true` purges locally.  A local task
+  whose gtasks_id is missing from a FULL listing (deleted on Google
+  with no local tombstone) drops its stale Google identity and is
+  pushed back as a NEW remote task; a local list whose bound remote
+  list vanished is re-created remotely and ALL its tasks' gtasks_ids/
+  etags are cleared (`bt_db_tasks_clear_gtasks_ids`) so the task pass
+  re-pushes them.  Remote items unknown locally are pulled (created)
+  as before.
 - Pushes: creates POST (parents before subtasks — the per-list query
   orders `parent_id IS NOT NULL` last); edits PATCH with `If-Match:
   etag`, and a 412 SKIPS the push (remote wins; next pull reconciles).
@@ -179,7 +189,12 @@ the user).  A logic test harness lives in the session scratchpad
 - Shown as "Action Items (from Blue Notes)" under Lists while
   `blue_notes_sync=1`; not deletable/editable as a list; items open the
   reduced editor (done + due writable via CLI; title/notes/subtasks/
-  attachments/pinned insensitive — no CLI verbs for them).  The Blue
+  attachments insensitive — no CLI verbs for them).  PINNING works:
+  it is local-only state in the `bn_pins` table keyed by the item's
+  "NOTEID:ORD" ref (Blue Notes has no pin concept); pinned action
+  items also appear in the Pinned Tasks view (`append_bn_rows` with
+  only_pinned).  BN rows are detected by TL_REF != NULL (id 0), NOT
+  by the selected sidebar kind — they can appear in Pinned too.  The Blue
   Notes editor tracks loaded done/due and only shells the CLI for
   fields that actually changed.  The Settings CLI-path entry persists
   per keystroke but only refreshes on Enter/focus-out (a per-keystroke
@@ -209,3 +224,13 @@ the user).  A logic test harness lives in the session scratchpad
     `gtk_window_get_size` is the client area (~28 pt difference).
 11. The live ini rewrites drop comments and carry per-machine values —
     it stays gitignored; document defaults in `blue_tasks.ini.defaults`.
+12. Google's DEFAULT tasklist cannot be deleted — `tasklists.delete`
+    returns 400 "Invalid Value" from any client, and an unhandled
+    failure there aborts the whole sync pass (blocking every later
+    push).  Handled ACCURATELY (no hidden state): every sync GETs
+    `…/lists/@default` and stores its id as
+    `sync_state.default_list_gid`; on_delete_list refuses that list up
+    front (like the Blue Notes list), and if a stale tombstone for it
+    exists anyway, sync_lists RESTORES the list + its same-moment task
+    tombstones (`bt_db_list_restore`) instead of deleting or hiding
+    anything.

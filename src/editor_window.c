@@ -134,6 +134,10 @@ editor_save_now(BtEditor *ed)
             bt_app_status(ed->app, "%s",
                           err != NULL ? err : "Blue Notes update failed");
         g_free(err);
+        /* The pin is LOCAL (bn_pins table) — no CLI involved.               */
+        bt_db_bn_pin_set(ed->app->db, ed->bn_ref,
+                         gtk_toggle_button_get_active(
+                             GTK_TOGGLE_BUTTON(ed->pinned_check)));
         editor_title_refresh(ed);
         editor_notify(ed);
         return;
@@ -546,6 +550,9 @@ editor_load_bnote(BtEditor *ed)
     set_entry_if_differs(ed->title_entry, found->text);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->done_check),
                                  found->done);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->pinned_check),
+                                 bt_db_bn_pin_get(ed->app->db,
+                                                  ed->bn_ref));
     /* Never rewrite the due entry while the user is typing in it — the
      * stored canonical form would replace their half-typed text.            */
     if (!gtk_widget_has_focus(ed->due_entry)) {
@@ -818,8 +825,6 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
     ed->pinned_check = gtk_check_button_new_with_label("Pinned");
     g_signal_connect(ed->pinned_check, "toggled",
                      G_CALLBACK(on_toggle_changed), ed);
-    if (bn)                          /* pinning is a Blue Tasks concept     */
-        gtk_widget_set_sensitive(ed->pinned_check, FALSE);
     gtk_box_pack_start(GTK_BOX(row), ed->pinned_check, FALSE, FALSE, 0);
 
     GtkWidget *due_btn = small_button("\xf0\x9f\x93\x85",

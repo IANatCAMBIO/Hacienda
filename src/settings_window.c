@@ -15,8 +15,7 @@ typedef struct {
     BtApp     *app;
     gchar     *db_path;
     GtkWidget *window;
-    GtkWidget *id_entry;
-    GtkWidget *secret_entry;
+    GtkWidget *sync_check;           /* Google Tasks master switch          */
     GtkWidget *interval_spin;
     GtkWidget *signin_btn;
     GtkWidget *signout_btn;
@@ -29,38 +28,44 @@ typedef struct {
 static BtSettings *settings = NULL;  /* the singleton, or NULL              */
 
 /* ---------------------------------------------------------------------------
- * state_refresh() — reflect the current sign-in state in the label and
- * button sensitivity.
+ * state_refresh() — reflect the master switch + sign-in state: with the
+ * switch off, Sign In / Sign Out / the auto-sync interval all grey out.
  * ------------------------------------------------------------------------- */
 static void
 state_refresh(BtSettings *sw)
 {
+    gboolean enabled = bt_app_config_get_bool("google_sync_enabled",
+                                              TRUE);
     gboolean in = bt_oauth_authenticated();
     gtk_label_set_markup(GTK_LABEL(sw->state_label),
-        in ? "<span foreground=\"#26a269\">Signed in</span>"
-           : "<span foreground=\"#888888\">Not signed in</span>");
-    gtk_widget_set_sensitive(sw->signout_btn, in);
+        !enabled ? "<span foreground=\"#888888\">Sync disabled</span>"
+        : in     ? "<span foreground=\"#26a269\">Signed in</span>"
+                 : "<span foreground=\"#888888\">Not signed in</span>");
+    gtk_widget_set_sensitive(sw->signout_btn, enabled && in);
     gtk_widget_set_sensitive(sw->signin_btn,
-                             bt_oauth_have_client() && !in);
+                             enabled && bt_oauth_have_client() && !in);
+    gtk_widget_set_sensitive(sw->interval_spin, enabled);
 }
 
 /* ---------------------------------------------------------------------------
- * on_cred_changed() — write-through for the two credential entries; the
- * OAuth module re-snapshots so the next sign-in uses the new client.
+ * on_sync_enabled_toggled() — the Google Tasks master switch: persist,
+ * re-grey the section, and arm/disarm the auto-sync timer.
  * ------------------------------------------------------------------------- */
 static void
-on_cred_changed(GtkWidget *w, gpointer data)
+on_sync_enabled_toggled(GtkWidget *w, gpointer data)
 {
-    (void)w;
     BtSettings *sw = data;
     if (sw->loading)
         return;
-    const gchar *id  = gtk_entry_get_text(GTK_ENTRY(sw->id_entry));
-    const gchar *sec = gtk_entry_get_text(GTK_ENTRY(sw->secret_entry));
-    bt_app_config_set("google_client_id", *id != '\0' ? id : NULL);
-    bt_app_config_set("google_client_secret", *sec != '\0' ? sec : NULL);
-    bt_oauth_init();
+    gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
+    bt_app_config_set("google_sync_enabled", on ? "1" : "0");
     state_refresh(sw);
+    bt_sync_auto_start(sw->app, sw->db_path);
+    /* Full notify: the library hides/shows its Sync button with this.       */
+    if (sw->app->notify_changed != NULL)
+        sw->app->notify_changed(sw->app);
+    bt_app_status(sw->app, on ? "Google Tasks sync enabled"
+                              : "Google Tasks sync disabled");
 }
 
 /* on_interval_changed() — write-through + restart the auto-sync timer.      */
@@ -170,6 +175,20 @@ on_bn_cli_focus_out(GtkWidget *w, GdkEventFocus *event, gpointer data)
     return FALSE;                    /* propagate                           */
 }
 
+/* on_bold_titles_toggled() — Appearance: bold task titles on/off,
+ * applied live (the task pane re-renders its markup).                       */
+static void
+on_bold_titles_toggled(GtkWidget *w, gpointer data)
+{
+    BtSettings *sw = data;
+    if (sw->loading)
+        return;
+    gboolean bold = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
+    bt_app_config_set("bold_task_titles", bold ? "1" : "0");
+    if (sw->app->notify_changed != NULL)
+        sw->app->notify_changed(sw->app);
+}
+
 /* on_toolbar_style_changed() — the Appearance combo: apply the chosen
  * toolbar style live (icons / text below icons / text only).                */
 static void
@@ -236,17 +255,6 @@ wrapped_label(const gchar *text)
     return label;
 }
 
-/* grid_row() — attach "label: widget" as row `row` of `grid`.               */
-static void
-grid_row(GtkWidget *grid, gint row, const gchar *text, GtkWidget *widget)
-{
-    GtkWidget *label = gtk_label_new(text);
-    gtk_widget_set_halign(label, GTK_ALIGN_END);
-    gtk_grid_attach(GTK_GRID(grid), label, 0, row, 1, 1);
-    gtk_widget_set_hexpand(widget, TRUE);
-    gtk_grid_attach(GTK_GRID(grid), widget, 1, row, 1, 1);
-}
-
 /* ---------------------------------------------------------------------------
  * bt_settings_window_open() — show (or raise) the window (see header).
  * ------------------------------------------------------------------------- */
@@ -273,37 +281,19 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 14);
     gtk_container_add(GTK_CONTAINER(sw->window), vbox);
 
-    /* --- Google Tasks Sync ------------------------------------------------ */
-    gtk_box_pack_start(GTK_BOX(vbox), section_label("Google Tasks Sync"),
+    /* --- Google Tasks ------------------------------------------------------ */
+    gtk_box_pack_start(GTK_BOX(vbox), section_label("Google Tasks"),
                        FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), wrapped_label(
-        "Blue Tasks syncs with Google Tasks using an OAuth client: in "
-        "the Google Cloud console, enable the Google Tasks API, create "
-        "a \xe2\x80\x9c""Desktop app\xe2\x80\x9d OAuth client, and enter "
-        "its credentials below.  Sign in once in your browser and Blue "
-        "Tasks stays signed in (a sync-only token is kept in the ini; "
-        "Sign Out removes it, and it can be revoked any time from your "
-        "Google account's security page)."), FALSE, FALSE, 0);
+        "Two-way non-destructive sync with Google Tasks.  Sign in will "
+        "open a browser window for authentication; Sign out will remove "
+        "the local stored token."), FALSE, FALSE, 0);
 
-    GtkWidget *grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
-    gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
-
-    sw->id_entry = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(sw->id_entry),
-        "\xe2\x80\xa6.apps.googleusercontent.com");
-    g_signal_connect(sw->id_entry, "changed",
-                     G_CALLBACK(on_cred_changed), sw);
-    grid_row(grid, 0, "Client ID:", sw->id_entry);
-
-    sw->secret_entry = gtk_entry_new();
-    gtk_entry_set_visibility(GTK_ENTRY(sw->secret_entry), FALSE);
-    gtk_entry_set_placeholder_text(GTK_ENTRY(sw->secret_entry),
-                                   "GOCSPX-\xe2\x80\xa6");
-    g_signal_connect(sw->secret_entry, "changed",
-                     G_CALLBACK(on_cred_changed), sw);
-    grid_row(grid, 1, "Client secret:", sw->secret_entry);
-    gtk_box_pack_start(GTK_BOX(vbox), grid, FALSE, FALSE, 0);
+    sw->sync_check = gtk_check_button_new_with_label(
+        "Enable Google Tasks sync");
+    g_signal_connect(sw->sync_check, "toggled",
+                     G_CALLBACK(on_sync_enabled_toggled), sw);
+    gtk_box_pack_start(GTK_BOX(vbox), sw->sync_check, FALSE, FALSE, 0);
 
     GtkWidget *btn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     sw->signin_btn = gtk_button_new_with_label(
@@ -344,12 +334,9 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     gtk_box_pack_start(GTK_BOX(vbox), section_label("Blue Notes"),
                        FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), wrapped_label(
-        "Show the companion Blue Notes app's action items ('!' lines) "
-        "as an \xe2\x80\x9c""Action Items (from Blue Notes)\xe2\x80\x9d "
-        "list under Lists.  Reads and writes go through the blue_notes "
-        "CLI \xe2\x80\x94 safe alongside a running Blue Notes \xe2\x80\x94 "
-        "so checking an item off or changing its due date here rewrites "
-        "the line in the note itself."), FALSE, FALSE, 0);
+        "Two-way sync the Action Items list from Blue Notes here. "
+        "Note that Action Items cannot have attachments, subtasks, or "
+        "notes."), FALSE, FALSE, 0);
     sw->bn_check = gtk_check_button_new_with_label(
         "Show Blue Notes action items");
     g_signal_connect(sw->bn_check, "toggled",
@@ -380,6 +367,14 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     /* --- Appearance --------------------------------------------------------- */
     gtk_box_pack_start(GTK_BOX(vbox), section_label("Appearance"),
                        FALSE, FALSE, 0);
+
+    GtkWidget *bold_check = gtk_check_button_new_with_label(
+        "Show task titles in bold");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(bold_check),
+        bt_app_config_get_bool("bold_task_titles", FALSE));
+    g_signal_connect(bold_check, "toggled",
+                     G_CALLBACK(on_bold_titles_toggled), sw);
+    gtk_box_pack_start(GTK_BOX(vbox), bold_check, FALSE, FALSE, 0);
 
     /* Toolbar style: icons / text below icons / text only.  Applies live
      * to every registered toolbar; also reachable by right-clicking any
@@ -434,22 +429,16 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     gtk_box_pack_start(GTK_BOX(vbox), db_label, FALSE, FALSE, 0);
 
     /* --- Load current values ------------------------------------------------ */
-    gchar *id  = bt_app_config_get("google_client_id");
-    gchar *sec = bt_app_config_get("google_client_secret");
     gchar *iv  = bt_app_config_get("sync_interval_min");
     gchar *bnc = bt_app_config_get("blue_notes_cli");
-    if (id != NULL)
-        gtk_entry_set_text(GTK_ENTRY(sw->id_entry), id);
-    if (sec != NULL)
-        gtk_entry_set_text(GTK_ENTRY(sw->secret_entry), sec);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->sync_check),
+        bt_app_config_get_bool("google_sync_enabled", TRUE));
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->interval_spin),
                               iv != NULL ? g_ascii_strtod(iv, NULL) : 5);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->bn_check),
         bt_app_config_get_bool("blue_notes_sync", FALSE));
     if (bnc != NULL)
         gtk_entry_set_text(GTK_ENTRY(sw->bn_cli_entry), bnc);
-    g_free(id);
-    g_free(sec);
     g_free(iv);
     g_free(bnc);
     sw->loading = FALSE;

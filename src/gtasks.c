@@ -12,6 +12,8 @@
 
 #define BT_TASKS_API "https://tasks.googleapis.com/tasks/v1"
 
+static void post_status(BtApp *app, const gchar *msg);
+
 /* ---------------------------------------------------------------------------
  * Remote snapshots — the fields of a Google tasklist / task this sync
  * uses.  Strings are owned.
@@ -416,9 +418,32 @@ remote_updated_of(BtJson *reply, gint64 fallback)
 }
 
 /* ---------------------------------------------------------------------------
+ * fetch_default_list_gid() — GET the account's DEFAULT tasklist
+ * (endpoint id "@default") and persist its id as
+ * sync_state."default_list_gid".  The default list cannot be deleted
+ * (tasklists.delete → 400 "Invalid Value" from any client), so the GUI
+ * uses the stored id to refuse the deletion up front.  FALSE + *err on
+ * failure.
+ * ------------------------------------------------------------------------- */
+static gboolean
+fetch_default_list_gid(BtDatabase *db, const gchar *token, gchar **err)
+{
+    gchar *url = tasklist_url("@default");
+    BtJson *reply = NULL;
+    gboolean ok = api_call("GET", url, token, NULL, NULL, &reply, err);
+    if (ok && bt_json_str(reply, "id") != NULL)
+        bt_db_state_set(db, "default_list_gid",
+                        bt_json_str(reply, "id"));
+    bt_json_free(reply);
+    g_free(url);
+    return ok;
+}
+
+/* ---------------------------------------------------------------------------
  * sync_lists() — reconcile tasklists.  Fills `pairs` with
  * (local id, gtasks id gchar*) tuples for the task pass — ownership of
- * the gid strings moves to the caller.  FALSE + *err on failure.
+ * the gid strings moves to the caller.  `app` is only for post_status
+ * (idle-marshalled; safe from this worker).  FALSE + *err on failure.
  * ------------------------------------------------------------------------- */
 typedef struct {
     gint64  local_id;
@@ -426,12 +451,18 @@ typedef struct {
 } ListPair;
 
 static gboolean
-sync_lists(BtDatabase *db, const gchar *token, gint64 last_sync,
-           GArray *pairs, SyncStats *stats, gchar **err)
+sync_lists(BtApp *app, BtDatabase *db, const gchar *token,
+           gint64 last_sync, GArray *pairs, SyncStats *stats, gchar **err)
 {
-    GPtrArray *remote = fetch_remote_lists(token, err);
-    if (remote == NULL)
+    if (!fetch_default_list_gid(db, token, err))
         return FALSE;
+    gchar *default_gid = bt_db_state_get(db, "default_list_gid");
+
+    GPtrArray *remote = fetch_remote_lists(token, err);
+    if (remote == NULL) {
+        g_free(default_gid);
+        return FALSE;
+    }
     GPtrArray *local = bt_db_lists(db, TRUE);
     gboolean ok = TRUE;
 
@@ -466,6 +497,19 @@ sync_lists(BtDatabase *db, const gchar *token, gint64 last_sync,
             match->matched = TRUE;
 
         if (l->deleted) {
+            /* Google's DEFAULT tasklist is undeletable (the GUI refuses
+             * up front; this catches a tombstone from an older build):
+             * RESTORE the list and its same-moment task tombstones —
+             * remote is the source of truth and still has everything.       */
+            if (l->gtasks_id != NULL && default_gid != NULL &&
+                strcmp(l->gtasks_id, default_gid) == 0) {
+                bt_db_list_restore(db, l->id);
+                post_status(app, "Google's default list cannot be "
+                            "deleted \xe2\x80\x94 restored");
+                ListPair p = { l->id, g_strdup(l->gtasks_id) };
+                g_array_append_val(pairs, p);
+                continue;
+            }
             /* Local tombstone: propagate, then purge.                       */
             if (l->gtasks_id != NULL) {
                 gchar *url = tasklist_url(l->gtasks_id);
@@ -479,8 +523,14 @@ sync_lists(BtDatabase *db, const gchar *token, gint64 last_sync,
             continue;
         }
 
-        if (l->gtasks_id == NULL) {
-            /* Local new: create remotely, adopt the id.                     */
+        if (l->gtasks_id == NULL || match == NULL) {
+            /* Local new — or its bound remote list vanished without a
+             * local tombstone.  NON-DESTRUCTIVE: absence never deletes;
+             * the list exists here, so (re-)create it remotely and
+             * adopt the new id.  On a re-create the list's tasks drop
+             * their stale Google identities too, so the task pass
+             * pushes every one of them as a new remote task.                */
+            gboolean rebind = l->gtasks_id != NULL;
             GString *body = g_string_new("{\"title\": ");
             bt_json_escape(body, l->name);
             g_string_append(body, "}");
@@ -489,6 +539,8 @@ sync_lists(BtDatabase *db, const gchar *token, gint64 last_sync,
             ok = api_call("POST", url, token, NULL, body->str, &reply, err);
             g_free(url);
             if (ok && bt_json_str(reply, "id") != NULL) {
+                if (rebind)
+                    bt_db_tasks_clear_gtasks_ids(db, l->id);
                 bt_db_list_set_gtasks_id(db, l->id,
                                          bt_json_str(reply, "id"));
                 bt_db_list_apply_remote(db, l->id, l->name,
@@ -499,11 +551,6 @@ sync_lists(BtDatabase *db, const gchar *token, gint64 last_sync,
             }
             bt_json_free(reply);
             g_string_free(body, TRUE);
-        } else if (match == NULL) {
-            /* Bound remote list is gone: deletion wins locally too.         */
-            bt_db_list_purge(db, l->id);
-            stats->deleted++;
-            continue;
         } else if (strcmp(match->title, l->name) != 0) {
             /* Both exist, names differ: newer side wins.                    */
             gboolean local_dirty = l->updated_at > last_sync;
@@ -551,6 +598,7 @@ sync_lists(BtDatabase *db, const gchar *token, gint64 last_sync,
         remote_list_free(g_ptr_array_index(remote, i));
     g_ptr_array_free(remote, TRUE);
     bt_ptr_array_free_lists(local);
+    g_free(default_gid);
     return ok;
 }
 
@@ -734,9 +782,27 @@ sync_tasks_for_list(BtDatabase *db, const gchar *token, gint64 list_id,
 
         if (match == NULL) {
             if (full_listing) {
-                /* Gone from a FULL listing: deleted remotely.               */
-                bt_db_task_purge(db, t->id);
-                stats->deleted++;
+                /* Gone from a FULL listing (deleted on Google without a
+                 * local tombstone).  NON-DESTRUCTIVE: absence never
+                 * deletes — the task exists here, so drop the stale
+                 * Google identity and push it back as a NEW remote
+                 * task.  Explicit deletes still propagate: a local
+                 * tombstone DELETEs remotely (above) and a remote
+                 * `deleted:true` purges locally (below).                    */
+                g_hash_table_remove(local_by_gid, t->gtasks_id);
+                bt_db_task_set_gtasks_id(db, t->id, NULL);
+                g_clear_pointer(&t->gtasks_id, g_free);
+                const gchar *parent_gid = NULL;
+                BtTask *p = NULL;
+                if (t->parent_id != 0) {
+                    p = bt_db_task_get(db, t->parent_id);
+                    parent_gid = p != NULL ? p->gtasks_id : NULL;
+                }
+                ok = push_task_create(db, token, list_gid, t,
+                                      parent_gid, stats, err);
+                bt_task_free(p);
+                if (t->gtasks_id != NULL)
+                    g_hash_table_insert(local_by_gid, t->gtasks_id, t);
             } else if (t->updated_at > last_sync) {
                 /* Incremental listing: absent just means unchanged — but
                  * the LOCAL side is dirty, so push (etag-guarded).          */
@@ -951,7 +1017,8 @@ sync_thread(gpointer data)
     post_status(job->app, "Syncing with Google Tasks\xe2\x80\xa6");
 
     GArray *pairs = g_array_new(FALSE, FALSE, sizeof(ListPair));
-    gboolean ok = sync_lists(db, token, last_sync, pairs, &stats, &err);
+    gboolean ok = sync_lists(job->app, db, token, last_sync, pairs,
+                             &stats, &err);
     for (guint i = 0; i < pairs->len && ok; i++) {
         ListPair *p = &g_array_index(pairs, ListPair, i);
         ok = sync_tasks_for_list(db, token, p->local_id, p->gid,
@@ -988,6 +1055,13 @@ void
 bt_sync_start(BtApp *app, const gchar *db_path,
               BtSyncDoneFn done, gpointer user_data)
 {
+    if (!bt_app_config_get_bool("google_sync_enabled", TRUE)) {
+        bt_app_status(app, "Google Tasks sync is disabled \xe2\x80\x94 "
+                      "enable it in File \xe2\x86\x92 Settings\xe2\x80\xa6");
+        if (done != NULL)
+            done(app, FALSE, "sync disabled", user_data);
+        return;
+    }
     if (app->sync_running) {
         bt_app_status(app, "Sync already running");
         return;
@@ -1308,6 +1382,9 @@ bt_sync_auto_start(BtApp *app, const gchar *db_path)
         g_source_remove(app->sync_timer);
         app->sync_timer = 0;
     }
+    if (!bt_app_config_get_bool("google_sync_enabled", TRUE))
+        return;                      /* master switch off: no timer, no
+                                      * initial pass                        */
     gchar *v = bt_app_config_get("sync_interval_min");
     gint minutes = v != NULL ? atoi(v) : 5;
     g_free(v);
