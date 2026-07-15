@@ -74,6 +74,7 @@ static struct {
     guint           timeout_id;      /* the give-up timer                   */
     BtOauthDoneFn   done;            /* completion callback                 */
     gpointer        user_data;
+    gboolean        exchanging;      /* a code exchange already spawned     */
 } flow;
 
 /* The Google Cloud console's downloaded OAuth client file, looked for
@@ -355,10 +356,14 @@ token_post(const gchar *form, gchar **access, gchar **refresh,
     } else {
         const gchar *desc = bt_json_str(root, "error_description");
         const gchar *code = bt_json_str(root, "error");
-        *error = g_strdup_printf("token request failed (HTTP %ld): %s",
+        /* Google's error bodies name the failing parameter (and carry no
+         * secrets) — log the whole thing; the dialog shows the summary.     */
+        g_printerr("bt-oauth: token endpoint HTTP %ld: %s\n", status, body);
+        *error = g_strdup_printf("token request failed (HTTP %ld): %s%s%s",
                                  status,
-                                 desc != NULL ? desc
-                                 : code != NULL ? code : "unknown error");
+                                 code != NULL ? code : "unknown error",
+                                 desc != NULL ? " - " : "",
+                                 desc != NULL ? desc : "");
     }
     bt_json_free(root);
     g_free(body);
@@ -538,7 +543,16 @@ redirect_read_done(GObject *src, GAsyncResult *res, gpointer data)
                strcmp(state, flow.state) != 0) {
         redirect_respond(conn, "State mismatch — try again.");
         flow_finish(FALSE, "OAuth state mismatch");
+    } else if (flow.exchanging) {
+        /* A repeated redirect (browser retry, tab reload, prefetch) must
+         * NOT redeem the code again: Google answers the reuse with
+         * invalid_grant ("Bad Request") and revokes the grant the first
+         * exchange just obtained, failing the whole sign-in.  Serve the
+         * page again, exchange nothing.                                     */
+        g_printerr("bt-oauth: duplicate redirect ignored\n");
+        redirect_respond(conn, "Signed in \xe2\x9c\x93");
     } else {
+        flow.exchanging = TRUE;
         redirect_respond(conn, "Signed in \xe2\x9c\x93");
         ExchangeJob *job = g_new0(ExchangeJob, 1);
         job->code         = g_strdup(code);
