@@ -1,6 +1,6 @@
-# Blue Tasks — default settings, copied into the live blue_tasks.ini on
+# Hacienda — default settings, copied into the live hacienda.ini on
 # first launch.  The live ini is rewritten by the app and is gitignored.
-[blue-tasks]
+[hacienda]
 # Google Tasks sync — the OAuth client comes from Google's downloaded
 # client_secret.apps.googleusercontent.com.json placed next to the app
 # (gitignored — never commit it), or from a baked-in build default; the

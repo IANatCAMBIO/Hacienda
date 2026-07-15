@@ -1,5 +1,5 @@
 /* ===========================================================================
- * library_window.c — the main Blue Tasks window (see library_window.h)
+ * library_window.c — the main Hacienda window (see library_window.h)
  * =========================================================================== */
 
 #include "library_window.h"
@@ -10,6 +10,7 @@
 #include "settings_window.h"
 #include <stdlib.h>
 #include <string.h>
+#include <glib/gstdio.h>
 #ifdef HAVE_GTKOSX
 #include <gtkosxapplication.h>
 #endif
@@ -399,7 +400,7 @@ refresh_sidebar(BtLibrary *lw)
  * append_bn_rows() — append Blue Notes action items to the task pane
  * (fetched through the blue_notes CLI; see bnotes.h).  Rows carry their
  * "NOTEID:ORD" address in TL_REF and 0 in TL_ID; TL_PINNED comes from
- * the local bn_pins table (pinning is a Blue Tasks concept).  With
+ * the local bn_pins table (pinning is a Hacienda concept).  With
  * only_pinned, unpinned items are skipped (the Pinned Tasks view).
  * Returns the number of rows appended, or -1 when the CLI failed (the
  * error is posted to the status bar).
@@ -1727,19 +1728,142 @@ on_menu_clear_completed(GtkWidget *w, gpointer data)
     bt_list_free(l);
 }
 
-/* on_menu_about() — Help → About.                                           */
+/* find_gtk_image() — first GtkImage in a widget subtree (depth-first).
+ * Used to reach GtkAboutDialog's internal logo image, which the public
+ * API only feeds with a plain (blurry-on-Retina) GdkPixbuf.                 */
+static GtkWidget *
+find_gtk_image(GtkWidget *widget)
+{
+    if (GTK_IS_IMAGE(widget))
+        return widget;
+    GtkWidget *hit = NULL;           /* first image found in the subtree    */
+    if (GTK_IS_CONTAINER(widget)) {
+        GList *kids = gtk_container_get_children(GTK_CONTAINER(widget));
+        for (GList *l = kids; l != NULL && hit == NULL; l = l->next)
+            hit = find_gtk_image(l->data);
+        g_list_free(kids);
+    }
+    return hit;
+}
+
+/* on_menu_about() — Help → About and the toolbar About button: the
+ * standard about dialog with the app logo, version, database vitals and
+ * a link to the BSD license (the Blue Notes About, retinted).               */
 static void
 on_menu_about(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtLibrary *lw = data;
-    gtk_show_about_dialog(GTK_WINDOW(lw->window),
-        "program-name", "Blue Tasks",
-        "version", BT_VERSION,
-        "comments", "Task lists with subtasks, due dates and Google "
-                    "Tasks sync.\nCompanion app to Blue Notes.",
-        "license-type", GTK_LICENSE_BSD_3,
-        NULL);
+
+    /* 128x128-logical logo from eco-home.png, decoded at the display's
+     * scale factor so it stays sharp on Retina.                             */
+    gint sf = gtk_widget_get_scale_factor(lw->window);
+    gchar *icon_path = g_build_filename(lw->app->icons_dir,
+                                        "eco-home.png", NULL);
+    GdkPixbuf *logo = gdk_pixbuf_new_from_file_at_size(icon_path,
+                                                       128 * sf, 128 * sf,
+                                                       NULL);
+    g_free(icon_path);
+
+    const gchar *authors[] = { "Ian Campbell", "Claude", NULL };
+
+    GtkWidget *dialog = gtk_about_dialog_new();
+    gtk_window_set_transient_for(GTK_WINDOW(dialog),
+                                 GTK_WINDOW(lw->window));
+    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog),
+                                      "Hacienda");
+    gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), BT_VERSION);
+    if (logo != NULL) {
+        /* set_logo() first (it makes the internal image visible and
+         * sized), then swap that image's content for a cairo surface
+         * with the device scale — the pixbuf API renders 1 buffer px
+         * per logical px and looks soft on HiDPI.                          */
+        GdkPixbuf *at_128 = (sf > 1)
+            ? gdk_pixbuf_scale_simple(logo, 128, 128, GDK_INTERP_BILINEAR)
+            : g_object_ref(logo);
+        gtk_about_dialog_set_logo(GTK_ABOUT_DIALOG(dialog), at_128);
+        g_object_unref(at_128);
+
+        if (sf > 1) {
+            GtkWidget *img = find_gtk_image(
+                gtk_dialog_get_content_area(GTK_DIALOG(dialog)));
+            if (img != NULL) {
+                cairo_surface_t *surface =
+                    gdk_cairo_surface_create_from_pixbuf(logo, sf, NULL);
+                gtk_image_set_from_surface(GTK_IMAGE(img), surface);
+                cairo_surface_destroy(surface);
+            }
+        }
+        g_object_unref(logo);
+    }
+    gtk_about_dialog_set_authors(GTK_ABOUT_DIALOG(dialog), authors);
+
+    /* Database vitals: task/list counts, location, on-disk size.           */
+    gint n_tasks, n_lists;           /* totals across the database          */
+    bt_db_totals(lw->app->db, &n_tasks, &n_lists);
+    GStatBuf st;                     /* for the database file size          */
+    gchar *size_str = (g_stat(lw->db_path, &st) == 0)
+                      ? g_format_size((guint64)st.st_size)
+                      : g_strdup("unknown");
+
+    /* __DATE__/__TIME__ expand when this file is compiled — the closest
+     * portable thing to a "last compiled" stamp.                           */
+    gchar *comments = g_strdup_printf(
+        "Task lists with subtasks, due dates and Google Tasks sync.\n"
+        "Companion app to Blue Notes.\n\n"
+        "Compiled " __DATE__ " " __TIME__ "\n\n"
+        "Database: %s\n"
+        "%d tasks in %d lists \xe2\x80\x94 %s on disk",
+        lw->db_path, n_tasks, n_lists, size_str);
+    gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dialog), comments);
+    g_free(comments);
+    g_free(size_str);
+    gtk_about_dialog_set_license_type(GTK_ABOUT_DIALOG(dialog),
+                                      GTK_LICENSE_BSD_3);
+    gtk_about_dialog_set_website(GTK_ABOUT_DIALOG(dialog),
+                                 "https://opensource.org/license/bsd-3-clause");
+    gtk_about_dialog_set_website_label(GTK_ABOUT_DIALOG(dialog),
+                                       "BSD License");
+
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+}
+
+/* about_button_fit_style() — the About button shows the centered logo in
+ * every toolbar style; the "About" text appears ONLY in text-only mode
+ * (where there would otherwise be nothing to click).  The item is a plain
+ * GtkToolItem wrapping a GtkButton whose single child gets swapped — a
+ * GtkToolButton would reserve empty label space under the icon in
+ * icons-above-text mode.  The logo and label widgets live as object data
+ * ("bt-logo"/"bt-label", owning refs) so they survive being unparented.
+ *   item  — the About tool item.
+ *   style — the toolbar style being applied.                                */
+static void
+about_button_fit_style(GtkToolItem *item, GtkToolbarStyle style)
+{
+    GtkWidget *btn   = gtk_bin_get_child(GTK_BIN(item));
+    GtkWidget *logo  = g_object_get_data(G_OBJECT(item), "bt-logo");
+    GtkWidget *label = g_object_get_data(G_OBJECT(item), "bt-label");
+
+    GtkWidget *want =                /* the child this style calls for      */
+        (style == GTK_TOOLBAR_TEXT) ? label : logo;
+    GtkWidget *cur = gtk_bin_get_child(GTK_BIN(btn));
+    if (cur == want)
+        return;
+    if (cur != NULL)
+        gtk_container_remove(GTK_CONTAINER(btn), cur);
+    gtk_container_add(GTK_CONTAINER(btn), want);
+    gtk_widget_show(want);
+}
+
+/* on_toolbar_style_changed() — keep the About button's label rule
+ * applied when the toolbar style changes.                                   */
+static void
+on_toolbar_style_changed(GtkToolbar *toolbar, GtkToolbarStyle style,
+                         gpointer user_data)
+{
+    (void)toolbar;
+    about_button_fit_style(GTK_TOOL_ITEM(user_data), style);
 }
 
 /* on_menu_quit() — File → Quit.                                             */
@@ -1864,7 +1988,7 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     lw->sel_kind = SB_KIND_LIST;     /* refresh falls back to first list    */
 
     lw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(lw->window), "Blue Tasks - Library");
+    gtk_window_set_title(GTK_WINDOW(lw->window), "Hacienda - Library");
     /* The last session's closing size (win_w/win_h), else the default.      */
     gchar *ww = bt_app_config_get("win_w");
     gchar *wh = bt_app_config_get("win_h");
@@ -1899,7 +2023,7 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     GtkWidget *help_menu = gtk_menu_new();
     GtkWidget *help_item = gtk_menu_item_new_with_label("Help");
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(help_item), help_menu);
-    menu_item(help_menu, "About Blue Tasks",
+    menu_item(help_menu, "About Hacienda",
               G_CALLBACK(on_menu_about), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), help_item);
     /* Remembered so the menu can be moved into the native macOS menu
@@ -1935,6 +2059,45 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
         "hidden", "\xf0\x9f\x91\x81", "Completed",
         "Hide completed tasks", G_CALLBACK(on_toggle_done_visible)));
     hide_done_icon_refresh(lw);      /* the persisted state's icon          */
+
+    /* Expanding blank separator pushes the About button to the right
+     * edge (the Blue Notes layout).                                         */
+    GtkToolItem *spacer = gtk_separator_tool_item_new();
+    gtk_separator_tool_item_set_draw(GTK_SEPARATOR_TOOL_ITEM(spacer),
+                                     FALSE);
+    gtk_tool_item_set_expand(spacer, TRUE);
+    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), spacer, -1);
+
+    /* The About button at the far right.  Built by hand because the
+     * child must stay centered (see about_button_fit_style).                */
+    GtkToolItem *about_item = gtk_tool_item_new();
+    GtkWidget *about_btn = gtk_button_new();
+    gtk_button_set_relief(GTK_BUTTON(about_btn), GTK_RELIEF_NONE);
+    gtk_container_add(GTK_CONTAINER(about_item), about_btn);
+    {
+        GtkWidget *logo =            /* the icon-mode child                 */
+            bt_app_icon_image_sized(app, "eco-home", 24);
+        if (logo == NULL)
+            logo = gtk_label_new("\xf0\x9f\x8f\xa0");    /* 🏠 fallback     */
+        GtkWidget *label = gtk_label_new("About");   /* text-mode child     */
+
+        /* Keep owning refs so removal from the button never frees them.    */
+        g_object_set_data_full(G_OBJECT(about_item), "bt-logo",
+                               g_object_ref_sink(logo), g_object_unref);
+        g_object_set_data_full(G_OBJECT(about_item), "bt-label",
+                               g_object_ref_sink(label), g_object_unref);
+    }
+    gtk_tool_item_set_tooltip_text(about_item, "About Hacienda");
+    g_signal_connect(about_btn, "clicked",
+                     G_CALLBACK(on_menu_about), lw);
+    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), about_item, -1);
+
+    /* Logo only, except in text-only mode — applied now and re-applied
+     * on every style switch (register_toolbar sets the style below).        */
+    about_button_fit_style(about_item, app->toolbar_style);
+    g_signal_connect(toolbar, "style-changed",
+                     G_CALLBACK(on_toolbar_style_changed), about_item);
+
     bt_app_register_toolbar(app, toolbar);
     gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
     /* Thin rule between the toolbar and the panes (Blue Notes look).        */

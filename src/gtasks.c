@@ -1102,7 +1102,7 @@ bt_sync_signin_done(BtApp *app, GtkWindow *parent, const gchar *db_path,
         bt_sync_start(app, db_path, done, NULL);
     } else {
         bt_app_notice(parent, GTK_MESSAGE_ERROR,
-                      "Blue Tasks - Google Sign-In",
+                      "Hacienda - Google Sign-In",
                       "Could not sign in: %s",
                       error != NULL ? error : "unknown error");
     }

@@ -1,5 +1,5 @@
 /* ===========================================================================
- * db.h — SQLite storage for Blue Tasks
+ * db.h — SQLite storage for Hacienda
  *
  * Schema (PRAGMA user_version = 3; v2 added lists.emoji, v3 the five
  * Google-mirror task columns):
@@ -28,8 +28,8 @@
 #include <glib.h>
 #include <sqlite3.h>
 
-/* Database filename, under g_get_user_data_dir()/blue_tasks/.               */
-#define BT_DB_FILENAME "blue_tasks.db"
+/* Database filename, under g_get_user_data_dir()/hacienda/.               */
+#define BT_DB_FILENAME "hacienda.db"
 
 /* ---------------------------------------------------------------------------
  * BtDatabase — one open connection.  A connection must not cross threads:
@@ -94,7 +94,7 @@ BtDatabase *bt_db_open(const gchar *path, GError **err);
 /* bt_db_close() — close the connection and free the handle.  NULL-safe.     */
 void bt_db_close(BtDatabase *db);
 
-/* bt_db_default_path() — "<user data dir>/blue_tasks/blue_tasks.db",
+/* bt_db_default_path() — "<user data dir>/hacienda/hacienda.db",
  * creating the directory.  Returns a new string (g_free it).                */
 gchar *bt_db_default_path(void);
 
@@ -209,9 +209,15 @@ void       bt_db_attachment_remove(BtDatabase *db, gint64 id);
  * g_hash_table_destroy.                                                     */
 GHashTable *bt_db_attachment_counts(BtDatabase *db);
 
+/* -------------------------------- vitals --------------------------------- */
+
+/* Live totals for the About dialog: non-tombstoned task and list counts.
+ * Either out-pointer may be NULL; a failed query leaves 0.                  */
+void bt_db_totals(BtDatabase *db, gint *n_tasks, gint *n_lists);
+
 /* ------------------------------ Blue Notes pins -------------------------- */
 
-/* Pinned state for Blue Notes action items (pinning is a Blue Tasks
+/* Pinned state for Blue Notes action items (pinning is a Hacienda
  * concept; Blue Notes has none, so membership lives in the local
  * bn_pins table keyed by the item's "NOTEID:ORD" address).                  */
 gboolean    bt_db_bn_pin_get(BtDatabase *db, const gchar *ref);

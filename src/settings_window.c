@@ -1,5 +1,5 @@
 /* ===========================================================================
- * settings_window.c — the Blue Tasks settings window (see header)
+ * settings_window.c — the Hacienda settings window (see header)
  * =========================================================================== */
 
 #include "settings_window.h"
@@ -265,7 +265,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     sw->loading = TRUE;
 
     sw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(sw->window), "Blue Tasks - Settings");
+    gtk_window_set_title(GTK_WINDOW(sw->window), "Hacienda - Settings");
     gtk_window_set_transient_for(GTK_WINDOW(sw->window), parent);
     gtk_window_set_default_size(GTK_WINDOW(sw->window), 470, -1);
 

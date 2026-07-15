@@ -1,5 +1,5 @@
 /* ===========================================================================
- * http.h — small libcurl wrapper for Blue Tasks
+ * http.h — small libcurl wrapper for Hacienda
  *
  * One synchronous helper for the two HTTPS clients in the app (Google
  * OAuth token endpoint + the Google Tasks REST API).  BLOCKING — call it

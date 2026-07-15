@@ -17,7 +17,7 @@
 /* ---------------------------------------------------------------------------
  * The app's own OAuth client, baked in at build time (put the values in
  * client_credentials.mk — see the Makefile).  Users never see or enter
- * these: they identify Blue Tasks to Google, exactly like the embedded
+ * these: they identify Hacienda to Google, exactly like the embedded
  * client every desktop OAuth app ships (Google documents that installed-
  * app client secrets are NOT confidential).  The one-time registration
  * is the developer's job; after that "Sync" is just a browser sign-in.
@@ -96,7 +96,7 @@ load_client_file(gchar **id, gchar **secret)
             continue;
         gchar *path = i == 0
             ? g_build_filename(dirs[i], BT_CLIENT_FILE, NULL)
-            : g_build_filename(dirs[i], "blue_tasks", BT_CLIENT_FILE,
+            : g_build_filename(dirs[i], "hacienda", BT_CLIENT_FILE,
                                NULL);
         gchar *text = NULL;
         gboolean loaded = g_file_get_contents(path, &text, NULL, NULL);
@@ -491,9 +491,9 @@ redirect_respond(GSocketConnection *conn, const gchar *message)
     gchar *page = g_strdup_printf(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
         "Connection: close\r\n\r\n"
-        "<html><head><title>Blue Tasks</title></head>"
+        "<html><head><title>Hacienda</title></head>"
         "<body style=\"font-family: sans-serif; margin: 3em\">"
-        "<h2>Blue Tasks</h2><p>%s</p>"
+        "<h2>Hacienda</h2><p>%s</p>"
         "<p>You can close this tab and return to the app.</p>"
         "</body></html>", message);
     GOutputStream *out =

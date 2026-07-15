@@ -1,5 +1,5 @@
 /* ===========================================================================
- * gtasks.h — two-way Google Tasks sync for Blue Tasks
+ * gtasks.h — two-way Google Tasks sync for Hacienda
  *
  * Sync model
  * ----------
@@ -29,7 +29,7 @@
  *
  * Google Tasks maps cleanly onto the schema: tasklists ↔ lists, tasks ↔
  * tasks, `parent` ↔ parent_id (the API supports exactly the one nesting
- * level Blue Tasks allows).  `pinned` and attachments have no Google
+ * level Hacienda allows).  `pinned` and attachments have no Google
  * counterpart and stay local-only.  Task order is not synced.
  *
  * Threading: the whole pass runs on a worker thread with its OWN SQLite

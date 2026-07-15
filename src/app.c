@@ -1,5 +1,5 @@
 /* ===========================================================================
- * app.c — shared application context for Blue Tasks (see app.h)
+ * app.c — shared application context for Hacienda (see app.h)
  * =========================================================================== */
 
 #include "app.h"
@@ -305,7 +305,7 @@ bt_app_register_toolbar(BtApp *app, GtkWidget *toolbar)
  * Config — ini next to the binary, ~/.config fallback (see app.h).
  * =========================================================================== */
 
-#define BT_INI_GROUP "blue-tasks"
+#define BT_INI_GROUP "hacienda"
 
 static GKeyFile *config_kf   = NULL; /* the in-memory config                */
 static gchar    *config_path = NULL; /* where it is written                 */
@@ -333,9 +333,9 @@ bt_app_exe_dir(void)
 
 /* ---------------------------------------------------------------------------
  * bt_app_config_init() — resolve + load the config file once.  Portable
- * mode: blue_tasks.ini next to the binary; when none exists there AND the
- * directory is unwritable, ~/.config/blue_tasks/blue_tasks.ini.  On first
- * run it is seeded from blue_tasks.ini.defaults next to the binary.
+ * mode: hacienda.ini next to the binary; when none exists there AND the
+ * directory is unwritable, ~/.config/hacienda/hacienda.ini.  On first
+ * run it is seeded from hacienda.ini.defaults next to the binary.
  * ------------------------------------------------------------------------- */
 void
 bt_app_config_init(const gchar *argv0)
@@ -345,16 +345,16 @@ bt_app_config_init(const gchar *argv0)
 
     gchar *exe_dir = exe_dir_from_argv0(argv0);
     exe_dir_cached = g_strdup(exe_dir);
-    gchar *local = g_build_filename(exe_dir, "blue_tasks.ini", NULL);
+    gchar *local = g_build_filename(exe_dir, "hacienda.ini", NULL);
     if (g_file_test(local, G_FILE_TEST_EXISTS) ||
         g_access(exe_dir, W_OK) == 0) {
         config_path = local;         /* portable mode                       */
     } else {
         g_free(local);
         gchar *dir = g_build_filename(g_get_user_config_dir(),
-                                      "blue_tasks", NULL);
+                                      "hacienda", NULL);
         g_mkdir_with_parents(dir, 0700);
-        config_path = g_build_filename(dir, "blue_tasks.ini", NULL);
+        config_path = g_build_filename(dir, "hacienda.ini", NULL);
         g_free(dir);
     }
 
@@ -363,7 +363,7 @@ bt_app_config_init(const gchar *argv0)
                                    G_KEY_FILE_NONE, NULL)) {
         /* First launch: seed from the committed defaults, if present.       */
         gchar *defaults = g_build_filename(exe_dir,
-                                           "blue_tasks.ini.defaults", NULL);
+                                           "hacienda.ini.defaults", NULL);
         g_key_file_load_from_file(config_kf, defaults,
                                   G_KEY_FILE_NONE, NULL);
         g_free(defaults);

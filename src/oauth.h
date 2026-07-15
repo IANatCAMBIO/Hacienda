@@ -1,5 +1,5 @@
 /* ===========================================================================
- * oauth.h — Google OAuth 2.0 for Blue Tasks (installed-app flow)
+ * oauth.h — Google OAuth 2.0 for Hacienda (installed-app flow)
  *
  * Implements the "OAuth for native apps" flow (RFC 8252) with PKCE:
  *

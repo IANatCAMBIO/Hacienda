@@ -1,12 +1,12 @@
 #!/bin/sh
 # =============================================================================
-# import-apple-reminders.sh — migrate Apple Reminders into Blue Tasks.
+# import-apple-reminders.sh — migrate Apple Reminders into Hacienda.
 #
 # Usage:
 #   tools/import-apple-reminders.sh [DB_PATH] [EXPORT_FILE]
 #
-#   DB_PATH     — the Blue Tasks database (default:
-#                 ~/.local/share/blue_tasks/blue_tasks.db).
+#   DB_PATH     — the Hacienda database (default:
+#                 ~/.local/share/hacienda/hacienda.db).
 #   EXPORT_FILE — a previously produced export to (re)import, skipping
 #                 the AppleScript step (mainly for testing/reruns).
 #
@@ -16,18 +16,18 @@
 #      are BATCHED per list — one Apple Event per property, not one per
 #      reminder — so large databases export in seconds.  The first run
 #      pops macOS's automation-permission prompt for Reminders.
-#   2. Imports into the Blue Tasks database with python3 (stdlib
+#   2. Imports into the Hacienda database with python3 (stdlib
 #      sqlite3): lists are matched by name (existing lists are reused),
 #      tasks are appended after existing ones, and a task whose exact
 #      title already exists in the target list is skipped — so the
 #      script is safe to re-run.
 #
 # Notes / limitations:
-#   - Blue Tasks must NOT be running (no CLI/socket like Blue Notes; the
+#   - Hacienda must NOT be running (no CLI/socket like Blue Notes; the
 #     script writes the database directly).
 #   - Apple exposes NO API for Reminders subtasks — they import as
 #     top-level tasks of their list.
-#   - Reminder due TIMES are dropped (Blue Tasks due dates are date-only,
+#   - Reminder due TIMES are dropped (Hacienda due dates are date-only,
 #     matching what Google Tasks can sync); priorities and flags are not
 #     carried over.
 #   - Imported rows are stamped dirty: the NEXT SYNC PUSHES THEM ALL to
@@ -36,18 +36,18 @@
 
 set -e
 
-DB="${1:-$HOME/.local/share/blue_tasks/blue_tasks.db}"
+DB="${1:-$HOME/.local/share/hacienda/hacienda.db}"
 EXPORT="${2:-}"
 
 if [ ! -f "$DB" ]; then
-    echo "error: no Blue Tasks database at $DB" >&2
-    echo "       (launch Blue Tasks once to create it, then retry)" >&2
+    echo "error: no Hacienda database at $DB" >&2
+    echo "       (launch Hacienda once to create it, then retry)" >&2
     exit 1
 fi
 
-if pgrep -f '\./blue_tasks' >/dev/null 2>&1 || \
-   pgrep -x blue_tasks >/dev/null 2>&1; then
-    echo "error: Blue Tasks is running — quit it first (the importer" >&2
+if pgrep -f '\./hacienda' >/dev/null 2>&1 || \
+   pgrep -x hacienda >/dev/null 2>&1; then
+    echo "error: Hacienda is running — quit it first (the importer" >&2
     echo "       writes the database directly)" >&2
     exit 1
 fi
@@ -111,7 +111,7 @@ EOS
     echo "Exported $(wc -c < "$EXPORT" | tr -d ' ') bytes."
 fi
 
-# --- 2. Import into the Blue Tasks database ----------------------------------
+# --- 2. Import into the Hacienda database ----------------------------------
 python3 - "$DB" "$EXPORT" <<'EOF'
 import sqlite3, sys, time
 from datetime import datetime
@@ -128,7 +128,7 @@ try:
     cur.execute("SELECT COUNT(*) FROM lists")
     cur.execute("SELECT completed_at FROM tasks LIMIT 0")
 except sqlite3.Error:
-    sys.exit("error: %s is not a current Blue Tasks database "
+    sys.exit("error: %s is not a current Hacienda database "
              "(launch the app once to create/migrate it)" % db_path)
 
 
@@ -221,6 +221,6 @@ print("Imported %d task(s) into %d list(s) (%d new, %d reused); "
       "%d duplicate(s) skipped." % (
           stats["tasks"], stats["lists_new"] + stats["lists_reused"],
           stats["lists_new"], stats["lists_reused"], stats["skipped"]))
-print("Launch Blue Tasks — the next sync will push the imported tasks "
+print("Launch Hacienda — the next sync will push the imported tasks "
       "to Google Tasks.")
 EOF

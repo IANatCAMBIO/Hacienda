@@ -1,5 +1,5 @@
 /* ===========================================================================
- * main.c — Blue Tasks entry point
+ * main.c — Hacienda entry point
  *
  * A GTK3 + SQLite task-list application in plain C — the companion app to
  * Blue Notes.  Boot order: config (needs argv[0] for the portable ini) →
@@ -78,7 +78,7 @@ main(int argc, char **argv)
     GError *gerr = NULL;
     BtDatabase *db = bt_db_open(db_path, &gerr);
     if (db == NULL) {
-        g_printerr("blue_tasks: %s\n",
+        g_printerr("hacienda: %s\n",
                    gerr != NULL ? gerr->message : "cannot open database");
         g_clear_error(&gerr);
         g_free(db_path);
@@ -98,7 +98,7 @@ main(int argc, char **argv)
     bt_app_load_toolbar_style(app);
 
     BtBoot boot = { app, db_path };
-    app->gtk_app = gtk_application_new("org.example.blue-tasks",
+    app->gtk_app = gtk_application_new("org.example.hacienda",
                                        G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(app->gtk_app, "activate",
                      G_CALLBACK(on_activate), &boot);

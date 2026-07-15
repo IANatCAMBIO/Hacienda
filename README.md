@@ -1,8 +1,8 @@
-# Blue Tasks
+# Hacienda
 
 A task-list desktop app in **plain C + GTK3 + SQLite** — the companion
 app to [Blue Notes](../orange_notes/).  Same design language: plain
-`GtkWindow` titlebars ("Blue Tasks - <thing>"), a sidebar + content
+`GtkWindow` titlebars ("Hacienda - <thing>"), a sidebar + content
 library window, one editor window per item.
 
 ![layout](#) <!-- run `make run` and see for yourself -->
@@ -27,14 +27,14 @@ library window, one editor window per item.
   level only, enforced in the schema layer.
 - **Toolbar**: New List, Delete List | New Task, Delete Task | Sync.
 - Local storage in SQLite:
-  `~/.local/share/blue_tasks/blue_tasks.db` (GLib user-data dir).
+  `~/.local/share/hacienda/hacienda.db` (GLib user-data dir).
 - **Two-way Google Tasks sync** (see below).
 
 ## Build
 
 ```sh
 export PATH=/opt/local/bin:$PATH   # MacPorts pkg-config
-make          # builds ./blue_tasks
+make          # builds ./hacienda
 make run
 ```
 
@@ -45,7 +45,7 @@ On Debian/Ubuntu: `libgtk-3-dev libsqlite3-dev libcurl4-openssl-dev`.
 
 Two-way sync against the Google Tasks REST API.  Google's data model
 maps cleanly: tasklists ↔ lists, tasks ↔ tasks, `parent` ↔ subtask
-(the API supports exactly the one nesting level Blue Tasks allows),
+(the API supports exactly the one nesting level Hacienda allows),
 `due` ↔ due date, `status` ↔ done.  **Pinned and attachments are
 local-only** — Google Tasks has no equivalent, so they never leave the
 machine.
@@ -54,16 +54,16 @@ Setup (once): in the Google Cloud console, enable the **Google Tasks
 API** and create an OAuth client of type **Desktop app** (the client
 identifies the app to Google and grants nothing by itself).  Either
 place its downloaded `client_secret….json` next to the binary (or in
-`~/.config/blue_tasks/`), or — the distributor route, so end users skip
+`~/.config/hacienda/`), or — the distributor route, so end users skip
 the step entirely — create `client_credentials.mk` (gitignored) with
 `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` and rebuild to bake it in.
 The legacy `google_client_id`/`google_client_secret` keys in
-`blue_tasks.ini` still override the baked-in default.
+`hacienda.ini` still override the baked-in default.
 
 Sign in **once**: the Sync button (or Settings → Sign In) opens your
 browser for Google's consent page and the app receives its tokens over
 a localhost redirect (RFC 8252 + PKCE).  The refresh token is stored in
-`blue_tasks.ini` (`gtasks_refresh_token`, scoped to Google Tasks only)
+`hacienda.ini` (`gtasks_refresh_token`, scoped to Google Tasks only)
 and silently exchanged for fresh access tokens as they expire, so the
 browser never reappears unless you Sign Out or revoke the grant at
 myaccount.google.com/permissions.
@@ -89,9 +89,9 @@ created from).
 
 ## Configuration
 
-`blue_tasks.ini` next to the binary (portable mode), falling back to
-`~/.config/blue_tasks/blue_tasks.ini` when that directory is not
-writable.  Seeded from `blue_tasks.ini.defaults` on first launch.  All
+`hacienda.ini` next to the binary (portable mode), falling back to
+`~/.config/hacienda/hacienda.ini` when that directory is not
+writable.  Seeded from `hacienda.ini.defaults` on first launch.  All
 keys are editable in-app via File → Settings…:
 `google_client_id`, `google_client_secret`, `sync_interval_min`.
 

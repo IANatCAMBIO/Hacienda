@@ -1,11 +1,11 @@
 /* ===========================================================================
- * app.h — shared application context for Blue Tasks
+ * app.h — shared application context for Hacienda
  *
  * A single BtApp instance is created in main() and passed to every window.
  * It owns the database handle, tracks open task-editor windows, and hosts
  * the notification hooks the library window installs.  Companion app to
  * Blue Notes — same design language: plain C + GTK3 + SQLite, no
- * HeaderBars, window titles "Blue Tasks - <thing>".
+ * HeaderBars, window titles "Hacienda - <thing>".
  * =========================================================================== */
 
 #ifndef BT_APP_H
@@ -154,9 +154,9 @@ gboolean bt_app_confirm(GtkWindow *parent, const gchar *title,
 
 /* ---------------------------------------------------------------------------
  * Config — same model as Blue Notes: an ini next to the binary (portable
- * mode) falling back to ~/.config/blue_tasks/blue_tasks.ini when that
+ * mode) falling back to ~/.config/hacienda/hacienda.ini when that
  * directory is unwritable.  Loaded ONCE into memory; written through on
- * every change.  Keys used (see blue_tasks.ini.defaults): sync —
+ * every change.  Keys used (see hacienda.ini.defaults): sync —
  * google_sync_enabled, google_client_id, google_client_secret,
  * gtasks_refresh_token, sync_interval_min; Blue Notes — blue_notes_sync,
  * blue_notes_cli; UI — toolbar_style, bold_task_titles, native_menubar,

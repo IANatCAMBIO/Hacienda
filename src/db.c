@@ -1,5 +1,5 @@
 /* ===========================================================================
- * db.c — SQLite storage for Blue Tasks (see db.h)
+ * db.c — SQLite storage for Hacienda (see db.h)
  * =========================================================================== */
 
 #include "db.h"
@@ -163,7 +163,7 @@ bt_ptr_array_free_attachments(GPtrArray *a)
 gchar *
 bt_db_default_path(void)
 {
-    gchar *dir = g_build_filename(g_get_user_data_dir(), "blue_tasks", NULL);
+    gchar *dir = g_build_filename(g_get_user_data_dir(), "hacienda", NULL);
     g_mkdir_with_parents(dir, 0755);
     gchar *path = g_build_filename(dir, BT_DB_FILENAME, NULL);
     g_free(dir);
@@ -777,6 +777,30 @@ bt_db_attachment_counts(BtDatabase *db)
                 GINT_TO_POINTER(sqlite3_column_int(st, 1)));
     sqlite3_finalize(st);
     return map;
+}
+
+/* bt_db_totals() — non-tombstoned task/list counts (see db.h).              */
+void
+bt_db_totals(BtDatabase *db, gint *n_tasks, gint *n_lists)
+{
+    const struct {
+        const gchar *sql;
+        gint        *out;            /* caller's slot (may be NULL)         */
+    } q[] = {
+        { "SELECT COUNT(*) FROM tasks WHERE deleted = 0", n_tasks },
+        { "SELECT COUNT(*) FROM lists WHERE deleted = 0", n_lists },
+    };
+    for (gsize i = 0; i < G_N_ELEMENTS(q); i++) {
+        if (q[i].out == NULL)
+            continue;
+        *q[i].out = 0;
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(db->sq, q[i].sql, -1, &st, NULL)
+                == SQLITE_OK &&
+            sqlite3_step(st) == SQLITE_ROW)
+            *q[i].out = sqlite3_column_int(st, 0);
+        sqlite3_finalize(st);
+    }
 }
 
 /* ---------------------------------------------------------------------------

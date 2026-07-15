@@ -1,7 +1,7 @@
 /* ===========================================================================
- * bnotes.h — Blue Notes integration for Blue Tasks
+ * bnotes.h — Blue Notes integration for Hacienda
  *
- * Blue Tasks can show the companion Blue Notes app's action items ('!'
+ * Hacienda can show the companion Blue Notes app's action items ('!'
  * lines) as a special read/write list.  ALL access goes through the
  * blue_notes CLI ("action list" / "action done|undone" / "action due"),
  * never the Blue Notes database file: Blue Notes' GUI/CLI coexistence is a

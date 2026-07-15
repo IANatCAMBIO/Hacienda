@@ -1,7 +1,7 @@
 build/
 dist/
-blue_tasks
-blue_tasks.ini
+hacienda
+hacienda.ini
 client_credentials.mk
 .DS_Store
 

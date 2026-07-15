@@ -1,5 +1,5 @@
 /* ===========================================================================
- * settings_window.h — the Blue Tasks settings window
+ * settings_window.h — the Hacienda settings window
  *
  * One singleton window (File → Settings…), in the Blue Notes settings
  * style: plain GtkWindow, bold section headings, write-through controls

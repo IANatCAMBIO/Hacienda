@@ -1,5 +1,5 @@
 /* ===========================================================================
- * library_window.h — the main Blue Tasks window
+ * library_window.h — the main Hacienda window
  *
  * Layout (Blue Notes design language: plain GtkWindow, one unified
  * toolbar, sidebar | content pane, bottom status bar):

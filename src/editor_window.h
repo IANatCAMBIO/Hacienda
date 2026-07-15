@@ -1,5 +1,5 @@
 /* ===========================================================================
- * editor_window.h — the per-task editor window for Blue Tasks
+ * editor_window.h — the per-task editor window for Hacienda
  *
  * One window per task (double-click in the library), tracked in
  * app->editors keyed by task id.  Edits all task properties — title,
