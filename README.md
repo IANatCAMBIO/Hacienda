@@ -2,7 +2,7 @@
 
 Hacienda is my take on an Apple Reminders–style task list, coded in
 classic C with GTK3 and SQLite — the companion app to
-[Blue Notes](../orange_notes/), built the same way and **with the help
+[Blue Notes](https://github.com/IANatCAMBIO/blue_notes), built the same way and **with the help
 of Claude Code for edits, testing, and code organization**. No
 Electron or interpreted code. Low resource usage, and runs the same on
 macOS and Linux.
@@ -16,8 +16,7 @@ every list), tasks as tall rows that show the notes preview, subtasks
 and a color-coded due date at a glance — and each task opens in its
 own editor window: notes, one level of subtasks, file attachments, a
 due date typed or picked from a calendar. It syncs both ways with
-Google Tasks, so the phone in your pocket stays current. And if you
-keep meeting notes in Blue Notes, its `!` action items can appear
+Google Tasks, and if you keep meeting notes in Blue Notes, its `!` action items can appear
 right in the sidebar, checkable from here.
 
 Want more detail?
