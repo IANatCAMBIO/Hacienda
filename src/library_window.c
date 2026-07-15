@@ -74,6 +74,8 @@ typedef struct {
     gint64        sel_id;
     gboolean      populating;
     gboolean      sb_populated;      /* first population expands Lists      */
+    gboolean      pinned_row_shown;  /* Pinned Tasks row exists (hidden
+                                      * while nothing is pinned)            */
     gint          win_w, win_h;      /* live client size (persisted at
                                       * close as the next launch's size)    */
 } BtLibrary;
@@ -248,6 +250,17 @@ scroll_keep_queue(GtkWidget *view)
 /* ---------------------------------------------------------------------------
  * refresh_sidebar() — rebuild the sidebar and restore the selection.
  * ------------------------------------------------------------------------- */
+
+/* sidebar_show_pinned() — whether the Pinned Tasks meta row should
+ * exist: any pinned task, or (while the integration is on) any pinned
+ * Blue Notes action item.                                                   */
+static gboolean
+sidebar_show_pinned(BtLibrary *lw)
+{
+    return bt_db_has_pinned(lw->app->db,
+        bt_app_config_get_bool("blue_notes_sync", FALSE));
+}
+
 static void
 refresh_sidebar(BtLibrary *lw)
 {
@@ -288,7 +301,10 @@ refresh_sidebar(BtLibrary *lw)
         { SB_KIND_TODAY,    "\xf0\x9f\x8c\x9e  Due Today" },
         { SB_KIND_TOMORROW, "\xf0\x9f\x8c\x99  Due Tomorrow" },
     };
+    lw->pinned_row_shown = sidebar_show_pinned(lw);
     for (gsize i = 0; i < G_N_ELEMENTS(metas); i++) {
+        if (metas[i].kind == SB_KIND_PINNED && !lw->pinned_row_shown)
+            continue;                /* hidden while nothing is pinned      */
         gtk_tree_store_append(lw->sb_store, &iter, NULL);
         gtk_tree_store_set(lw->sb_store, &iter,
                            SB_KIND, metas[i].kind,
@@ -375,9 +391,9 @@ refresh_sidebar(BtLibrary *lw)
     }
     if (!have_selected &&            /* no lists at all: fall back to the   */
         gtk_tree_model_get_iter_first(model, &iter)) {
-        selected = iter;             /* Pinned Tasks row                    */
+        selected = iter;             /* first meta row                      */
         have_selected = TRUE;
-        lw->sel_kind = SB_KIND_PINNED;
+        gtk_tree_model_get(model, &iter, SB_KIND, &lw->sel_kind, -1);
         lw->sel_id = 0;
     }
 
@@ -677,13 +693,19 @@ notify_changed_hook(BtApp *app)
         full_refresh(lw);
 }
 
-/* The light variant: task pane only (editor saves — see editor_notify).     */
+/* The light variant: task pane only (editor saves — see editor_notify).
+ * One exception: an editor's pin flip can be the first/last pin, which
+ * adds/removes the sidebar's Pinned Tasks row — rebuild the sidebar
+ * only on that 0 <-> nonzero transition (it never runs the BN CLI).         */
 static void
 notify_tasks_hook(BtApp *app)
 {
     BtLibrary *lw = lib_of(app);
-    if (lw != NULL)
-        refresh_tasks(lw);
+    if (lw == NULL)
+        return;
+    if (sidebar_show_pinned(lw) != lw->pinned_row_shown)
+        refresh_sidebar(lw);
+    refresh_tasks(lw);
 }
 
 static void

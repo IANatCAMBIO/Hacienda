@@ -844,6 +844,8 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(notes_view), GTK_WRAP_WORD);
     gtk_text_view_set_left_margin(GTK_TEXT_VIEW(notes_view), 6);
     gtk_text_view_set_right_margin(GTK_TEXT_VIEW(notes_view), 6);
+    gtk_text_view_set_top_margin(GTK_TEXT_VIEW(notes_view), 4);
+    gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(notes_view), 4);
     ed->notes_buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(notes_view));
     g_signal_connect(ed->notes_buf, "changed",
                      G_CALLBACK(on_field_changed), ed);

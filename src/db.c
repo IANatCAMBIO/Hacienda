@@ -556,6 +556,25 @@ bt_db_tasks_pinned(BtDatabase *db)
         "ORDER BY list_id, position, id", 0, 0, 0);
 }
 
+/* bt_db_has_pinned() — any pinned task (or BN pin) exists (see db.h).       */
+gboolean
+bt_db_has_pinned(BtDatabase *db, gboolean with_bn_pins)
+{
+    const gchar *sql = with_bn_pins
+        ? "SELECT EXISTS(SELECT 1 FROM tasks "
+          "              WHERE pinned = 1 AND deleted = 0) "
+          "    OR EXISTS(SELECT 1 FROM bn_pins)"
+        : "SELECT EXISTS(SELECT 1 FROM tasks "
+          "              WHERE pinned = 1 AND deleted = 0)";
+    gboolean has = FALSE;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW)
+        has = sqlite3_column_int(st, 0) != 0;
+    sqlite3_finalize(st);
+    return has;
+}
+
 /* bt_db_tasks_all_visible() — the All Tasks meta list (top-level tasks
  * of every list; their subtasks render inside the rows as usual).           */
 GPtrArray *

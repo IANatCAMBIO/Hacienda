@@ -153,6 +153,12 @@ GPtrArray *bt_db_subtasks_all_visible(BtDatabase *db);
  * then position.                                                            */
 GPtrArray *bt_db_tasks_pinned(BtDatabase *db);
 
+/* TRUE when any non-tombstoned task is pinned; with `with_bn_pins`,
+ * pinned Blue Notes action items (bn_pins rows, which may be stale —
+ * refs whose items vanished still count) do too.  Drives the sidebar's
+ * Pinned Tasks row visibility.                                              */
+gboolean bt_db_has_pinned(BtDatabase *db, gboolean with_bn_pins);
+
 /* Visible top-level tasks across ALL lists (the "All Tasks" meta list),
  * ordered by list then position.                                            */
 GPtrArray *bt_db_tasks_all_visible(BtDatabase *db);

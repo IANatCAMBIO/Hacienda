@@ -107,7 +107,12 @@ the user).  A logic test harness lives in the session scratchpad
   overdue #c01c28, today #d19a00, ahead #26a269, computed at draw time.
 - Sidebar: gray backdrop CSS (rgb 230,230,230 / text 65,65,65 /
   selection rgb 86,131,224 white); meta rows bold (Pinned, All Tasks,
-  Due Today, Due Tomorrow); real lists nest under a collapsible bold
+  Due Today, Due Tomorrow).  The Pinned Tasks row exists ONLY while
+  something is pinned (`bt_db_has_pinned`, counting bn_pins when the
+  Blue Notes integration is on); editor pin flips arrive via
+  notify_tasks, so `notify_tasks_hook` rebuilds the sidebar on the
+  0 ↔ nonzero transition (tracked in `pinned_row_shown`) — the task-list
+  pin checkbox already full_refreshes.  Real lists nest under a collapsible bold
   "Lists" header whose expansion is SNAPSHOTTED before every rebuild
   (first population expands; force-open when the selection lives
   inside).  List labels: `emoji + two spaces + name` when an emoji is
