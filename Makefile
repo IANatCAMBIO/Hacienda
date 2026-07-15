@@ -50,11 +50,13 @@ endif
 
 # The app's own Google OAuth client, baked into the binary so users just
 # click Sync and sign in — no configuration.  One-time developer setup:
-# copy client_credentials.mk.example to client_credentials.mk (gitignored)
-# and fill in the id/secret of a "Desktop app" OAuth client from the
-# Google Cloud console (Google Tasks API enabled).  Installed-app client
-# secrets are not confidential (Google's own docs) — baking them in is
-# the standard desktop-app pattern.
+# create client_credentials.mk (gitignored) with two lines —
+#   GOOGLE_CLIENT_ID     = <id>.apps.googleusercontent.com
+#   GOOGLE_CLIENT_SECRET = <secret>
+# from a "Desktop app" OAuth client in the Google Cloud console (Google
+# Tasks API enabled).  Installed-app client secrets are not confidential
+# (Google's own docs) — baking them in is the standard desktop-app
+# pattern.
 -include client_credentials.mk
 ifneq ($(GOOGLE_CLIENT_ID),)
 CFLAGS  += -DBT_GOOGLE_CLIENT_ID='"$(GOOGLE_CLIENT_ID)"'

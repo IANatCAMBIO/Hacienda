@@ -19,11 +19,13 @@
  * grant is revoked or Sign Out removes the stored token.  Access tokens
  * themselves stay in memory.
  *
- * The user supplies their own OAuth client — create a "Desktop app"
- * client in the Google Cloud console (APIs enabled: Google Tasks API)
- * and enter its id/secret in File → Settings… (stored in the ini as
- * google_client_id / google_client_secret; the client identifies the
- * app, it grants nothing by itself).
+ * The OAuth client (it identifies the app; it grants nothing by itself)
+ * resolves in order: Google's client-secret JSON file next to the
+ * binary or under the user config dir → the legacy ini keys
+ * google_client_id / google_client_secret (no UI writes them) → the
+ * client baked in at build time via client_credentials.mk.  The
+ * registration is normally the developer's one-time job; users just
+ * see the browser sign-in.
  *
  * Scope requested: https://www.googleapis.com/auth/tasks (read/write).
  * =========================================================================== */
@@ -40,10 +42,12 @@ typedef void (*BtOauthDoneFn)(gboolean ok, const gchar *error,
                               gpointer user_data);
 
 /* ---------------------------------------------------------------------------
- * bt_oauth_init() — snapshot the OAuth client credentials (id/secret)
- * out of the config into mutex-guarded statics, so the sync worker
- * thread never touches the main-thread config.  Call at startup and
- * after the settings change; main thread only.
+ * bt_oauth_init() — snapshot the OAuth client credentials (id/secret,
+ * resolved as described above) AND the stored refresh token into
+ * mutex-guarded statics, so the sync worker thread never touches the
+ * main-thread config.  Re-reading the refresh token means calling this
+ * also resets the signed-in state to what the ini says.  Call at
+ * startup and after the settings change; main thread only.
  * ------------------------------------------------------------------------- */
 void bt_oauth_init(void);
 
@@ -54,8 +58,8 @@ gboolean bt_oauth_have_client(void);
  * bt_oauth_begin() — run the interactive browser sign-in flow.  One flow
  * at a time; `done` always fires exactly once on the main thread.
  * ------------------------------------------------------------------------- */
-void bt_oauth_begin(BtApp *app, GtkWindow *parent,
-                    BtOauthDoneFn done, gpointer user_data);
+void bt_oauth_begin(GtkWindow *parent, BtOauthDoneFn done,
+                    gpointer user_data);
 
 /* bt_oauth_authenticated() — TRUE while sync can get a token without a
  * browser trip: a valid in-memory access token OR a stored refresh

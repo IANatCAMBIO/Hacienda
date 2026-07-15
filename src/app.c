@@ -25,6 +25,32 @@ bt_app_status(BtApp *app, const gchar *fmt, ...)
 }
 
 /* ---------------------------------------------------------------------------
+ * bt_app_notify_changed() — fire the full-refresh hook if installed.
+ * ------------------------------------------------------------------------- */
+void
+bt_app_notify_changed(BtApp *app)
+{
+    if (app != NULL && app->notify_changed != NULL)
+        app->notify_changed(app);
+}
+
+/* dialog_run() — shared core of notice/confirm: run a modal message
+ * dialog and return its response.                                           */
+static gint
+dialog_run(GtkWindow *parent, GtkMessageType type, GtkButtonsType buttons,
+           const gchar *title, const gchar *msg)
+{
+    GtkWidget *dlg = gtk_message_dialog_new(parent,
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT, type,
+        buttons, "%s", msg);
+    if (title != NULL)
+        gtk_window_set_title(GTK_WINDOW(dlg), title);
+    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+    return resp;
+}
+
+/* ---------------------------------------------------------------------------
  * bt_app_notice() — modal OK message dialog.
  * ------------------------------------------------------------------------- */
 void
@@ -35,13 +61,7 @@ bt_app_notice(GtkWindow *parent, GtkMessageType type,
     va_start(ap, fmt);
     gchar *msg = g_strdup_vprintf(fmt, ap);
     va_end(ap);
-    GtkWidget *dlg = gtk_message_dialog_new(parent,
-        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT, type,
-        GTK_BUTTONS_OK, "%s", msg);
-    if (title != NULL)
-        gtk_window_set_title(GTK_WINDOW(dlg), title);
-    gtk_dialog_run(GTK_DIALOG(dlg));
-    gtk_widget_destroy(dlg);
+    dialog_run(parent, type, GTK_BUTTONS_OK, title, msg);
     g_free(msg);
 }
 
@@ -55,13 +75,8 @@ bt_app_confirm(GtkWindow *parent, const gchar *title, const gchar *fmt, ...)
     va_start(ap, fmt);
     gchar *msg = g_strdup_vprintf(fmt, ap);
     va_end(ap);
-    GtkWidget *dlg = gtk_message_dialog_new(parent,
-        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-        GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO, "%s", msg);
-    if (title != NULL)
-        gtk_window_set_title(GTK_WINDOW(dlg), title);
-    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
-    gtk_widget_destroy(dlg);
+    gint resp = dialog_run(parent, GTK_MESSAGE_QUESTION,
+                           GTK_BUTTONS_YES_NO, title, msg);
     g_free(msg);
     return resp == GTK_RESPONSE_YES;
 }
@@ -85,28 +100,13 @@ bt_app_widget_add_css(GtkWidget *widget, const gchar *css_text)
  * Toolbar icons + style (see app.h).
  * =========================================================================== */
 
-/* exe_dir_from_argv0() — the directory holding the binary (new string).     */
-static gchar *
-exe_dir_from_argv0(const gchar *argv0)
-{
-    if (argv0 != NULL && strchr(argv0, '/') != NULL) {
-        gchar *abs = g_canonicalize_filename(argv0, NULL);
-        gchar *dir = g_path_get_dirname(abs);
-        g_free(abs);
-        return dir;
-    }
-    return g_get_current_dir();
-}
-
 /* ---------------------------------------------------------------------------
  * bt_app_init_icons_dir() — icons/ next to the executable (see app.h).
  * ------------------------------------------------------------------------- */
 void
-bt_app_init_icons_dir(BtApp *app, const gchar *argv0)
+bt_app_init_icons_dir(BtApp *app)
 {
-    gchar *exe_dir = exe_dir_from_argv0(argv0);
-    app->icons_dir = g_build_filename(exe_dir, "icons", NULL);
-    g_free(exe_dir);
+    app->icons_dir = g_build_filename(bt_app_exe_dir(), "icons", NULL);
 }
 
 /* ---------------------------------------------------------------------------
@@ -311,6 +311,19 @@ static GKeyFile *config_kf   = NULL; /* the in-memory config                */
 static gchar    *config_path = NULL; /* where it is written                 */
 static gchar    *exe_dir_cached = NULL;  /* binary's directory (owned)      */
 
+/* exe_dir_from_argv0() — the directory holding the binary (new string).     */
+static gchar *
+exe_dir_from_argv0(const gchar *argv0)
+{
+    if (argv0 != NULL && strchr(argv0, '/') != NULL) {
+        gchar *abs = g_canonicalize_filename(argv0, NULL);
+        gchar *dir = g_path_get_dirname(abs);
+        g_free(abs);
+        return dir;
+    }
+    return g_get_current_dir();
+}
+
 /* bt_app_exe_dir() — see app.h.                                             */
 const gchar *
 bt_app_exe_dir(void)
@@ -451,6 +464,20 @@ bt_due_format(gint64 due)
 }
 
 /* ---------------------------------------------------------------------------
+ * bt_due_format_iso() — canonical "YYYY-MM-DD" spelling ("" for none).
+ * ------------------------------------------------------------------------- */
+gchar *
+bt_due_format_iso(gint64 due)
+{
+    if (due == 0)
+        return g_strdup("");
+    GDateTime *dt = g_date_time_new_from_unix_local(due);
+    gchar *s = g_date_time_format(dt, "%Y-%m-%d");
+    g_date_time_unref(dt);
+    return s != NULL ? s : g_strdup("");
+}
+
+/* ---------------------------------------------------------------------------
  * bt_due_color() — urgency tint (see app.h).  Compares calendar DAYS in
  * local time so the colors roll over at midnight.
  * ------------------------------------------------------------------------- */
@@ -475,6 +502,22 @@ bt_due_color(gint64 due)
 }
 
 /* ---------------------------------------------------------------------------
+ * bt_due_from_ymd() — validated calendar fields → local midnight unix.
+ * ------------------------------------------------------------------------- */
+gint64
+bt_due_from_ymd(gint y, gint m, gint d)
+{
+    if (m < 1 || m > 12 || d < 1 || d > 31 || y < 1970 || y > 9999)
+        return 0;
+    GDateTime *dt = g_date_time_new_local(y, m, d, 0, 0, 0);
+    if (dt == NULL)
+        return 0;
+    gint64 u = g_date_time_to_unix(dt);
+    g_date_time_unref(dt);
+    return u;
+}
+
+/* ---------------------------------------------------------------------------
  * bt_due_parse() — "YYYY-MM-DD" or "M/D/YY[YY]" → local midnight unix.
  * ------------------------------------------------------------------------- */
 gint64
@@ -493,12 +536,5 @@ bt_due_parse(const gchar *text)
         ok = TRUE;
     }
     g_free(t);
-    if (!ok || m < 1 || m > 12 || d < 1 || d > 31 || y < 1970 || y > 9999)
-        return 0;
-    GDateTime *dt = g_date_time_new_local(y, m, d, 0, 0, 0);
-    if (dt == NULL)
-        return 0;
-    gint64 u = g_date_time_to_unix(dt);
-    g_date_time_unref(dt);
-    return u;
+    return ok ? bt_due_from_ymd(y, m, d) : 0;
 }

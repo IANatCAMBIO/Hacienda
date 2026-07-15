@@ -94,7 +94,7 @@ main(int argc, char **argv)
     app->bn_editors = g_hash_table_new_full(g_str_hash, g_str_equal,
                                             g_free, NULL);
     app->toolbars = g_ptr_array_new();
-    bt_app_init_icons_dir(app, argc > 0 ? argv[0] : NULL);
+    bt_app_init_icons_dir(app);
     bt_app_load_toolbar_style(app);
 
     BtBoot boot = { app, db_path };

@@ -6,20 +6,22 @@
  *
  *   ┌──────────────────────────────────────────────────────────────┐
  *   │ menubar (File / Help)                                        │
- *   │ toolbar: New List  Delete List │ New Task  Delete Task │ Sync│
+ *   │ toolbar: Sidebar │ New Task  Delete Task  Sync  Show/Hide ✓  │
  *   ├───────────────┬──────────────────────────────────────────────┤
  *   │ Pinned Tasks  │  ✓ │ Task (tall rows: title, notes preview,  │
- *   │ Due Today     │    │ attachments, subtasks) │ Due │ Pinned   │
+ *   │ All Tasks     │    │ attachments, subtasks) │ Due │ Pinned   │
+ *   │ Due Today     │                                              │
  *   │ Due Tomorrow  │                                              │
  *   │ ── Lists ──   │                                              │
  *   │ <the lists>   │                                              │
+ *   │       + ✎ −   │  (sidebar mini bar: new/edit/delete list)    │
  *   ├───────────────┴──────────────────────────────────────────────┤
  *   │ selection info                          latest event message │
  *   └──────────────────────────────────────────────────────────────┘
  *
- * The sidebar's top three rows are VIRTUAL lists — aggregates over every
- * real list (pinned flag / due today / due tomorrow).  Tasks cannot be
- * created inside them; New Task needs a real list selected.
+ * The sidebar's top four rows are VIRTUAL lists — aggregates over every
+ * real list (pinned flag / all / due today / due tomorrow).  Tasks
+ * cannot be created inside them; New Task needs a real list selected.
  * =========================================================================== */
 
 #ifndef BT_LIBRARY_WINDOW_H
@@ -29,8 +31,8 @@
 
 /* ---------------------------------------------------------------------------
  * bt_library_window_new() — build and show the library window; installs
- * app->notify_changed / notify_status and stores itself in
- * app->library_window.  `db_path` is kept for the sync worker (which
+ * app->notify_changed / notify_tasks / notify_status and stores itself
+ * in app->library_window.  `db_path` is kept for the sync worker (which
  * opens its own connection on it).
  * ------------------------------------------------------------------------- */
 GtkWidget *bt_library_window_new(BtApp *app, const gchar *db_path);

@@ -43,18 +43,21 @@ typedef struct {
     gboolean  matched;
 } RemoteTask;
 
-/* remote_list_free() / remote_task_free() — free one snapshot row.          */
+/* remote_list_free() / remote_task_free() — free one snapshot row
+ * (gpointer-typed so fetch_paginated can free either kind).                 */
 static void
-remote_list_free(RemoteList *r)
+remote_list_free(gpointer data)
 {
+    RemoteList *r = data;
     g_free(r->gid);
     g_free(r->title);
     g_free(r);
 }
 
 static void
-remote_task_free(RemoteTask *r)
+remote_task_free(gpointer data)
 {
+    RemoteTask *r = data;
     g_free(r->gid);
     g_free(r->title);
     g_free(r->notes);
@@ -138,12 +141,7 @@ due_from_rfc3339(const gchar *s)
     gint y = 0, m = 0, d = 0;        /* the date portion                    */
     if (s == NULL || sscanf(s, "%d-%d-%d", &y, &m, &d) != 3)
         return 0;
-    GDateTime *dt = g_date_time_new_local(y, m, d, 0, 0, 0);
-    if (dt == NULL)
-        return 0;
-    gint64 u = g_date_time_to_unix(dt);
-    g_date_time_unref(dt);
-    return u;
+    return bt_due_from_ymd(y, m, d);
 }
 
 /* due_to_rfc3339() — local midnight unix → "YYYY-MM-DDT00:00:00.000Z"
@@ -154,12 +152,9 @@ due_to_rfc3339(gint64 due)
 {
     if (due == 0)
         return NULL;
-    GDateTime *dt = g_date_time_new_from_unix_local(due);
-    gchar *s = g_strdup_printf("%04d-%02d-%02dT00:00:00.000Z",
-                               g_date_time_get_year(dt),
-                               g_date_time_get_month(dt),
-                               g_date_time_get_day_of_month(dt));
-    g_date_time_unref(dt);
+    gchar *date = bt_due_format_iso(due);
+    gchar *s = g_strdup_printf("%sT00:00:00.000Z", date);
+    g_free(date);
     return s;
 }
 
@@ -235,8 +230,9 @@ api_call(const gchar *method, const gchar *url, const gchar *token,
     return TRUE;
 }
 
-/* api_call_notfound_ok() — DELETE variant where a 404 counts as success
- * (the row is gone either way — e.g. deleted from the Google side too).     */
+/* api_call_delete() — DELETE variant where a 404 or 410 counts as
+ * success (the row is gone either way — e.g. deleted from the Google
+ * side too).                                                                */
 static gboolean
 api_call_delete(const gchar *url, const gchar *token, gchar **err)
 {
@@ -253,20 +249,31 @@ api_call_delete(const gchar *url, const gchar *token, gchar **err)
     return FALSE;
 }
 
+/* str_dup_or_empty() — dup a string member, "" when absent.                 */
+static gchar *
+str_dup_or_empty(BtJson *obj, const gchar *key)
+{
+    const gchar *v = bt_json_str(obj, key);
+    return g_strdup(v != NULL ? v : "");
+}
+
 /* ---------------------------------------------------------------------------
- * fetch_remote_lists() — GET all tasklists (paginated).  NULL + *err on
- * failure.
+ * fetch_paginated() — run one paginated GET: `base_url` must already
+ * carry a query string (a pageToken is appended with '&'); every items[]
+ * entry that has an "id" goes through `add_item`, which appends a
+ * snapshot row to `out`.  On failure the collected rows are freed with
+ * `free_row` and NULL is returned (+ *err).
  * ------------------------------------------------------------------------- */
 static GPtrArray *
-fetch_remote_lists(const gchar *token, gchar **err)
+fetch_paginated(const gchar *base_url, const gchar *token,
+                void (*add_item)(BtJson *it, GPtrArray *out),
+                void (*free_row)(gpointer row), gchar **err)
 {
     GPtrArray *out = g_ptr_array_new();
     gchar *page = NULL;              /* nextPageToken                       */
     do {
-        gchar *page_esc = page != NULL
-            ? g_uri_escape_string(page, NULL, FALSE) : NULL;
-        gchar *url = g_strdup_printf(
-            BT_TASKS_API "/users/@me/lists?maxResults=100%s%s",
+        gchar *page_esc = page != NULL ? escaped(page) : NULL;
+        gchar *url = g_strdup_printf("%s%s%s", base_url,
             page_esc != NULL ? "&pageToken=" : "",
             page_esc != NULL ? page_esc : "");
         g_free(page_esc);
@@ -278,26 +285,66 @@ fetch_remote_lists(const gchar *token, gchar **err)
         g_free(url);
         if (!ok) {
             for (guint i = 0; i < out->len; i++)
-                remote_list_free(g_ptr_array_index(out, i));
+                free_row(g_ptr_array_index(out, i));
             g_ptr_array_free(out, TRUE);
             return NULL;
         }
         BtJson *items = bt_json_get(root, "items");
         for (guint i = 0; i < bt_json_len(items); i++) {
             BtJson *it = bt_json_at(items, i);
-            if (bt_json_str(it, "id") == NULL)
-                continue;
-            RemoteList *r = g_new0(RemoteList, 1);
-            r->gid     = g_strdup(bt_json_str(it, "id"));
-            r->title   = g_strdup(bt_json_str(it, "title") != NULL
-                                  ? bt_json_str(it, "title") : "");
-            r->updated = rfc3339_to_unix(bt_json_str(it, "updated"));
-            g_ptr_array_add(out, r);
+            if (bt_json_str(it, "id") != NULL)
+                add_item(it, out);
         }
         page = g_strdup(bt_json_str(root, "nextPageToken"));
         bt_json_free(root);
     } while (page != NULL);
     return out;
+}
+
+/* add_remote_list() — one tasklist item → RemoteList snapshot row.           */
+static void
+add_remote_list(BtJson *it, GPtrArray *out)
+{
+    RemoteList *r = g_new0(RemoteList, 1);
+    r->gid     = g_strdup(bt_json_str(it, "id"));
+    r->title   = str_dup_or_empty(it, "title");
+    r->updated = rfc3339_to_unix(bt_json_str(it, "updated"));
+    g_ptr_array_add(out, r);
+}
+
+/* add_remote_task() — one task item → RemoteTask snapshot row.               */
+static void
+add_remote_task(BtJson *it, GPtrArray *out)
+{
+    RemoteTask *r = g_new0(RemoteTask, 1);
+    r->gid        = g_strdup(bt_json_str(it, "id"));
+    r->title      = str_dup_or_empty(it, "title");
+    r->notes      = str_dup_or_empty(it, "notes");
+    r->parent_gid = g_strdup(bt_json_str(it, "parent"));
+    r->due        = due_from_rfc3339(bt_json_str(it, "due"));
+    r->updated    = rfc3339_to_unix(bt_json_str(it, "updated"));
+    r->completed  = rfc3339_to_unix(bt_json_str(it, "completed"));
+    r->etag       = g_strdup(bt_json_str(it, "etag"));
+    r->web_link   = g_strdup(bt_json_str(it, "webViewLink"));
+    r->glinks     = json_subtree_dup(it, "links");
+    r->assigned   = json_subtree_dup(it, "assignmentInfo");
+    r->done       = g_strcmp0(bt_json_str(it, "status"),
+                              "completed") == 0;
+    r->deleted    = bt_json_bool(it, "deleted", FALSE);
+    r->hidden     = bt_json_bool(it, "hidden", FALSE);
+    g_ptr_array_add(out, r);
+}
+
+/* ---------------------------------------------------------------------------
+ * fetch_remote_lists() — GET all tasklists (paginated).  NULL + *err on
+ * failure.
+ * ------------------------------------------------------------------------- */
+static GPtrArray *
+fetch_remote_lists(const gchar *token, gchar **err)
+{
+    return fetch_paginated(
+        BT_TASKS_API "/users/@me/lists?maxResults=100",
+        token, add_remote_list, remote_list_free, err);
 }
 
 /* ---------------------------------------------------------------------------
@@ -312,7 +359,6 @@ static GPtrArray *
 fetch_remote_tasks(const gchar *token, const gchar *list_gid,
                    gint64 updated_min, gchar **err)
 {
-    GPtrArray *out = g_ptr_array_new();
     gchar *min_param = g_strdup("");
     if (updated_min > 0) {
         gchar *stamp = unix_to_rfc3339(updated_min);
@@ -322,60 +368,16 @@ fetch_remote_tasks(const gchar *token, const gchar *list_gid,
         g_free(stamp_esc);
         g_free(stamp);
     }
-    gchar *page = NULL;              /* nextPageToken                       */
-    do {
-        gchar *page_esc = page != NULL ? escaped(page) : NULL;
-        gchar *gid_esc = escaped(list_gid);
-        gchar *url = g_strdup_printf(
-            BT_TASKS_API "/lists/%s/tasks?maxResults=100"
-            "&showCompleted=true&showHidden=true&showDeleted=true%s%s%s",
-            gid_esc, min_param,
-            page_esc != NULL ? "&pageToken=" : "",
-            page_esc != NULL ? page_esc : "");
-        g_free(gid_esc);
-        g_free(page_esc);
-        g_free(page);
-        page = NULL;
-
-        BtJson *root = NULL;
-        gboolean ok = api_call("GET", url, token, NULL, NULL, &root, err);
-        g_free(url);
-        if (!ok) {
-            for (guint i = 0; i < out->len; i++)
-                remote_task_free(g_ptr_array_index(out, i));
-            g_ptr_array_free(out, TRUE);
-            g_free(min_param);
-            return NULL;
-        }
-        BtJson *items = bt_json_get(root, "items");
-        for (guint i = 0; i < bt_json_len(items); i++) {
-            BtJson *it = bt_json_at(items, i);
-            if (bt_json_str(it, "id") == NULL)
-                continue;
-            RemoteTask *r = g_new0(RemoteTask, 1);
-            r->gid        = g_strdup(bt_json_str(it, "id"));
-            r->title      = g_strdup(bt_json_str(it, "title") != NULL
-                                     ? bt_json_str(it, "title") : "");
-            r->notes      = g_strdup(bt_json_str(it, "notes") != NULL
-                                     ? bt_json_str(it, "notes") : "");
-            r->parent_gid = g_strdup(bt_json_str(it, "parent"));
-            r->due        = due_from_rfc3339(bt_json_str(it, "due"));
-            r->updated    = rfc3339_to_unix(bt_json_str(it, "updated"));
-            r->completed  = rfc3339_to_unix(bt_json_str(it, "completed"));
-            r->etag       = g_strdup(bt_json_str(it, "etag"));
-            r->web_link   = g_strdup(bt_json_str(it, "webViewLink"));
-            r->glinks     = json_subtree_dup(it, "links");
-            r->assigned   = json_subtree_dup(it, "assignmentInfo");
-            r->done       = g_strcmp0(bt_json_str(it, "status"),
-                                      "completed") == 0;
-            r->deleted    = bt_json_bool(it, "deleted", FALSE);
-            r->hidden     = bt_json_bool(it, "hidden", FALSE);
-            g_ptr_array_add(out, r);
-        }
-        page = g_strdup(bt_json_str(root, "nextPageToken"));
-        bt_json_free(root);
-    } while (page != NULL);
+    gchar *gid_esc = escaped(list_gid);
+    gchar *base_url = g_strdup_printf(
+        BT_TASKS_API "/lists/%s/tasks?maxResults=100"
+        "&showCompleted=true&showHidden=true&showDeleted=true%s",
+        gid_esc, min_param);
+    g_free(gid_esc);
     g_free(min_param);
+    GPtrArray *out = fetch_paginated(base_url, token, add_remote_task,
+                                     remote_task_free, err);
+    g_free(base_url);
     return out;
 }
 
@@ -404,6 +406,16 @@ task_body(const BtTask *t)
         bt_json_escape(s, completed);
         g_free(completed);
     }
+    g_string_append(s, "}");
+    return g_string_free(s, FALSE);
+}
+
+/* list_body() — the JSON body for a tasklist create/rename.                 */
+static gchar *
+list_body(const gchar *name)
+{
+    GString *s = g_string_new("{\"title\": ");
+    bt_json_escape(s, name);
     g_string_append(s, "}");
     return g_string_free(s, FALSE);
 }
@@ -531,12 +543,10 @@ sync_lists(BtApp *app, BtDatabase *db, const gchar *token,
              * their stale Google identities too, so the task pass
              * pushes every one of them as a new remote task.                */
             gboolean rebind = l->gtasks_id != NULL;
-            GString *body = g_string_new("{\"title\": ");
-            bt_json_escape(body, l->name);
-            g_string_append(body, "}");
+            gchar *body = list_body(l->name);
             BtJson *reply = NULL;
             gchar *url = tasklist_url(NULL);
-            ok = api_call("POST", url, token, NULL, body->str, &reply, err);
+            ok = api_call("POST", url, token, NULL, body, &reply, err);
             g_free(url);
             if (ok && bt_json_str(reply, "id") != NULL) {
                 if (rebind)
@@ -550,22 +560,18 @@ sync_lists(BtApp *app, BtDatabase *db, const gchar *token,
                 stats->pushed++;
             }
             bt_json_free(reply);
-            g_string_free(body, TRUE);
+            g_free(body);
         } else if (strcmp(match->title, l->name) != 0) {
             /* Both exist, names differ: newer side wins.                    */
             gboolean local_dirty = l->updated_at > last_sync;
             if (local_dirty && l->updated_at >= match->updated) {
-                GString *body = g_string_new("{\"title\": ");
-                bt_json_escape(body, l->name);
-                g_string_append(body, "}");
+                gchar *body = list_body(l->name);
                 gchar *url = tasklist_url(l->gtasks_id);
-                BtJson *reply = NULL;
-                ok = api_call("PATCH", url, token, NULL, body->str, &reply, err);
+                ok = api_call("PATCH", url, token, NULL, body, NULL, err);
                 if (ok)
                     stats->pushed++;
-                bt_json_free(reply);
                 g_free(url);
-                g_string_free(body, TRUE);
+                g_free(body);
             } else {
                 bt_db_list_apply_remote(db, l->id, match->title,
                                         match->updated);
@@ -602,6 +608,24 @@ sync_lists(BtApp *app, BtDatabase *db, const gchar *token,
     return ok;
 }
 
+/* stamp_clean() — after a successful create/patch, write the local row
+ * back clean: the reply's updated time, etag and webViewLink (keeping
+ * the stored link when the reply omits it).  Shallow overlay — nothing
+ * in *t is modified or freed.                                               */
+static void
+stamp_clean(BtDatabase *db, const BtTask *t, BtJson *reply,
+            SyncStats *stats)
+{
+    BtTask clean = *t;
+    clean.updated_at = remote_updated_of(reply, t->updated_at);
+    clean.etag       = (gchar *)bt_json_str(reply, "etag");
+    clean.web_link   = bt_json_str(reply, "webViewLink") != NULL
+                       ? (gchar *)bt_json_str(reply, "webViewLink")
+                       : t->web_link;
+    bt_db_task_apply_remote(db, &clean);
+    stats->pushed++;
+}
+
 /* ---------------------------------------------------------------------------
  * push_task_create() — POST one local task to Google (parent_gid NULL for
  * top-level) and adopt the returned id/stamp.  FALSE + *err on failure.
@@ -627,13 +651,7 @@ push_task_create(BtDatabase *db, const gchar *token, const gchar *list_gid,
         bt_db_task_set_gtasks_id(db, t->id, bt_json_str(reply, "id"));
         g_free(t->gtasks_id);
         t->gtasks_id = g_strdup(bt_json_str(reply, "id"));
-        /* Stamp clean with the remote's updated time + fresh metadata.      */
-        BtTask clean = *t;
-        clean.updated_at = remote_updated_of(reply, t->updated_at);
-        clean.etag       = (gchar *)bt_json_str(reply, "etag");
-        clean.web_link   = (gchar *)bt_json_str(reply, "webViewLink");
-        bt_db_task_apply_remote(db, &clean);
-        stats->pushed++;
+        stamp_clean(db, t, reply, stats);
     }
     bt_json_free(reply);
     g_free(url);
@@ -658,14 +676,7 @@ push_task_patch(BtDatabase *db, const gchar *token, const gchar *list_gid,
     gboolean ok = api_call("PATCH", url, token, t->etag, body,
                            &reply, err);
     if (ok) {
-        BtTask clean = *t;
-        clean.updated_at = remote_updated_of(reply, t->updated_at);
-        clean.etag       = (gchar *)bt_json_str(reply, "etag");
-        clean.web_link   = bt_json_str(reply, "webViewLink") != NULL
-                           ? (gchar *)bt_json_str(reply, "webViewLink")
-                           : t->web_link;
-        bt_db_task_apply_remote(db, &clean);
-        stats->pushed++;
+        stamp_clean(db, t, reply, stats);
     } else if (*err != NULL && strstr(*err, "HTTP 412") != NULL) {
         g_clear_pointer(err, g_free);  /* remote moved on: theirs wins      */
         ok = TRUE;
@@ -673,6 +684,26 @@ push_task_patch(BtDatabase *db, const gchar *token, const gchar *list_gid,
     bt_json_free(reply);
     g_free(url);
     g_free(body);
+    return ok;
+}
+
+/* push_as_new() — POST one local task as a NEW remote one: resolve the
+ * parent's gid (parents are pushed first, so a subtask's parent already
+ * carries one), create, and index the adopted gid so later children can
+ * find it.                                                                  */
+static gboolean
+push_as_new(BtDatabase *db, const gchar *token, const gchar *list_gid,
+            BtTask *t, GHashTable *local_by_gid, SyncStats *stats,
+            gchar **err)
+{
+    BtTask *p = t->parent_id != 0 ? bt_db_task_get(db, t->parent_id)
+                                  : NULL;
+    gboolean ok = push_task_create(db, token, list_gid, t,
+                                   p != NULL ? p->gtasks_id : NULL,
+                                   stats, err);
+    bt_task_free(p);                 /* owns parent_gid until after push    */
+    if (t->gtasks_id != NULL)
+        g_hash_table_insert(local_by_gid, t->gtasks_id, t);
     return ok;
 }
 
@@ -760,23 +791,9 @@ sync_tasks_for_list(BtDatabase *db, const gchar *token, gint64 list_id,
         }
 
         if (t->gtasks_id == NULL) {
-            /* Local new: parents already carry gtasks_id at this point
-             * (ordering above), so a subtask can resolve its parent.        */
-            const gchar *parent_gid = NULL;
-            if (t->parent_id != 0) {
-                BtTask *p = bt_db_task_get(db, t->parent_id);
-                parent_gid = p != NULL ? p->gtasks_id : NULL;
-                /* p leaks its strings into parent_gid's lifetime — keep
-                 * it alive until after the push.                            */
-                ok = push_task_create(db, token, list_gid, t,
-                                      parent_gid, stats, err);
-                bt_task_free(p);
-            } else {
-                ok = push_task_create(db, token, list_gid, t, NULL,
-                                      stats, err);
-            }
-            if (t->gtasks_id != NULL)
-                g_hash_table_insert(local_by_gid, t->gtasks_id, t);
+            /* Local new.                                                    */
+            ok = push_as_new(db, token, list_gid, t, local_by_gid,
+                             stats, err);
             continue;
         }
 
@@ -792,17 +809,8 @@ sync_tasks_for_list(BtDatabase *db, const gchar *token, gint64 list_id,
                 g_hash_table_remove(local_by_gid, t->gtasks_id);
                 bt_db_task_set_gtasks_id(db, t->id, NULL);
                 g_clear_pointer(&t->gtasks_id, g_free);
-                const gchar *parent_gid = NULL;
-                BtTask *p = NULL;
-                if (t->parent_id != 0) {
-                    p = bt_db_task_get(db, t->parent_id);
-                    parent_gid = p != NULL ? p->gtasks_id : NULL;
-                }
-                ok = push_task_create(db, token, list_gid, t,
-                                      parent_gid, stats, err);
-                bt_task_free(p);
-                if (t->gtasks_id != NULL)
-                    g_hash_table_insert(local_by_gid, t->gtasks_id, t);
+                ok = push_as_new(db, token, list_gid, t, local_by_gid,
+                                 stats, err);
             } else if (t->updated_at > last_sync) {
                 /* Incremental listing: absent just means unchanged — but
                  * the LOCAL side is dirty, so push (etag-guarded).          */
@@ -966,8 +974,7 @@ sync_apply(gpointer data)
 {
     SyncJob *job = data;
     job->app->sync_running = FALSE;
-    if (job->app->notify_changed != NULL)
-        job->app->notify_changed(job->app);
+    bt_app_notify_changed(job->app);
     bt_app_status(job->app, "%s", job->message);
     if (job->done != NULL)
         job->done(job->app, job->ok, job->message, job->user_data);
@@ -1083,6 +1090,24 @@ bt_sync_start(BtApp *app, const gchar *db_path,
     g_thread_unref(th);
 }
 
+/* ---------------------------------------------------------------------------
+ * bt_sync_signin_done() — shared tail of a browser sign-in that was
+ * started to sync (see gtasks.h).
+ * ------------------------------------------------------------------------- */
+void
+bt_sync_signin_done(BtApp *app, GtkWindow *parent, const gchar *db_path,
+                    gboolean ok, const gchar *error, BtSyncDoneFn done)
+{
+    if (ok) {
+        bt_sync_start(app, db_path, done, NULL);
+    } else {
+        bt_app_notice(parent, GTK_MESSAGE_ERROR,
+                      "Blue Tasks - Google Sign-In",
+                      "Could not sign in: %s",
+                      error != NULL ? error : "unknown error");
+    }
+}
+
 /* ===========================================================================
  * Cross-list move (tasks.move + destinationTasklist) and Clear Completed
  * (tasks.clear) — one-shot worker jobs following the sync pattern:
@@ -1151,8 +1176,7 @@ move_apply(gpointer data)
     } else {
         bt_app_status(job->app, "Moved in Google Tasks");
     }
-    if (job->app->notify_changed != NULL)
-        job->app->notify_changed(job->app);
+    bt_app_notify_changed(job->app);
     move_job_free(job);
     return G_SOURCE_REMOVE;
 }
@@ -1246,8 +1270,7 @@ bt_gtasks_move_task(BtApp *app, gint64 task_id, gint64 dest_list_id)
         g_thread_unref(th);
     } else {
         move_fallback(app, job);     /* offline / unsynced endpoints        */
-        if (app->notify_changed != NULL)
-            app->notify_changed(app);
+        bt_app_notify_changed(app);
         move_job_free(job);
     }
 }
@@ -1276,8 +1299,7 @@ clear_apply(gpointer data)
         bt_app_status(job->app, "Clear failed: %s",
                       job->error != NULL ? job->error : "unknown error");
     }
-    if (job->app->notify_changed != NULL)
-        job->app->notify_changed(job->app);
+    bt_app_notify_changed(job->app);
     g_free(job->list_gid);
     g_free(job->error);
     g_free(job);
@@ -1339,14 +1361,13 @@ bt_gtasks_clear_completed(BtApp *app, gint64 list_id)
         bt_ptr_array_free_tasks(tasks);
         bt_app_status(app, "Deleted %u completed task%s", n,
                       n == 1 ? "" : "s");
-        if (app->notify_changed != NULL)
-            app->notify_changed(app);
+        bt_app_notify_changed(app);
     }
     bt_list_free(l);
 }
 
 /* ---------------------------------------------------------------------------
- * bt_sync_auto_start() — periodic auto-sync (see gtasks.h).
+ * Periodic auto-sync (see gtasks.h) — the timer payload and callbacks.
  * ------------------------------------------------------------------------- */
 typedef struct {
     BtApp *app;

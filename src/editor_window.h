@@ -25,9 +25,10 @@ void bt_editor_open(BtApp *app, gint64 task_id);
 /* ---------------------------------------------------------------------------
  * bt_editor_open_bnote() — open (or raise) the reduced editor for a Blue
  * Notes action item addressed by `ref` ("NOTEID:ORD").  Done and due
- * date are editable (written back through the blue_notes CLI); title,
- * notes, subtasks, attachments and pinned are disabled — the note in
- * Blue Notes owns those.
+ * date are editable (written back through the blue_notes CLI), and
+ * pinned works too — it is local-only state in the bn_pins table; title,
+ * notes, subtasks and attachments are disabled — the note in Blue Notes
+ * owns those and the CLI has no verbs for them.
  * ------------------------------------------------------------------------- */
 void bt_editor_open_bnote(BtApp *app, const gchar *ref);
 

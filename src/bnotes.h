@@ -3,8 +3,8 @@
  *
  * Blue Tasks can show the companion Blue Notes app's action items ('!'
  * lines) as a special read/write list.  ALL access goes through the
- * blue_notes CLI ("action list" / "action done|undone"), never the
- * Blue Notes database file: Blue Notes' GUI/CLI coexistence is a
+ * blue_notes CLI ("action list" / "action done|undone" / "action due"),
+ * never the Blue Notes database file: Blue Notes' GUI/CLI coexistence is a
  * single-writer design — CLI invocations route through a running GUI's
  * unix socket — so the CLI is the one safe automation surface.
  *

@@ -62,8 +62,7 @@ on_sync_enabled_toggled(GtkWidget *w, gpointer data)
     state_refresh(sw);
     bt_sync_auto_start(sw->app, sw->db_path);
     /* Full notify: the library hides/shows its Sync button with this.       */
-    if (sw->app->notify_changed != NULL)
-        sw->app->notify_changed(sw->app);
+    bt_app_notify_changed(sw->app);
     bt_app_status(sw->app, on ? "Google Tasks sync enabled"
                               : "Google Tasks sync disabled");
 }
@@ -92,15 +91,10 @@ signin_done(gboolean ok, const gchar *error, gpointer data)
     if (settings != sw)              /* window closed mid-flow              */
         return;
     state_refresh(sw);
-    if (ok) {
+    if (ok)
         bt_app_status(sw->app, "Signed in to Google");
-        bt_sync_start(sw->app, sw->db_path, NULL, NULL);
-    } else {
-        bt_app_notice(GTK_WINDOW(sw->window), GTK_MESSAGE_ERROR,
-                      "Blue Tasks - Google Sign-In",
-                      "Could not sign in: %s",
-                      error != NULL ? error : "unknown error");
-    }
+    bt_sync_signin_done(sw->app, GTK_WINDOW(sw->window), sw->db_path,
+                        ok, error, NULL);
 }
 
 /* on_signin() — the Sign In button.                                         */
@@ -110,7 +104,7 @@ on_signin(GtkWidget *w, gpointer data)
     (void)w;
     BtSettings *sw = data;
     bt_app_status(sw->app, "Opening browser for Google sign-in\xe2\x80\xa6");
-    bt_oauth_begin(sw->app, GTK_WINDOW(sw->window), signin_done, sw);
+    bt_oauth_begin(GTK_WINDOW(sw->window), signin_done, sw);
 }
 
 /* on_signout() — the Sign Out button.                                       */
@@ -137,8 +131,7 @@ on_bn_toggled(GtkWidget *w, gpointer data)
     gboolean on = gtk_toggle_button_get_active(
         GTK_TOGGLE_BUTTON(sw->bn_check));
     bt_app_config_set("blue_notes_sync", on ? "1" : "0");
-    if (sw->app->notify_changed != NULL)
-        sw->app->notify_changed(sw->app);
+    bt_app_notify_changed(sw->app);
 }
 
 /* on_bn_cli_changed() — the CLI path entry: persist ONLY.  The library
@@ -162,8 +155,8 @@ on_bn_cli_commit(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtSettings *sw = data;
-    if (!sw->loading && sw->app->notify_changed != NULL)
-        sw->app->notify_changed(sw->app);
+    if (!sw->loading)
+        bt_app_notify_changed(sw->app);
 }
 
 /* on_bn_cli_focus_out() — leaving the CLI path entry: refresh now.          */
@@ -185,8 +178,7 @@ on_bold_titles_toggled(GtkWidget *w, gpointer data)
         return;
     gboolean bold = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
     bt_app_config_set("bold_task_titles", bold ? "1" : "0");
-    if (sw->app->notify_changed != NULL)
-        sw->app->notify_changed(sw->app);
+    bt_app_notify_changed(sw->app);
 }
 
 /* on_toolbar_style_changed() — the Appearance combo: apply the chosen

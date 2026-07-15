@@ -7,7 +7,7 @@
  * and an `updated_at` stamp; sync_state.last_sync records when the last
  * successful sync STARTED.  One sync pass:
  *
- *   pull the full remote state → match rows by gtasks_id →
+ *   pull the remote state → match rows by gtasks_id →
  *     local tombstone            → DELETE remote, purge local
  *     local row, no gtasks_id    → POST (create remote), adopt the new id
  *     remote row, no local match → create local (clean, remote stamp)
@@ -16,9 +16,16 @@
  *                                  overwritten (local applies keep the
  *                                  REMOTE stamp so the row ends clean)
  *
+ * Only the FIRST pass pulls the full remote task state; later passes
+ * fetch incrementally (updatedMin = last_sync - 300s skew overlap), and
+ * a task absent from such a partial listing means UNCHANGED — it is
+ * still pushed if locally dirty, and never treated as deleted
+ * (deletions arrive as deleted:true items).
+ *
  * First-sync dedup: an unmatched local list adopts an unmatched remote
  * list with the same name (and likewise tasks by title within a list)
- * instead of creating a duplicate.
+ * instead of creating a duplicate; the task-title dedup only runs
+ * against a full listing.
  *
  * Google Tasks maps cleanly onto the schema: tasklists ↔ lists, tasks ↔
  * tasks, `parent` ↔ parent_id (the API supports exactly the one nesting
@@ -43,12 +50,23 @@ typedef void (*BtSyncDoneFn)(BtApp *app, gboolean ok, const gchar *message,
                              gpointer user_data);
 
 /* ---------------------------------------------------------------------------
- * bt_sync_start() — kick off one sync pass on a worker thread.  No-op
- * (with a status message) when a sync is already running or no Google
- * account is connected.  `done` may be NULL.  Main thread only.
+ * bt_sync_start() — kick off one sync pass on a worker thread.  Three
+ * early-outs, each with a status message: sync disabled in Settings and
+ * "not signed in" also fire `done` (FALSE + a short reason); "already
+ * running" does not.  `done` may be NULL.  Main thread only.
  * ------------------------------------------------------------------------- */
 void bt_sync_start(BtApp *app, const gchar *db_path,
                    BtSyncDoneFn done, gpointer user_data);
+
+/* ---------------------------------------------------------------------------
+ * bt_sync_signin_done() — shared tail of a browser sign-in that was
+ * started in order to sync: on success kick off a pass (`done` may be
+ * NULL), on failure show the standard sign-in-failed dialog over
+ * `parent`.  Main thread only.
+ * ------------------------------------------------------------------------- */
+void bt_sync_signin_done(BtApp *app, GtkWindow *parent,
+                         const gchar *db_path, gboolean ok,
+                         const gchar *error, BtSyncDoneFn done);
 
 /* ---------------------------------------------------------------------------
  * bt_sync_auto_start() — install the periodic auto-sync timer from the

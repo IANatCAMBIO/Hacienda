@@ -51,14 +51,14 @@ local-only** — Google Tasks has no equivalent, so they never leave the
 machine.
 
 Setup (once): in the Google Cloud console, enable the **Google Tasks
-API** and create an OAuth client of type **Desktop app**; enter its
-client id/secret in **File → Settings…** (stored in `blue_tasks.ini` —
-they identify the app to Google and grant nothing by themselves).
-
-Alternatively, a distributor can bake a default client into the binary
-so end users skip that step: copy `client_credentials.mk.example` to
-`client_credentials.mk` (gitignored) and rebuild.  Settings values
-override the built-ins.
+API** and create an OAuth client of type **Desktop app** (the client
+identifies the app to Google and grants nothing by itself).  Either
+place its downloaded `client_secret….json` next to the binary (or in
+`~/.config/blue_tasks/`), or — the distributor route, so end users skip
+the step entirely — create `client_credentials.mk` (gitignored) with
+`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` and rebuild to bake it in.
+The legacy `google_client_id`/`google_client_secret` keys in
+`blue_tasks.ini` still override the baked-in default.
 
 Sign in **once**: the Sync button (or Settings → Sign In) opens your
 browser for Google's consent page and the app receives its tokens over

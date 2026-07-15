@@ -20,7 +20,9 @@
  *                  or NULL for none.
  *   content_type — Content-Type header for `body`, or NULL.
  *   extra_header — one additional raw header ("If-Match: …"), or NULL.
- *   body         — request body, or NULL (ignored for GET/DELETE).
+ *   body         — request body, or NULL for none (a non-NULL body is
+ *                  sent whatever the method; callers pass NULL for
+ *                  GET/DELETE).
  *   status       — out: the HTTP status code (0 on transport failure).
  *   err          — out: transport-level error message (owned by caller),
  *                  or NULL; HTTP error statuses are NOT reported here —

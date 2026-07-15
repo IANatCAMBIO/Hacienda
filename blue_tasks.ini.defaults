@@ -1,11 +1,12 @@
 # Blue Tasks — default settings, copied into the live blue_tasks.ini on
 # first launch.  The live ini is rewritten by the app and is gitignored.
-# Everything here is editable in-app via File → Settings…
 [blue-tasks]
 # Google Tasks sync — the OAuth client comes from Google's downloaded
 # client_secret.apps.googleusercontent.com.json placed next to the app
-# (gitignored — never commit it).  Signing in (once, in the browser)
-# stores a sync-only refresh token here as gtasks_refresh_token.
+# (gitignored — never commit it), or from a baked-in build default; the
+# legacy google_client_id/google_client_secret keys here still override
+# the baked-in client.  Signing in (once, in the browser) stores a
+# sync-only refresh token here as gtasks_refresh_token.
 # google_sync_enabled (1|0, default 1) is the master switch.
 
 
@@ -20,3 +21,15 @@ bold_task_titles=0
 # Show completed tasks in the task list (1|0, default 1; toolbar toggle).
 show_completed=1
 google_sync_enabled=1
+# Toolbar button rendering: icons|both|text (Settings → Appearance or
+# right-click an empty toolbar spot).
+toolbar_style=icons
+# Blue Notes integration: show its action items as a list (1|0), and
+# the blue_notes CLI to reach them with (a path or a command name on
+# PATH; Settings → Blue Notes).
+blue_notes_sync=0
+# blue_notes_cli=blue_notes
+# Sidebar visibility (1|0, default 0; the toolbar Sidebar toggle).
+sidebar_visible=0
+# win_w/win_h — the library window size, written on clean close and
+# restored at launch (980x640 fallback); not meant for hand-editing.

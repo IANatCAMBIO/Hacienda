@@ -81,9 +81,10 @@ void bt_app_widget_add_css(GtkWidget *widget, const gchar *css_text);
 
 /* ---------------------------------------------------------------------------
  * bt_app_init_icons_dir() — locate the icons/ folder next to the
- * executable (resolved from argv[0]) and remember it in app->icons_dir.
+ * executable (via bt_app_exe_dir(); bt_app_config_init() must have run)
+ * and remember it in app->icons_dir.
  * ------------------------------------------------------------------------- */
-void bt_app_init_icons_dir(BtApp *app, const gchar *argv0);
+void bt_app_init_icons_dir(BtApp *app);
 
 /* ---------------------------------------------------------------------------
  * bt_app_icon_image_sized() — build a GtkImage for icon `name` from
@@ -132,6 +133,13 @@ void bt_app_load_toolbar_style(BtApp *app);
 void bt_app_status(BtApp *app, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
 
 /* ---------------------------------------------------------------------------
+ * bt_app_notify_changed() — fire the notify_changed hook (full refresh:
+ * sidebar + task pane + open editors).  Safe when the hook is NULL or
+ * not yet installed.
+ * ------------------------------------------------------------------------- */
+void bt_app_notify_changed(BtApp *app);
+
+/* ---------------------------------------------------------------------------
  * bt_app_notice() — run a modal OK message dialog and destroy it.
  * ------------------------------------------------------------------------- */
 void bt_app_notice(GtkWindow *parent, GtkMessageType type,
@@ -148,8 +156,11 @@ gboolean bt_app_confirm(GtkWindow *parent, const gchar *title,
  * Config — same model as Blue Notes: an ini next to the binary (portable
  * mode) falling back to ~/.config/blue_tasks/blue_tasks.ini when that
  * directory is unwritable.  Loaded ONCE into memory; written through on
- * every change.  Keys used: google_client_id, google_client_secret,
- * gtasks_refresh_token, sync_interval_min.
+ * every change.  Keys used (see blue_tasks.ini.defaults): sync —
+ * google_sync_enabled, google_client_id, google_client_secret,
+ * gtasks_refresh_token, sync_interval_min; Blue Notes — blue_notes_sync,
+ * blue_notes_cli; UI — toolbar_style, bold_task_titles, native_menubar,
+ * show_completed, sidebar_visible, win_w, win_h.
  * ------------------------------------------------------------------------- */
 void      bt_app_config_init(const gchar *argv0);
 gchar    *bt_app_config_get(const gchar *key);         /* NULL when unset   */
@@ -175,6 +186,10 @@ void bt_day_bounds(gint offset_days, gint64 *lo, gint64 *hi);
  * new string (g_free it).                                                   */
 gchar *bt_due_format(gint64 due);
 
+/* bt_due_format_iso() — "" for no date, else the canonical "YYYY-MM-DD"
+ * spelling (local calendar day).  Returns a new string (g_free it).         */
+gchar *bt_due_format_iso(gint64 due);
+
 /* bt_due_color() — urgency tint for a due timestamp: overdue red, today
  * gold, ahead green (the Blue Notes action-item palette), or NULL for no
  * tint (due == 0).  Static string; do not free.                             */
@@ -183,5 +198,9 @@ const gchar *bt_due_color(gint64 due);
 /* bt_due_parse() — parse "YYYY-MM-DD" (also "M/D/YY[YY]") into a local-
  * midnight unix timestamp; 0 when the text is empty/unparseable.            */
 gint64 bt_due_parse(const gchar *text);
+
+/* bt_due_from_ymd() — validated year/month/day → local-midnight unix
+ * timestamp; 0 when the fields are out of range.                            */
+gint64 bt_due_from_ymd(gint y, gint m, gint d);
 
 #endif /* BT_APP_H */

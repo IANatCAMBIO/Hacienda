@@ -85,8 +85,6 @@ editor_due_entry_parse(BtEditor *ed, gint64 current)
     return due;
 }
 
-static void editor_load(BtEditor *ed);
-
 /* ---------------------------------------------------------------------------
  * editor_title_refresh() — window title "Blue Tasks - <task title>".
  * ------------------------------------------------------------------------- */
@@ -525,9 +523,23 @@ set_entry_if_differs(GtkWidget *entry, const gchar *text)
         gtk_entry_set_text(GTK_ENTRY(entry), text);
 }
 
-/* editor_load_bnote() — (re)load a Blue Notes item editor from the CLI
- * listing; the window closes when the item disappeared.                     */
+/* due_entry_refresh() — show a stored due date in the entry — unless the
+ * user is mid-edit: never rewrite the entry while it has focus (the
+ * canonical form would replace their half-typed text).                     */
 static void
+due_entry_refresh(BtEditor *ed, gint64 due)
+{
+    if (gtk_widget_has_focus(ed->due_entry))
+        return;
+    gchar *text = bt_due_format_iso(due);
+    set_entry_if_differs(ed->due_entry, text);
+    g_free(text);
+}
+
+/* editor_load_bnote() — (re)load a Blue Notes item editor from the CLI
+ * listing.  Returns FALSE when the item disappeared (or the CLI failed)
+ * and the window was therefore destroyed — `ed` is gone then.              */
+static gboolean
 editor_load_bnote(BtEditor *ed)
 {
     gchar *err = NULL;
@@ -544,7 +556,7 @@ editor_load_bnote(BtEditor *ed)
     if (found == NULL) {             /* CLI failed or item gone             */
         bt_bnotes_actions_free(acts);
         gtk_widget_destroy(ed->window);
-        return;
+        return FALSE;
     }
     ed->loading = TRUE;
     set_entry_if_differs(ed->title_entry, found->text);
@@ -553,24 +565,13 @@ editor_load_bnote(BtEditor *ed)
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->pinned_check),
                                  bt_db_bn_pin_get(ed->app->db,
                                                   ed->bn_ref));
-    /* Never rewrite the due entry while the user is typing in it — the
-     * stored canonical form would replace their half-typed text.            */
-    if (!gtk_widget_has_focus(ed->due_entry)) {
-        gchar *due = g_strdup("");
-        if (found->due != 0) {
-            GDateTime *dt = g_date_time_new_from_unix_local(found->due);
-            g_free(due);
-            due = g_date_time_format(dt, "%Y-%m-%d");
-            g_date_time_unref(dt);
-        }
-        set_entry_if_differs(ed->due_entry, due);
-        g_free(due);
-    }
+    due_entry_refresh(ed, found->due);
     ed->bn_done = found->done;       /* the change-detection baseline       */
     ed->bn_due  = found->due;
     editor_title_refresh(ed);
     ed->loading = FALSE;
     bt_bnotes_actions_free(acts);
+    return TRUE;
 }
 
 /* clear_children() — empty a container.                                     */
@@ -624,7 +625,6 @@ google_section_load(BtEditor *ed, const BtTask *t)
         bt_json_free(ai);
     }
     gtk_label_set_text(GTK_LABEL(ed->google_info), info->str);
-    gtk_widget_set_visible(ed->google_info, info->len > 0);
 
     clear_children(ed->glinks_box);
     if (t->glinks != NULL) {
@@ -655,20 +655,20 @@ google_section_load(BtEditor *ed, const BtTask *t)
 }
 
 /* ---------------------------------------------------------------------------
- * editor_load() — (re)load every widget from the database row.
+ * editor_load() — (re)load every widget from the database row.  Returns
+ * FALSE when the row/item vanished and the window was destroyed — `ed`
+ * must not be touched afterwards.
  * ------------------------------------------------------------------------- */
-static void
+static gboolean
 editor_load(BtEditor *ed)
 {
-    if (ed->bn_ref != NULL) {
-        editor_load_bnote(ed);
-        return;
-    }
+    if (ed->bn_ref != NULL)
+        return editor_load_bnote(ed);
     BtTask *t = bt_db_task_get(ed->app->db, ed->task_id);
     if (t == NULL || t->deleted) {
         bt_task_free(t);
         gtk_widget_destroy(ed->window);
-        return;
+        return FALSE;
     }
     ed->loading = TRUE;
     set_entry_if_differs(ed->title_entry, t->title);
@@ -676,21 +676,7 @@ editor_load(BtEditor *ed)
                                  t->done);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->pinned_check),
                                  t->pinned);
-    /* Same mid-typing guard as the Blue Notes loader.                       */
-    if (!gtk_widget_has_focus(ed->due_entry)) {
-        gchar *due = g_strdup("");
-        if (t->due != 0) {
-            GDateTime *dt = g_date_time_new_from_unix_local(t->due);
-            g_free(due);
-            due = g_strdup_printf("%04d-%02d-%02d",
-                                  g_date_time_get_year(dt),
-                                  g_date_time_get_month(dt),
-                                  g_date_time_get_day_of_month(dt));
-            g_date_time_unref(dt);
-        }
-        set_entry_if_differs(ed->due_entry, due);
-        g_free(due);
-    }
+    due_entry_refresh(ed, t->due);
 
     GtkTextIter a, b;
     gtk_text_buffer_get_bounds(ed->notes_buf, &a, &b);
@@ -705,6 +691,7 @@ editor_load(BtEditor *ed)
     editor_title_refresh(ed);
     ed->loading = FALSE;
     bt_task_free(t);
+    return TRUE;
 }
 
 /* on_editor_destroy() — flush a pending save and unregister.                */
@@ -725,8 +712,9 @@ on_editor_destroy(GtkWidget *w, gpointer data)
 
 /* ---------------------------------------------------------------------------
  * make_list_section() — the shared "label + scrolled tree view + button
- * column" layout of the subtasks and attachments sections.  Returns the
- * outer widget; *view_out receives the tree view.
+ * column" layout of the subtasks and attachments sections: wraps the
+ * caller's `view` and `btn_box` under `heading`.  Returns the outer
+ * widget.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 make_list_section(const gchar *heading, GtkWidget *view,
@@ -766,8 +754,8 @@ small_button(const gchar *label, GCallback cb, gpointer data)
 /* ---------------------------------------------------------------------------
  * editor_open_common() — build an editor window for a task (bn_ref NULL)
  * or a Blue Notes action item (task_id 0).  The Blue Notes variant uses
- * the same layout with title/notes/subtasks/attachments/pinned disabled
- * — done and due are the CLI-writable fields.
+ * the same layout with title/notes/subtasks/attachments disabled — done
+ * and due write through the CLI, and pinned is local-only (bn_pins).
  * ------------------------------------------------------------------------- */
 static void
 editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
@@ -987,7 +975,10 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
     }
     g_object_set_data(G_OBJECT(ed->window), "bt-editor", ed);
     bt_task_free(t);
-    editor_load(ed);
+    /* The Blue Notes load can destroy the window (item gone / CLI
+     * failure) — `ed` is freed then, so bail before touching it.            */
+    if (!editor_load(ed))
+        return;
     gtk_widget_show_all(ed->window);
 }
 
@@ -1007,15 +998,22 @@ bt_editor_open_bnote(BtApp *app, const gchar *ref)
     editor_open_common(app, 0, ref);
 }
 
+/* editor_windows() — every open editor window, task and Blue Notes
+ * alike (new list; g_list_free it).                                         */
+static GList *
+editor_windows(BtApp *app)
+{
+    return g_list_concat(g_hash_table_get_values(app->editors),
+                         g_hash_table_get_values(app->bn_editors));
+}
+
 /* ---------------------------------------------------------------------------
  * bt_editor_refresh_all() — reload every open editor (see header).
  * ------------------------------------------------------------------------- */
 void
 bt_editor_refresh_all(BtApp *app)
 {
-    GList *windows = g_hash_table_get_values(app->editors);
-    windows = g_list_concat(windows,
-                            g_hash_table_get_values(app->bn_editors));
+    GList *windows = editor_windows(app);
     for (GList *l = windows; l != NULL; l = l->next) {
         BtEditor *ed = g_object_get_data(G_OBJECT(l->data), "bt-editor");
         if (ed == NULL || ed->save_source != 0)
@@ -1029,9 +1027,7 @@ bt_editor_refresh_all(BtApp *app)
 void
 bt_editor_close_all(BtApp *app)
 {
-    GList *windows = g_hash_table_get_values(app->editors);
-    windows = g_list_concat(windows,
-                            g_hash_table_get_values(app->bn_editors));
+    GList *windows = editor_windows(app);
     for (GList *l = windows; l != NULL; l = l->next)
         gtk_widget_destroy(GTK_WIDGET(l->data));
     g_list_free(windows);

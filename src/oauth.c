@@ -48,6 +48,23 @@ static gchar  *cred_refresh_token = NULL;   /* the persistent grant         */
 static gchar  *session_access     = NULL;   /* current access token         */
 static gint64  session_expiry     = 0;      /* unix time it goes stale      */
 
+/* esc() — shorthand for the URI escaping every form/URL builder needs.      */
+static gchar *
+esc(const gchar *s)
+{
+    return g_uri_escape_string(s, NULL, FALSE);
+}
+
+/* session_cache() — store a fresh access token; call under cred_lock.
+ * The 60 s haircut keeps a token from expiring mid-request.                 */
+static void
+session_cache(const gchar *access, gint64 expires_in)
+{
+    g_free(session_access);
+    session_access = g_strdup(access);
+    session_expiry = g_get_real_time() / G_USEC_PER_SEC + expires_in - 60;
+}
+
 /* The single in-flight interactive flow, or inactive when service==NULL.    */
 static struct {
     GSocketService *service;         /* loopback listener                   */
@@ -196,7 +213,7 @@ bt_oauth_access_token(gchar **err)
     g_mutex_unlock(&cred_lock);
 
     /* Silent refresh — network I/O runs OUTSIDE the lock.                   */
-    gchar *rtok_esc = g_uri_escape_string(rtok, NULL, FALSE);
+    gchar *rtok_esc = esc(rtok);
     gchar *form = g_strdup_printf(
         "grant_type=refresh_token&refresh_token=%s&client_id=%s"
         "&client_secret=%s",
@@ -223,12 +240,8 @@ bt_oauth_access_token(gchar **err)
      * refresh token while this round trip was in flight, and re-caching
      * would resurrect the "signed-out" session for another hour.            */
     g_mutex_lock(&cred_lock);
-    if (cred_refresh_token != NULL) {
-        g_free(session_access);
-        session_access = g_strdup(access);
-        session_expiry = g_get_real_time() / G_USEC_PER_SEC +
-                         expires_in - 60;
-    }
+    if (cred_refresh_token != NULL)
+        session_cache(access, expires_in);
     g_mutex_unlock(&cred_lock);
     return access;
 }
@@ -366,6 +379,19 @@ typedef struct {
     gchar    *error;                 /* out: failure reason                 */
 } ExchangeJob;
 
+/* exchange_job_free() — free an ExchangeJob and everything it owns.         */
+static void
+exchange_job_free(ExchangeJob *job)
+{
+    g_free(job->code);
+    g_free(job->redirect_uri);
+    g_free(job->verifier);
+    g_free(job->access);
+    g_free(job->refresh);
+    g_free(job->error);
+    g_free(job);
+}
+
 /* exchange_apply() — main-thread completion: cache the session token,
  * persist the refresh token (sign in once, stay signed in), finish the
  * flow.  When the flow already ended (the 5-minute timeout fired while
@@ -377,13 +403,7 @@ exchange_apply(gpointer data)
 {
     ExchangeJob *job = data;
     if (flow.service == NULL) {
-        g_free(job->code);
-        g_free(job->redirect_uri);
-        g_free(job->verifier);
-        g_free(job->access);
-        g_free(job->refresh);
-        g_free(job->error);
-        g_free(job);
+        exchange_job_free(job);
         return G_SOURCE_REMOVE;
     }
     if (job->error == NULL && job->access != NULL) {
@@ -394,23 +414,14 @@ exchange_apply(gpointer data)
             g_free(cred_refresh_token);
             cred_refresh_token = g_strdup(job->refresh);
         }
-        g_free(session_access);
-        session_access = g_strdup(job->access);
-        session_expiry = g_get_real_time() / G_USEC_PER_SEC +
-                         job->expires_in - 60;
+        session_cache(job->access, job->expires_in);
         g_mutex_unlock(&cred_lock);
         flow_finish(TRUE, NULL);
     } else {
         flow_finish(FALSE, job->error != NULL
                     ? job->error : "Google returned no access token");
     }
-    g_free(job->code);
-    g_free(job->redirect_uri);
-    g_free(job->verifier);
-    g_free(job->access);
-    g_free(job->refresh);
-    g_free(job->error);
-    g_free(job);
+    exchange_job_free(job);
     return G_SOURCE_REMOVE;
 }
 
@@ -424,8 +435,8 @@ exchange_thread(gpointer data)
     gchar *csec = g_strdup(cred_client_secret);
     g_mutex_unlock(&cred_lock);
 
-    gchar *code_esc = g_uri_escape_string(job->code, NULL, FALSE);
-    gchar *uri_esc  = g_uri_escape_string(job->redirect_uri, NULL, FALSE);
+    gchar *code_esc = esc(job->code);
+    gchar *uri_esc  = esc(job->redirect_uri);
     gchar *form = g_strdup_printf(
         "grant_type=authorization_code&code=%s&client_id=%s"
         "&client_secret=%s&redirect_uri=%s&code_verifier=%s",
@@ -579,10 +590,8 @@ flow_timeout(gpointer data)
  * re-sign-in after Sign Out would leave us with nothing to store.
  * ------------------------------------------------------------------------- */
 void
-bt_oauth_begin(BtApp *app, GtkWindow *parent,
-               BtOauthDoneFn done, gpointer user_data)
+bt_oauth_begin(GtkWindow *parent, BtOauthDoneFn done, gpointer user_data)
 {
-    (void)app;
     bt_oauth_init();
     g_mutex_lock(&cred_lock);
     gchar *cid = g_strdup(cred_client_id);
@@ -590,11 +599,11 @@ bt_oauth_begin(BtApp *app, GtkWindow *parent,
 
     if (cid == NULL) {
         if (done != NULL)
-            done(FALSE, "No OAuth client configured.  Open File \xe2\x86\x92 "
-                 "Settings\xe2\x80\xa6 and enter the client id/secret of a "
-                 "\xe2\x80\x9c""Desktop app\xe2\x80\x9d OAuth client from "
-                 "the Google Cloud console (with the Google Tasks API "
-                 "enabled).", user_data);
+            done(FALSE, "No OAuth client configured.  Place the Google "
+                 "Cloud console's \xe2\x80\x9c""Desktop app\xe2\x80\x9d "
+                 "client-secret JSON (" BT_CLIENT_FILE ") next to the "
+                 "app, or build with client_credentials.mk (Google "
+                 "Tasks API enabled either way).", user_data);
         return;
     }
     if (flow.service != NULL) {
@@ -631,8 +640,8 @@ bt_oauth_begin(BtApp *app, GtkWindow *parent,
     g_socket_service_start(flow.service);
 
     gchar *challenge = sha256_base64url(flow.verifier);
-    gchar *cid_esc   = g_uri_escape_string(cid, NULL, FALSE);
-    gchar *scope_esc = g_uri_escape_string(BT_OAUTH_SCOPE, NULL, FALSE);
+    gchar *cid_esc   = esc(cid);
+    gchar *scope_esc = esc(BT_OAUTH_SCOPE);
     gchar *redirect  = g_strdup_printf("http%%3A%%2F%%2F127.0.0.1%%3A%u",
                                        (guint)flow.port);
     gchar *url = g_strdup_printf(

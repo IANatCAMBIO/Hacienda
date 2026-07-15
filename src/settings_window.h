@@ -6,12 +6,14 @@
  * (every change lands in the ini immediately — no OK/Apply buttons).
  *
  * Sections:
- *   Google Tasks Sync — OAuth client id/secret (the app-identifying
- *     credentials from the user's Google Cloud console; NOT a grant),
- *     auto-sync interval, Sign In / Sign Out and the session state.
- *     Sign-in is per session: a browser round trip that yields an
- *     in-memory access token only (see oauth.h) — nothing token-like is
- *     ever stored.
+ *   Google Tasks Sync — master enable switch, Sign In / Sign Out with
+ *     the session state, auto-sync interval.  Sign in once, stay signed
+ *     in: the browser flow stores a refresh token in the ini (see
+ *     oauth.h); Sign Out removes it.  The OAuth client itself is not
+ *     entered here — it comes from the client-secret JSON file, the
+ *     legacy ini keys, or the baked-in build default (oauth.h).
+ *   Blue Notes — the action-items integration switch and CLI path.
+ *   Appearance — toolbar style, bold task titles, native macOS menubar.
  *   Database — where the SQLite file lives (informational).
  * =========================================================================== */
 

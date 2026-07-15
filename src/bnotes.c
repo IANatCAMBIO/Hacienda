@@ -146,14 +146,8 @@ gboolean
 bt_bnotes_action_set_due(const gchar *ref, gint64 due, gchar **err)
 {
     *err = NULL;
-    gchar *date;                     /* ISO date, or "-" to clear           */
-    if (due == 0) {
-        date = g_strdup("-");
-    } else {
-        GDateTime *dt = g_date_time_new_from_unix_local(due);
-        date = g_date_time_format(dt, "%Y-%m-%d");
-        g_date_time_unref(dt);
-    }
+    /* ISO date, or "-" to clear.                                            */
+    gchar *date = due == 0 ? g_strdup("-") : bt_due_format_iso(due);
     gboolean ok = run_cli("action", "due", ref, date, NULL, err);
     g_free(date);
     return ok;

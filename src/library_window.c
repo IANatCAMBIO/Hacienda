@@ -77,8 +77,15 @@ typedef struct {
                                       * close as the next launch's size)    */
 } BtLibrary;
 
-static void refresh_sidebar(BtLibrary *lw);
-static void refresh_tasks(BtLibrary *lw);
+/* list_label() — a list's display label: the optional emoji prefixes
+ * the name, set off by two spaces.  New string (g_free).                    */
+static gchar *
+list_label(const BtList *l)
+{
+    return *l->emoji != '\0'
+        ? g_strdup_printf("%s  %s", l->emoji, l->name)
+        : g_strdup(l->name);
+}
 
 /* lib_of() — the BtLibrary behind app->library_window.                      */
 static BtLibrary *
@@ -306,10 +313,7 @@ refresh_sidebar(BtLibrary *lw)
     gboolean have_first = FALSE;
     for (guint i = 0; i < lists->len; i++) {
         BtList *l = g_ptr_array_index(lists, i);
-        /* The optional emoji prefixes the name, set off by two spaces.      */
-        gchar *label = *l->emoji != '\0'
-            ? g_strdup_printf("%s  %s", l->emoji, l->name)
-            : g_strdup(l->name);
+        gchar *label = list_label(l);
         gtk_tree_store_append(lw->sb_store, &iter, &header);
         gtk_tree_store_set(lw->sb_store, &iter,
                            SB_KIND, SB_KIND_LIST,
@@ -599,22 +603,15 @@ refresh_tasks(BtLibrary *lw)
     }
 
     /* Status bar left: where we are + how many rows.                        */
-    if (virtual_view) {
-        gchar *loc = g_strdup_printf("%s \xe2\x80\x94 %u task%s",
-                                     view_name, shown,
-                                     shown == 1 ? "" : "s");
-        gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
-        g_free(loc);
-    } else {
-        BtList *l = bt_db_list_get(lw->app->db, lw->sel_id);
-        gchar *loc = g_strdup_printf("%s \xe2\x80\x94 %u task%s",
-                                     l != NULL ? l->name : "?",
-                                     shown,
-                                     shown == 1 ? "" : "s");
-        gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
-        g_free(loc);
-        bt_list_free(l);
-    }
+    BtList *sel_list = virtual_view ? NULL
+                       : bt_db_list_get(lw->app->db, lw->sel_id);
+    gchar *loc = g_strdup_printf("%s \xe2\x80\x94 %u task%s",
+                                 virtual_view    ? view_name
+                                 : sel_list != NULL ? sel_list->name : "?",
+                                 shown, shown == 1 ? "" : "s");
+    gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
+    g_free(loc);
+    bt_list_free(sel_list);
 
     g_hash_table_destroy(att_counts);
     g_hash_table_destroy(subs_by_parent);
@@ -1480,6 +1477,23 @@ on_ctx_set_done(GtkWidget *item, gpointer data)
                   done ? "complete" : "incomplete");
 }
 
+/* ctx_done_item() — one Mark (All) Complete / Incomplete context-menu
+ * item: the selection rides on the item as its own g_array_ref, the
+ * complete/incomplete flag as "bt-done".                                    */
+static void
+ctx_done_item(BtLibrary *lw, GtkWidget *menu, GArray *ids,
+              gboolean single, gboolean done)
+{
+    GtkWidget *item = gtk_menu_item_new_with_label(
+        done ? (single ? "Mark Complete"   : "Mark All Complete")
+             : (single ? "Mark Incomplete" : "Mark All Incomplete"));
+    g_object_set_data_full(G_OBJECT(item), "bt-ids", g_array_ref(ids),
+                           (GDestroyNotify)g_array_unref);
+    g_object_set_data(G_OBJECT(item), "bt-done", GINT_TO_POINTER(done));
+    g_signal_connect(item, "activate", G_CALLBACK(on_ctx_set_done), lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+}
+
 /* on_ctx_move() — a destination picked in the Move to List menu: move
  * every selected TOP-LEVEL task not already there (subtasks travel with
  * their parents; a selected subtask on its own cannot move).                */
@@ -1550,32 +1564,10 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
     gtk_menu_attach_to_widget(GTK_MENU(menu), view, NULL);
     g_signal_connect(menu, "selection-done",
                      G_CALLBACK(gtk_widget_destroy), NULL);
-    /* The id array rides on the menu; items borrow it via extra refs.       */
-    g_object_set_data_full(G_OBJECT(menu), "bt-ids", g_array_ref(ids),
-                           (GDestroyNotify)g_array_unref);
 
     /* Mark Complete / Mark Incomplete — the bulk staples.                   */
-    GtkWidget *done_item = gtk_menu_item_new_with_label(
-        single ? "Mark Complete" : "Mark All Complete");
-    g_object_set_data_full(G_OBJECT(done_item), "bt-ids",
-                           g_array_ref(ids),
-                           (GDestroyNotify)g_array_unref);
-    g_object_set_data(G_OBJECT(done_item), "bt-done",
-                      GINT_TO_POINTER(TRUE));
-    g_signal_connect(done_item, "activate",
-                     G_CALLBACK(on_ctx_set_done), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), done_item);
-
-    GtkWidget *undone_item = gtk_menu_item_new_with_label(
-        single ? "Mark Incomplete" : "Mark All Incomplete");
-    g_object_set_data_full(G_OBJECT(undone_item), "bt-ids",
-                           g_array_ref(ids),
-                           (GDestroyNotify)g_array_unref);
-    g_object_set_data(G_OBJECT(undone_item), "bt-done",
-                      GINT_TO_POINTER(FALSE));
-    g_signal_connect(undone_item, "activate",
-                     G_CALLBACK(on_ctx_set_done), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), undone_item);
+    ctx_done_item(lw, menu, ids, single, TRUE);
+    ctx_done_item(lw, menu, ids, single, FALSE);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu),
                           gtk_separator_menu_item_new());
@@ -1604,9 +1596,7 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
          * destination for multi (rows may span lists in virtual views).     */
         if (single && t != NULL && l->id == t->list_id)
             continue;
-        gchar *label = *l->emoji != '\0'
-            ? g_strdup_printf("%s  %s", l->emoji, l->name)
-            : g_strdup(l->name);
+        gchar *label = list_label(l);
         GtkWidget *dest = gtk_menu_item_new_with_label(label);
         g_free(label);
         gint64 *did = g_new(gint64, 1);
@@ -1664,15 +1654,10 @@ sync_after_signin(gboolean ok, const gchar *error, gpointer data)
     BtLibrary *lw = lib_of(app);
     if (lw == NULL)
         return;                      /* window closed mid-flow              */
-    if (ok) {
-        bt_sync_start(app, lw->db_path, sync_done, NULL);
-    } else {
+    if (!ok)
         gtk_widget_set_sensitive(lw->sync_item, TRUE);
-        bt_app_notice(GTK_WINDOW(lw->window), GTK_MESSAGE_ERROR,
-                      "Blue Tasks - Google Sign-In",
-                      "Could not sign in: %s",
-                      error != NULL ? error : "unknown error");
-    }
+    bt_sync_signin_done(app, GTK_WINDOW(lw->window), lw->db_path,
+                        ok, error, sync_done);
 }
 
 /* on_sync() — the toolbar Sync button.  Sign-in is per session: when the
@@ -1701,8 +1686,8 @@ on_sync(GtkWidget *w, gpointer data)
     } else {
         bt_app_status(lw->app,
                       "Opening browser for Google sign-in\xe2\x80\xa6");
-        bt_oauth_begin(lw->app, GTK_WINDOW(lw->window),
-                       sync_after_signin, lw->app);
+        bt_oauth_begin(GTK_WINDOW(lw->window), sync_after_signin,
+                       lw->app);
     }
 }
 
@@ -1717,13 +1702,6 @@ on_menu_settings(GtkWidget *w, gpointer data)
     (void)w;
     BtLibrary *lw = data;
     bt_settings_window_open(lw->app, GTK_WINDOW(lw->window), lw->db_path);
-}
-
-/* on_menu_sync() — File → Sync Now.                                         */
-static void
-on_menu_sync(GtkWidget *w, gpointer data)
-{
-    on_sync(w, data);
 }
 
 /* on_menu_clear_completed() — File → Clear Completed Tasks: archive the
@@ -1908,7 +1886,7 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     GtkWidget *file_menu = gtk_menu_new();
     GtkWidget *file_item = gtk_menu_item_new_with_label("File");
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(file_item), file_menu);
-    menu_item(file_menu, "Sync Now", G_CALLBACK(on_menu_sync), lw);
+    menu_item(file_menu, "Sync Now", G_CALLBACK(on_sync), lw);
     menu_item(file_menu, "Clear Completed Tasks",
               G_CALLBACK(on_menu_clear_completed), lw);
     menu_item(file_menu, "Settings\xe2\x80\xa6",

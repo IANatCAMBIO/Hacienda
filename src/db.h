@@ -1,13 +1,15 @@
 /* ===========================================================================
  * db.h — SQLite storage for Blue Tasks
  *
- * Schema (PRAGMA user_version = 1):
+ * Schema (PRAGMA user_version = 3; v2 added lists.emoji, v3 the five
+ * Google-mirror task columns):
  *
- *   lists        id, name, position, gtasks_id, updated_at, deleted
+ *   lists        id, name, emoji, position, gtasks_id, updated_at, deleted
  *   tasks        id, list_id, parent_id (NULL = top-level; ONE level of
  *                nesting only — a subtask can never be a parent),
  *                title, notes, due (unix local midnight; 0 = none), done,
- *                pinned, position, gtasks_id, updated_at, deleted
+ *                pinned, position, gtasks_id, updated_at, deleted,
+ *                completed_at, etag, web_link, glinks, assigned
  *   attachments  id, task_id, path, added_at   (local-only; never synced)
  *   sync_state   key, value                    (e.g. "last_sync")
  *   bn_pins      ref                           (pinned Blue Notes action

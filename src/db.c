@@ -278,7 +278,7 @@ bt_db_close(BtDatabase *db)
 
 /* ---------------------------------------------------------------------------
  * read_list() — build a BtList from the standard lists SELECT
- * (id, name, position, gtasks_id, updated_at, deleted).
+ * (LIST_COLS: id, name, position, gtasks_id, updated_at, deleted, emoji).
  * ------------------------------------------------------------------------- */
 static BtList *
 read_list(sqlite3_stmt *st)
@@ -657,18 +657,27 @@ bt_db_task_update(BtDatabase *db, const BtTask *t)
 }
 
 /* bt_db_task_set_done() — toggle done, stamping/clearing completed_at
- * and updated_at (see db.h).                                                */
+ * and updated_at (see db.h).  Same CASE as bt_db_task_update, so both
+ * done paths agree: an already-done task keeps its original stamp.          */
 void
 bt_db_task_set_done(BtDatabase *db, gint64 id, gboolean done)
 {
-    gint64 ts = now();
-    gchar *sql = g_strdup_printf(
-        "UPDATE tasks SET completed_at = %lld, done = %d, "
-        "updated_at = %lld WHERE id = %lld",
-        done ? (long long)ts : 0LL, done ? 1 : 0,
-        (long long)ts, (long long)id);
-    exec(db, sql);
-    g_free(sql);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db->sq,
+            "UPDATE tasks SET completed_at = CASE "
+            "                    WHEN ?1 = 1 AND done = 0 THEN ?2 "
+            "                    WHEN ?1 = 0 THEN 0 "
+            "                    ELSE completed_at END, "
+            "done = ?1, updated_at = ?2 WHERE id = ?3", -1,
+            &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(st, 1, done ? 1 : 0);
+        sqlite3_bind_int64(st, 2, now());
+        sqlite3_bind_int64(st, 3, id);
+        step_done(db, st, "task set done");
+    } else {
+        step_done(db, NULL, "task set done");
+    }
+    sqlite3_finalize(st);
 }
 
 /* bt_db_task_set_pinned() — toggle the local-only pin (see db.h).           */

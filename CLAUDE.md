@@ -35,13 +35,13 @@ the user).  A logic test harness lives in the session scratchpad
 | `src/db.[ch]` | SQLite schema (user_version 3) + CRUD; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
 | `src/library_window.[ch]` | Sidebar (virtual lists + collapsible Lists section), tall task rows, toolbar, mini +/✎/− bar, multi-select context menu, status bar |
 | `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); reduced Blue Notes variant; read-only "From Google" section |
-| `src/settings_window.[ch]` | Singleton settings: Google OAuth client, sign in/out, auto-sync interval, Blue Notes integration, toolbar style, native menubar |
+| `src/settings_window.[ch]` | Singleton settings: sync master switch, sign in/out, auto-sync interval, Blue Notes integration, toolbar style, native menubar |
 | `src/oauth.[ch]` | OAuth 2.0 installed-app flow: PKCE + loopback listener; refresh token in ini; access tokens in memory |
 | `src/gtasks.[ch]` | Two-way sync engine + move/clear worker jobs |
 | `src/bnotes.[ch]` | Blue Notes integration — CLI ONLY, never its database |
 | `src/http.[ch]` | libcurl wrapper (blocking; worker threads only) |
 | `src/json.[ch]` | Minimal JSON parser/serializer (no external JSON dep) |
-| `icons/` | Curated toolbar PNGs directly in icons/ (icon names are `icons/`-relative paths, case-exact for Linux; spares live in `icons/Unused/`) |
+| `icons/` | Curated toolbar images directly in icons/ (icon names are extension-less basenames — the loader tries `.png` then `.svg`, case-exact for Linux; spares live in `icons/Unused/`) |
 | `icons/theme/hicolor/` | Bundled SVG `pan-*-symbolic` arrows → crisp HiDPI tree expanders (needs librsvg loader) |
 
 ## Conventions
@@ -55,7 +55,8 @@ the user).  A logic test harness lives in the session scratchpad
 - Config: `blue_tasks.ini` NEXT TO THE BINARY (portable mode), fallback
   `~/.config/blue_tasks/` when unwritable; seeded from
   `blue_tasks.ini.defaults`; loaded ONCE, written through on change,
-  never re-read.  All settings editable in File → Settings….
+  never re-read.  Everything except the OAuth client keys and the
+  window geometry is editable in File → Settings….
 - **Error discipline**: every prepared WRITE goes through `step_done()`
   (logs sqlite's message on prepare/step failure — silent write loss is
   the unacceptable outcome); multi-statement writes go through
@@ -81,8 +82,8 @@ the user).  A logic test harness lives in the session scratchpad
   `bt_app_tool_item_new` (local PNG at 24 px logical, Pango-markup glyph
   fallback); registered with `bt_app_register_toolbar` so the
   icons/both/text style applies live (Settings combo + right-click
-  radio menu).  Task buttons sit at the RIGHT end behind an invisible
-  expanding separator; Sync stays on the toolbar.  After Sync: the
+  radio menu).  Layout: the Sidebar toggle, a drawn divider, then the
+  task buttons and Sync (all left-packed).  After Sync: the
   completed-visibility toggle (`show_completed`, default 1) — it shows
   hidden.png while completed tasks are visible and visible.png while
   hidden (the icon names the ACTION), swapped live via
@@ -189,9 +190,11 @@ the user).  A logic test harness lives in the session scratchpad
 - OAuth: installed-app flow, PKCE (GLib SHA-256), loopback
   GSocketService on an ephemeral port, `access_type=offline` +
   `prompt=consent`; refresh token persisted in the ini
-  (`gtasks_refresh_token`), access tokens in memory only.  Client
-  id/secret are entered in Settings (ini) with an optional baked-in
-  default via gitignored `client_credentials.mk`.  Races handled: a
+  (`gtasks_refresh_token`), access tokens in memory only.  The OAuth
+  client resolves as: client-secret JSON file next to the binary (or
+  user config dir) → legacy ini keys `google_client_id`/`_secret` (no
+  UI writes them) → baked-in default via gitignored
+  `client_credentials.mk`.  Races handled: a
   sign-out mustn't be resurrected by an in-flight refresh (re-check
   `cred_refresh_token` before caching); a timed-out flow discards a
   late exchange result.  The consent screen's app name comes from the
