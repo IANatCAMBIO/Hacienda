@@ -37,13 +37,33 @@ and the browser never reappears unless you Sign Out or revoke the
 grant at myaccount.google.com/permissions.
 
 Building it yourself? You also need to give your build an OAuth
-client (it identifies the app to Google and grants nothing by
-itself): in the Google Cloud console enable the **Google Tasks API**,
-create a **Desktop app** OAuth client, and either drop the downloaded
-`client_secret….json` next to the binary or bake the id and secret in
-via `client_credentials.mk` (gitignored) so end users skip the step
-entirely. The [User Guide](User_Guide.md) covers what syncs, what
-stays local, and how conflicts resolve.
+client — it identifies the app to Google and grants nothing by
+itself. The recommended route is baking it in via
+`client_credentials.mk` (one-time setup, then every build just
+works):
+
+1. In the [Google Cloud console](https://console.cloud.google.com/),
+   create a project (any name) and enable the **Google Tasks API**
+   (*APIs & Services → Library*).
+2. Configure the OAuth consent screen (*APIs & Services → OAuth
+   consent screen*) — the app name you enter there is what the
+   browser's consent page will show.
+3. Create the client (*APIs & Services → Credentials → Create
+   Credentials → OAuth client ID*, application type **Desktop app**)
+   and note the client id and secret.
+4. In the source directory:
+   `cp client_credentials.mk.example client_credentials.mk`, fill in
+   the two values, then `make clean && make`.
+
+`client_credentials.mk` is gitignored, so your credentials never end
+up in a commit — and Desktop-app client secrets are, per Google's own
+docs, not confidential, so shipping them inside a binary you
+distribute is the standard pattern. (Alternatively, the app also
+accepts the console's downloaded `client_secret….json` placed next to
+the binary at runtime — also gitignored — and that file takes
+precedence over the baked-in client if both exist.) The
+[User Guide](User_Guide.md) covers what syncs, what stays local, and
+how conflicts resolve.
 
 ## Building
 
@@ -73,3 +93,10 @@ it later, rebuild from clean (`make clean && make`) so every file sees
 it. On macOS, `make app` wraps the binary into
 `dist/Hacienda-<version>.app` (it still links against the MacPorts GTK
 libraries, so the bundle runs on the machine that built it).
+
+One more step if you want Google sync: set up `client_credentials.mk`
+before you build, as described in
+[Syncing with Google Tasks](#syncing-with-google-tasks) above. It is
+optional — without it the build still succeeds and everything except
+the Sync sign-in works; add the file and rebuild whenever you're
+ready (the Makefile tracks it, so a plain `make` picks up changes).

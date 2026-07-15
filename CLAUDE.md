@@ -205,7 +205,11 @@ the user).  A logic test harness lives in the session scratchpad
   client resolves as: client-secret JSON file next to the binary (or
   user config dir) → legacy ini keys `google_client_id`/`_secret` (no
   UI writes them) → baked-in default via gitignored
-  `client_credentials.mk`.  Races handled: a
+  `client_credentials.mk`.  THIS machine bakes via
+  client_credentials.mk ONLY — the JSON was deliberately deleted
+  (2026-07-15); don't look for it or recreate it.  Objects and
+  compile_commands.json depend on the mk file, so a plain `make`
+  picks up credential edits.  Races handled: a
   sign-out mustn't be resurrected by an in-flight refresh (re-check
   `cred_refresh_token` before caching); a timed-out flow discards a
   late exchange result.  The consent screen's app name comes from the

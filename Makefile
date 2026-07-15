@@ -96,7 +96,7 @@ $(BIN): $(OBJS)
 # headers for simplicity (the project is small enough that full rebuilds
 # on header change are cheap), and on the Makefile so a VERSION bump
 # recompiles the baked-in BT_VERSION.
-build/%.o: src/%.c $(wildcard src/*.h) Makefile
+build/%.o: src/%.c $(wildcard src/*.h) Makefile $(wildcard client_credentials.mk)
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c -o $@ $<
 
@@ -109,7 +109,7 @@ build/%.o: src/%.c $(wildcard src/*.h) Makefile
 # double-quoting collapses that to \", which is what JSON needs.
 JSONFLAGS := $(subst ",\\\",$(CFLAGS))
 
-compile_commands.json: Makefile
+compile_commands.json: Makefile $(wildcard client_credentials.mk)
 	@{ echo '['; \
 	first=1; \
 	for f in $(SRCS); do \
