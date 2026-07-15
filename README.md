@@ -1,111 +1,76 @@
 # Hacienda
 
-A task-list desktop app in **plain C + GTK3 + SQLite** — the companion
-app to [Blue Notes](../orange_notes/).  Same design language: plain
-`GtkWindow` titlebars ("Hacienda - <thing>"), a sidebar + content
-library window, one editor window per item.
+Hacienda is my take on an Apple Reminders–style task list, coded in
+classic C with GTK3 and SQLite — the companion app to
+[Blue Notes](../orange_notes/), built the same way and **with the help
+of Claude Code for edits, testing, and code organization**. No
+Electron or interpreted code. Low resource usage, and runs the same on
+macOS and Linux.
 
-![layout](#) <!-- run `make run` and see for yourself -->
+![Hacienda](Screenshot.png)
 
-## Features
+TLDR; your tasks live in a single SQLite file you can take anywhere.
+You organize them in a Library window — lists in the sidebar (plus
+rolled-up views for pinned, due-today and due-tomorrow tasks across
+every list), tasks as tall rows that show the notes preview, subtasks
+and a color-coded due date at a glance — and each task opens in its
+own editor window: notes, one level of subtasks, file attachments, a
+due date typed or picked from a calendar. It syncs both ways with
+Google Tasks, so the phone in your pocket stays current. And if you
+keep meeting notes in Blue Notes, its `!` action items can appear
+right in the sidebar, checkable from here.
 
-- **Lists** in the sidebar tree view, nested under a collapsible
-  **Lists** section (lists themselves cannot nest), plus three
-  **virtual lists** aggregated across every real list:
-  - 📌 **Pinned Tasks** — anything with the pinned flag
-  - **Due Today** / **Due Tomorrow** — by due date, rolling over at
-    local midnight
-- **Tall task rows** in the list view: bold title, notes preview,
-  attachment count, and up to four subtask lines with their own
-  checkboxes rendered inline.  Columns: done checkbox, task, due date
-  (urgency-tinted: overdue red / today gold / ahead green, sortable
-  with undated rows last), pinned checkbox.
-- **Double-click a task** to open its editor window: title, done,
-  pinned, due date (typed ISO date or a calendar picker), notes, file
-  attachments (references — add/remove/open), and subtasks
-  (add/remove/rename/toggle).  **Subtasks cannot have subtasks** — one
-  level only, enforced in the schema layer.
-- **Toolbar**: New List, Delete List | New Task, Delete Task | Sync.
-- Local storage in SQLite:
-  `~/.local/share/hacienda/hacienda.db` (GLib user-data dir).
-- **Two-way Google Tasks sync** (see below).
+Want more detail?
 
-## Build
+- **[User Guide](User_Guide.md)** — everything in depth: the library,
+  the task editor, settings, storage, Google Tasks sync, and the Blue
+  Notes integration.
+- **[Internals](Internals.md)** — for the curious: code layout, the
+  database schema, and how the sync engine thinks.
+
+## Syncing with Google Tasks
+
+Press **Sync** and sign in once: the app opens your browser for
+Google's consent page and receives its tokens over a localhost
+redirect (RFC 8252 + PKCE). After that, syncs run silently — a
+refresh token scoped to Google Tasks only is kept in `hacienda.ini`,
+and the browser never reappears unless you Sign Out or revoke the
+grant at myaccount.google.com/permissions.
+
+Building it yourself? You also need to give your build an OAuth
+client (it identifies the app to Google and grants nothing by
+itself): in the Google Cloud console enable the **Google Tasks API**,
+create a **Desktop app** OAuth client, and either drop the downloaded
+`client_secret….json` next to the binary or bake the id and secret in
+via `client_credentials.mk` (gitignored) so end users skip the step
+entirely. The [User Guide](User_Guide.md) covers what syncs, what
+stays local, and how conflicts resolve.
+
+## Building
+
+You'll need a C compiler, the GTK3, SQLite3 and libcurl development
+files, and pkg-config. That's it.
+
+macOS (MacPorts):
 
 ```sh
-export PATH=/opt/local/bin:$PATH   # MacPorts pkg-config
-make          # builds ./hacienda
+sudo port install pkgconf gtk3 +quartz curl
+sudo port install gtk-osx-application-gtk3   # optional: native menu bar
+make
 make run
 ```
 
-Dependencies (MacPorts): `gtk3 +quartz`, `sqlite3`, `curl`, `pkgconf`.
-On Debian/Ubuntu: `libgtk-3-dev libsqlite3-dev libcurl4-openssl-dev`.
+Debian/Ubuntu:
 
-## Google Tasks sync
+```sh
+sudo apt install build-essential pkg-config libgtk-3-dev \
+                 libsqlite3-dev libcurl4-openssl-dev
+make
+make run
+```
 
-Two-way sync against the Google Tasks REST API.  Google's data model
-maps cleanly: tasklists ↔ lists, tasks ↔ tasks, `parent` ↔ subtask
-(the API supports exactly the one nesting level Hacienda allows),
-`due` ↔ due date, `status` ↔ done.  **Pinned and attachments are
-local-only** — Google Tasks has no equivalent, so they never leave the
-machine.
-
-Setup (once): in the Google Cloud console, enable the **Google Tasks
-API** and create an OAuth client of type **Desktop app** (the client
-identifies the app to Google and grants nothing by itself).  Either
-place its downloaded `client_secret….json` next to the binary (or in
-`~/.config/hacienda/`), or — the distributor route, so end users skip
-the step entirely — create `client_credentials.mk` (gitignored) with
-`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` and rebuild to bake it in.
-The legacy `google_client_id`/`google_client_secret` keys in
-`hacienda.ini` still override the baked-in default.
-
-Sign in **once**: the Sync button (or Settings → Sign In) opens your
-browser for Google's consent page and the app receives its tokens over
-a localhost redirect (RFC 8252 + PKCE).  The refresh token is stored in
-`hacienda.ini` (`gtasks_refresh_token`, scoped to Google Tasks only)
-and silently exchanged for fresh access tokens as they expire, so the
-browser never reappears unless you Sign Out or revoke the grant at
-myaccount.google.com/permissions.
-
-Sync mechanics: every row carries its Google id, etag and an
-`updated_at` stamp; deletes are tombstones until pushed.  After the
-first full pass syncs run **incrementally** (`updatedMin` — only items
-changed since the last pass transfer).  Pushes are etag-guarded
-(`If-Match`; a 412 defers to the remote copy).  Conflicts resolve
-newest-wins per item; deletions win over concurrent edits.  A periodic
-auto-sync runs while signed in (`sync_interval_min`, default 5 minutes,
-0 = off).  The sync runs on a worker thread with its own SQLite
-connection; the GUI stays live throughout.
-
-Beyond field sync, the full API surface is wired up: right-click a task
-for **Open in Google Tasks** (`webViewLink`) and **Move to List**
-(server-side `tasks.move` with `destinationTasklist`, with an offline
-delete-and-recreate fallback); File → **Clear Completed Tasks** uses
-`tasks.clear`; and the editor's read-only **From Google** section shows
-the completion time, Docs/Chat assignment origin (`assignmentInfo`),
-and any Google-attached `links[]` (e.g. the Gmail message a task was
-created from).
-
-## Configuration
-
-`hacienda.ini` next to the binary (portable mode), falling back to
-`~/.config/hacienda/hacienda.ini` when that directory is not
-writable.  Seeded from `hacienda.ini.defaults` on first launch.  All
-keys are editable in-app via File → Settings…:
-`google_client_id`, `google_client_secret`, `sync_interval_min`.
-
-## File map
-
-| File | Purpose |
-|---|---|
-| `src/main.c` | GtkApplication entry; config + db init |
-| `src/app.[ch]` | Shared `BtApp` context, dialogs, ini config, date helpers |
-| `src/db.[ch]` | SQLite schema + CRUD; tombstones + `updated_at` for sync |
-| `src/library_window.[ch]` | Sidebar (virtual + real lists), tall task rows, toolbar, status bar |
-| `src/editor_window.[ch]` | Per-task editor: fields, attachments, subtasks; debounced write-through saves |
-| `src/settings_window.[ch]` | Google sync credentials, sign in/out, auto-sync interval |
-| `src/oauth.[ch]` | OAuth 2.0 installed-app flow (PKCE, loopback redirect, session-only token) |
-| `src/gtasks.[ch]` | Two-way sync engine (worker thread, own db connection) |
-| `src/http.[ch]` | Small libcurl wrapper |
-| `src/json.[ch]` | Minimal JSON parser/escaper (no external JSON dependency) |
+The Makefile auto-detects `gtk-mac-integration-gtk3`; if you install
+it later, rebuild from clean (`make clean && make`) so every file sees
+it. On macOS, `make app` wraps the binary into
+`dist/Hacienda-<version>.app` (it still links against the MacPorts GTK
+libraries, so the bundle runs on the machine that built it).
