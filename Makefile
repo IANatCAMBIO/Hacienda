@@ -10,8 +10,11 @@
 #
 # Targets:
 #     make          — build the `blue_tasks` binary
-#     make clean    — remove build artifacts
+#     make clean    — remove build artifacts (including dist/)
 #     make run      — build and launch the app
+#     make app      — macOS .app bundle → dist/BlueTasks-<version>.app
+#                     (needs the macOS sips/iconutil tools; the bundle
+#                     still depends on the MacPorts GTK libraries)
 # =============================================================================
 
 # Semantic version — the single source: baked into the binary (BT_VERSION,
@@ -100,6 +103,75 @@ run: $(BIN)
 
 # Remove all build artifacts.
 clean:
-	rm -rf build $(BIN)
+	rm -rf build $(BIN) $(DIST)
 
-.PHONY: all run clean
+# =============================================================================
+# Optional packaging targets — everything lands in dist/.
+# =============================================================================
+
+DIST     := dist
+
+# --- macOS .app bundle -------------------------------------------------------
+# A minimal bundle around the binary: icons/ and the defaults ini sit next
+# to the executable inside Contents/MacOS (the app resolves both relative
+# to argv[0]).  to-do-list.png becomes the bundle icon via sips + iconutil.
+# The binary still links against the MacPorts GTK dylibs (absolute install
+# names), so the bundle runs on this machine but is NOT self-contained.
+# The live blue_tasks.ini is NEVER copied (it holds the refresh token);
+# the OAuth client json IS copied when present so Sync sign-in works from
+# the bundle (installed-app client secrets are not confidential — the
+# same rationale as the baked client_credentials.mk defaults).
+
+APP_DIR  := $(DIST)/BlueTasks-$(VERSION).app
+ICONSET  := $(DIST)/to-do-list.iconset
+
+app: $(BIN)
+	@command -v iconutil >/dev/null || \
+	  { echo "error: iconutil/sips not found — 'make app' is macOS-only"; \
+	    exit 1; }
+	rm -rf "$(APP_DIR)" "$(ICONSET)"
+	mkdir -p "$(APP_DIR)/Contents/MacOS" "$(APP_DIR)/Contents/Resources" \
+	         "$(ICONSET)"
+	# The executable is named "Blue Tasks": for NIB-less apps (the
+	# gtkosx menubar is built programmatically) macOS titles the app
+	# menu with the PROCESS name, not CFBundleName — the binary's
+	# filename is the only lever.  argv[0]-relative lookups (icons,
+	# ini, client json) resolve by directory, so the rename is harmless.
+	cp $(BIN) "$(APP_DIR)/Contents/MacOS/Blue Tasks"
+	cp -R icons "$(APP_DIR)/Contents/MacOS/icons"
+	cp blue_tasks.ini.defaults "$(APP_DIR)/Contents/MacOS/"
+	@if [ -f client_secret.apps.googleusercontent.com.json ]; then \
+	  cp client_secret.apps.googleusercontent.com.json \
+	     "$(APP_DIR)/Contents/MacOS/"; \
+	fi
+	find "$(APP_DIR)" -name .DS_Store -delete
+	for sz in 16 32 128 256 512; do \
+	  sips -z $$sz $$sz icons/to-do-list.png \
+	       --out "$(ICONSET)/icon_$${sz}x$${sz}.png" >/dev/null; \
+	  dbl=$$((sz * 2)); \
+	  sips -z $$dbl $$dbl icons/to-do-list.png \
+	       --out "$(ICONSET)/icon_$${sz}x$${sz}@2x.png" >/dev/null; \
+	done
+	iconutil -c icns -o "$(APP_DIR)/Contents/Resources/to-do-list.icns" \
+	         "$(ICONSET)"
+	rm -rf "$(ICONSET)"
+	printf '%s\n' \
+	  '<?xml version="1.0" encoding="UTF-8"?>' \
+	  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+	  '<plist version="1.0">' \
+	  '<dict>' \
+	  '  <key>CFBundleName</key><string>Blue Tasks</string>' \
+	  '  <key>CFBundleDisplayName</key><string>Blue Tasks</string>' \
+	  '  <key>CFBundleIdentifier</key><string>org.example.blue-tasks</string>' \
+	  '  <key>CFBundleExecutable</key><string>Blue Tasks</string>' \
+	  '  <key>CFBundleIconFile</key><string>to-do-list</string>' \
+	  '  <key>CFBundlePackageType</key><string>APPL</string>' \
+	  '  <key>CFBundleShortVersionString</key><string>$(VERSION)</string>' \
+	  '  <key>CFBundleVersion</key><string>$(VERSION)</string>' \
+	  '  <key>NSHighResolutionCapable</key><true/>' \
+	  '</dict>' \
+	  '</plist>' \
+	  > "$(APP_DIR)/Contents/Info.plist"
+	@echo "built $(APP_DIR)"
+
+.PHONY: all run clean app

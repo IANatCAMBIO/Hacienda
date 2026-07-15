@@ -41,7 +41,7 @@ the user).  A logic test harness lives in the session scratchpad
 | `src/bnotes.[ch]` | Blue Notes integration — CLI ONLY, never its database |
 | `src/http.[ch]` | libcurl wrapper (blocking; worker threads only) |
 | `src/json.[ch]` | Minimal JSON parser/serializer (no external JSON dep) |
-| `icons/Selected/` | Curated toolbar PNGs (icon names are `icons/`-relative paths, case-exact for Linux) |
+| `icons/` | Curated toolbar PNGs directly in icons/ (icon names are `icons/`-relative paths, case-exact for Linux; spares live in `icons/Unused/`) |
 | `icons/theme/hicolor/` | Bundled SVG `pan-*-symbolic` arrows → crisp HiDPI tree expanders (needs librsvg loader) |
 
 ## Conventions
@@ -106,7 +106,19 @@ the user).  A logic test harness lives in the session scratchpad
   inside).  List labels: `emoji + two spaces + name` when an emoji is
   set.  Mini action bar at the bottom: flat compact + ✎ − buttons,
   right-aligned.  Sidebar starts HIDDEN by default
-  (`sidebar_visible`, write-through on toggle).
+  (`sidebar_visible`, write-through on toggle).  Lists are ALPHABETICAL
+  by default and drag-reorderable: `bt_db_lists` sorts by lower(name)
+  until sync_state `lists_custom_order` exists (set by
+  `bt_db_lists_reorder`, which writes position = display index; order
+  is LOCAL-ONLY — Google tasklists have none — so reorders never dirty
+  rows for sync).  The DnD dest protocol is fully custom, copied from
+  Blue Notes' quirk #13: GtkTreeView's default drag-motion handler
+  requests row data per motion, and on quartz the replies land before
+  the release, finishing the drag mid-air — so on_sb_drag_motion
+  answers gdk_drag_status itself (returning TRUE), only
+  on_sb_drag_drop requests the data, and on_sb_drag_received stops the
+  default emission and performs the move.  Only SB_KIND_LIST rows may
+  drag or anchor a drop (never the metas, header, or Blue Notes row).
 - Window size: tracked via configure-event, persisted as `win_w/win_h`
   on clean close, restored at launch (980×640 fallback).
 - Model rebuilds: capture the scrolled window's vadjustment and restore

@@ -98,11 +98,19 @@ gchar *bt_db_default_path(void);
 
 /* --------------------------------- lists --------------------------------- */
 
-/* All lists ordered by position then name.  include_deleted also returns
- * tombstoned rows (sync).  Returns BtList* elements; free the array with
- * g_ptr_array_free after bt_list_free-ing elements (or use
- * bt_ptr_array_free_lists).                                                 */
+/* All lists — alphabetical (case-insensitive) by DEFAULT; once the user
+ * drag-reorders the sidebar (sync_state "lists_custom_order" set by
+ * bt_db_lists_reorder) the stored positions rule, name-tiebroken.
+ * include_deleted also returns tombstoned rows (sync).  Returns BtList*
+ * elements; free the array with g_ptr_array_free after bt_list_free-ing
+ * elements (or use bt_ptr_array_free_lists).                                */
 GPtrArray *bt_db_lists(BtDatabase *db, gboolean include_deleted);
+
+/* Persist a sidebar drag-reorder: position = index of each id in `ids`
+ * (one transaction) and switch bt_db_lists to custom-order mode.  The
+ * order is local-only — Google tasklists have no ordering — so rows are
+ * NOT dirtied for sync.                                                     */
+void bt_db_lists_reorder(BtDatabase *db, const gint64 *ids, gsize n);
 
 BtList  *bt_db_list_get(BtDatabase *db, gint64 id);
 

@@ -303,16 +303,22 @@ read_list(sqlite3_stmt *st)
                   "emoji"
 
 /* ---------------------------------------------------------------------------
- * bt_db_lists() — all (visible) lists (see db.h).
+ * bt_db_lists() — all (visible) lists (see db.h).  Alphabetical until
+ * the user drag-reorders the sidebar (which sets the sync_state flag
+ * "lists_custom_order"); the dragged positions rule after that.
  * ------------------------------------------------------------------------- */
 GPtrArray *
 bt_db_lists(BtDatabase *db, gboolean include_deleted)
 {
     GPtrArray *out = g_ptr_array_new();
-    const gchar *sql = include_deleted
-        ? "SELECT " LIST_COLS " FROM lists ORDER BY position, name"
-        : "SELECT " LIST_COLS " FROM lists WHERE deleted = 0 "
-          "ORDER BY position, name";
+    gchar *custom = bt_db_state_get(db, "lists_custom_order");
+    const gchar *order = custom != NULL
+        ? "ORDER BY position, lower(name)"
+        : "ORDER BY lower(name)";
+    g_free(custom);
+    gchar *sql = g_strdup_printf(
+        "SELECT " LIST_COLS " FROM lists%s %s",
+        include_deleted ? "" : " WHERE deleted = 0", order);
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK)
         while (sqlite3_step(st) == SQLITE_ROW)
@@ -320,7 +326,30 @@ bt_db_lists(BtDatabase *db, gboolean include_deleted)
     else
         step_done(db, NULL, "lists query");
     sqlite3_finalize(st);
+    g_free(sql);
     return out;
+}
+
+/* ---------------------------------------------------------------------------
+ * bt_db_lists_reorder() — persist a drag-reorder (see db.h).
+ * ------------------------------------------------------------------------- */
+void
+bt_db_lists_reorder(BtDatabase *db, const gint64 *ids, gsize n)
+{
+    /* One transaction: position = array index for every id, plus the
+     * flag flipping bt_db_lists into custom-order mode.  Positions are
+     * LOCAL-ONLY (Google tasklists carry no order), so updated_at is
+     * NOT stamped — a reorder must not dirty the rows for sync.             */
+    GString *sql = g_string_new(NULL);
+    for (gsize i = 0; i < n; i++)
+        g_string_append_printf(sql,
+            "UPDATE lists SET position = %d WHERE id = %lld;",
+            (gint)i, (long long)ids[i]);
+    g_string_append(sql,
+        "INSERT OR REPLACE INTO sync_state(key, value) "
+        "VALUES('lists_custom_order', '1');");
+    exec_txn(db, sql->str);
+    g_string_free(sql, TRUE);
 }
 
 /* bt_db_list_get() — one list row, tombstoned or not; NULL if absent.       */

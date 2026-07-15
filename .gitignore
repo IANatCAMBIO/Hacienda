@@ -1,4 +1,5 @@
 build/
+dist/
 blue_tasks
 blue_tasks.ini
 client_credentials.mk

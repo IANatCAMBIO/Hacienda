@@ -646,7 +646,7 @@ hide_done_icon_refresh(BtLibrary *lw)
 {
     gboolean show = bt_app_config_get_bool("show_completed", TRUE);
     GtkWidget *icon = bt_app_icon_image_sized(lw->app,
-        show ? "Selected/hidden" : "Selected/visible", 24);
+        show ? "hidden" : "visible", 24);
     if (icon != NULL) {
         gtk_widget_show(icon);
         gtk_tool_button_set_icon_widget(
@@ -737,6 +737,204 @@ static gint64
 selected_list_id(BtLibrary *lw)
 {
     return lw->sel_kind == SB_KIND_LIST ? lw->sel_id : 0;
+}
+
+/* ===========================================================================
+ * Sidebar drag & drop — reordering the real lists.
+ *
+ * The dest protocol is fully custom, mirroring Blue Notes (its quirk
+ * #13): GtkTreeView's default drag-motion handler requests the row DATA
+ * on every motion to validate the drop, and on quartz those replies
+ * arrive before the release — a received handler treating every
+ * delivery as a drop would finish the drag mid-air.  So the motion
+ * handler answers gdk_drag_status() itself, ONLY the drop requests the
+ * data, and the received handler is the one place the move happens.
+ * =========================================================================== */
+
+/* The one drag flavor: GtkTreeView rows within this app.                    */
+static const GtkTargetEntry SB_ROW_TARGET =
+    { (gchar *)"GTK_TREE_MODEL_ROW", GTK_TARGET_SAME_APP, 0 };
+
+/* sb_drop_target() — resolve and validate the drop target under the
+ * pointer.  Only a real list row may move (the dragged row is the
+ * sidebar's selected row — a press always settles the single-mode
+ * selection before the drag threshold), and only BEFORE/AFTER another
+ * real list row; meta rows, the header, and the Blue Notes row take
+ * part in neither end.  Lists cannot nest, so INTO positions are
+ * coerced to the nearer edge.  Returns TRUE and fills `path_out`
+ * (caller frees) + `pos_out` when the drop is legal.                        */
+static gboolean
+sb_drop_target(BtLibrary *lw, GdkDragContext *context, gint x, gint y,
+               GtkTreePath **path_out, GtkTreeViewDropPosition *pos_out)
+{
+    *path_out = NULL;
+    *pos_out  = GTK_TREE_VIEW_DROP_BEFORE;
+
+    if (gtk_drag_get_source_widget(context) != lw->sb_view)
+        return FALSE;                /* only the sidebar's own rows         */
+    if (gtk_drag_dest_find_target(lw->sb_view, context, NULL) == GDK_NONE)
+        return FALSE;                /* not a GTK_TREE_MODEL_ROW drag       */
+
+    GtkTreeModel *model = GTK_TREE_MODEL(lw->sb_store);
+    GtkTreeIter iter;
+
+    /* The dragged row must be a real list.                                  */
+    gint src_kind = -1;
+    GtkTreePath *src_path = NULL;
+    GtkTreeModel *m;
+    if (gtk_tree_selection_get_selected(
+            gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->sb_view)),
+            &m, &iter)) {
+        gtk_tree_model_get(m, &iter, SB_KIND, &src_kind, -1);
+        src_path = gtk_tree_model_get_path(m, &iter);
+    }
+    if (src_kind != SB_KIND_LIST || src_path == NULL) {
+        if (src_path != NULL)
+            gtk_tree_path_free(src_path);
+        return FALSE;
+    }
+
+    /* ... and the row under the pointer another real list.                  */
+    GtkTreePath *path = NULL;        /* row under the pointer               */
+    GtkTreeViewDropPosition pos = GTK_TREE_VIEW_DROP_BEFORE;
+    gboolean ok = FALSE;
+    if (gtk_tree_view_get_dest_row_at_pos(GTK_TREE_VIEW(lw->sb_view),
+                                          x, y, &path, &pos)) {
+        gint kind = -1;
+        if (gtk_tree_model_get_iter(model, &iter, path))
+            gtk_tree_model_get(model, &iter, SB_KIND, &kind, -1);
+        ok = kind == SB_KIND_LIST &&
+             gtk_tree_path_compare(src_path, path) != 0;
+        if (pos == GTK_TREE_VIEW_DROP_INTO_OR_BEFORE)
+            pos = GTK_TREE_VIEW_DROP_BEFORE;
+        else if (pos == GTK_TREE_VIEW_DROP_INTO_OR_AFTER)
+            pos = GTK_TREE_VIEW_DROP_AFTER;
+    }
+    gtk_tree_path_free(src_path);
+    if (ok) {
+        *path_out = path;
+        *pos_out  = pos;
+    } else if (path != NULL) {
+        gtk_tree_path_free(path);
+    }
+    return ok;
+}
+
+/* on_sb_drag_motion() — answer the status ourselves and draw the drop
+ * indicator; returning TRUE keeps the data-requesting default handler
+ * out (the quartz hazard above).                                            */
+static gboolean
+on_sb_drag_motion(GtkWidget *widget, GdkDragContext *context,
+                  gint x, gint y, guint time, gpointer data)
+{
+    BtLibrary *lw = data;
+    GtkTreePath *path = NULL;        /* legal target row (or NULL)          */
+    GtkTreeViewDropPosition pos;     /* indicator position                  */
+    gboolean ok = sb_drop_target(lw, context, x, y, &path, &pos);
+    gtk_tree_view_set_drag_dest_row(GTK_TREE_VIEW(widget),
+                                    ok ? path : NULL, pos);
+    gdk_drag_status(context, ok ? GDK_ACTION_MOVE : 0, time);
+    if (path != NULL)
+        gtk_tree_path_free(path);
+    return TRUE;
+}
+
+/* on_sb_drag_leave() — clear the drop indicator (also fires right
+ * before every drop).                                                       */
+static void
+on_sb_drag_leave(GtkWidget *widget, GdkDragContext *context, guint time,
+                 gpointer data)
+{
+    (void)context; (void)time; (void)data;
+    gtk_tree_view_set_drag_dest_row(GTK_TREE_VIEW(widget), NULL,
+                                    GTK_TREE_VIEW_DROP_BEFORE);
+}
+
+/* on_sb_drag_drop() — the button was released on a legal target:
+ * request the row data (the move itself runs in on_sb_drag_received,
+ * the only place the dragged row can be decoded).  TRUE keeps the
+ * default handler out; FALSE cancels a targetless drop cleanly.             */
+static gboolean
+on_sb_drag_drop(GtkWidget *widget, GdkDragContext *context, gint x, gint y,
+                guint time, gpointer data)
+{
+    BtLibrary *lw = data;
+    GtkTreePath *path = NULL;        /* legal target row (or NULL)          */
+    GtkTreeViewDropPosition pos;     /* unused here                         */
+    gboolean ok = sb_drop_target(lw, context, x, y, &path, &pos);
+    if (path != NULL)
+        gtk_tree_path_free(path);
+    if (!ok)
+        return FALSE;
+    gtk_drag_get_data(widget, context,
+                      gdk_atom_intern_static_string("GTK_TREE_MODEL_ROW"),
+                      time);
+    return TRUE;
+}
+
+/* on_sb_drag_received() — the drop: splice the dragged list before/
+ * after the anchor in the CURRENT display order and persist the whole
+ * sequence (bt_db_lists_reorder — also flips the ordering from the
+ * alphabetical default to custom).  Fires exactly once per drop — only
+ * on_sb_drag_drop requests the data, so x/y are real drop coordinates.
+ * The default handler is stopped: it would try to splice the dragged
+ * row into the tree store itself.                                           */
+static void
+on_sb_drag_received(GtkWidget *widget, GdkDragContext *context,
+                    gint x, gint y, GtkSelectionData *seldata, guint info,
+                    guint time, gpointer data)
+{
+    (void)info;
+    BtLibrary *lw = data;
+    g_signal_stop_emission_by_name(widget, "drag-data-received");
+
+    GtkTreeModel *model = GTK_TREE_MODEL(lw->sb_store);
+    GtkTreeModel *src_model = NULL;  /* model the drag started in           */
+    GtkTreePath *src_path = NULL;    /* dragged row's path                  */
+    GtkTreePath *dest_path = NULL;   /* target row's path                   */
+    GtkTreeViewDropPosition pos = GTK_TREE_VIEW_DROP_BEFORE;
+    GtkTreeIter iter;
+    gint64 dragged = 0;              /* dragged list id                     */
+    gint64 anchor = 0;               /* target list id                      */
+
+    if (gtk_tree_get_row_drag_data(seldata, &src_model, &src_path) &&
+        src_model == model &&
+        sb_drop_target(lw, context, x, y, &dest_path, &pos)) {
+        if (gtk_tree_model_get_iter(model, &iter, src_path))
+            gtk_tree_model_get(model, &iter, SB_ID, &dragged, -1);
+        if (gtk_tree_model_get_iter(model, &iter, dest_path))
+            gtk_tree_model_get(model, &iter, SB_ID, &anchor, -1);
+    }
+
+    gboolean success = dragged != 0 && anchor != 0 && dragged != anchor;
+    if (success) {
+        gboolean after = pos == GTK_TREE_VIEW_DROP_AFTER;
+        /* Current display order minus the dragged id, re-inserted at
+         * the anchor.                                                       */
+        GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+        GPtrArray *lists = bt_db_lists(lw->app->db, FALSE);
+        for (guint i = 0; i < lists->len; i++) {
+            BtList *l = g_ptr_array_index(lists, i);
+            if (l->id == dragged)
+                continue;            /* re-inserted at the anchor below     */
+            if (l->id == anchor && !after)
+                g_array_append_val(ids, dragged);
+            g_array_append_val(ids, l->id);
+            if (l->id == anchor && after)
+                g_array_append_val(ids, dragged);
+        }
+        bt_ptr_array_free_lists(lists);
+        bt_db_lists_reorder(lw->app->db, (const gint64 *)ids->data,
+                            ids->len);
+        g_array_free(ids, TRUE);
+        refresh_sidebar(lw);         /* reselects the dragged list          */
+    }
+
+    if (src_path != NULL)
+        gtk_tree_path_free(src_path);
+    if (dest_path != NULL)
+        gtk_tree_path_free(dest_path);
+    gtk_drag_finish(context, success, FALSE, time);
 }
 
 /* ===========================================================================
@@ -1733,30 +1931,30 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
 
     /* --- Toolbar ---------------------------------------------------------- */
     /* Icon names are icons/-relative paths; the curated set lives in
-     * icons/Selected/ (case-exact for Linux).  Layout: sidebar toggle,
+     * icons/ (case-exact for Linux).  Layout: sidebar toggle,
      * a drawn divider, then the task buttons and Sync.                      */
     GtkWidget *toolbar = gtk_toolbar_new();
     /* Small-toolbar metrics — the Blue Notes bar height.                    */
     gtk_toolbar_set_icon_size(GTK_TOOLBAR(toolbar),
                               GTK_ICON_SIZE_SMALL_TOOLBAR);
-    tool_button(lw, GTK_TOOLBAR(toolbar), "Selected/sidebar",
+    tool_button(lw, GTK_TOOLBAR(toolbar), "sidebar",
                 "\xe2\x97\xa7", "Sidebar", "Show or hide the lists pane",
                 G_CALLBACK(on_toggle_sidebar));
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                        gtk_separator_tool_item_new(), -1);
 
-    tool_button(lw, GTK_TOOLBAR(toolbar), "Selected/add2", NULL,
+    tool_button(lw, GTK_TOOLBAR(toolbar), "add2", NULL,
                 "New Task", "Create a task in the selected list",
                 G_CALLBACK(on_new_task));
-    tool_button(lw, GTK_TOOLBAR(toolbar), "Selected/remove", NULL,
+    tool_button(lw, GTK_TOOLBAR(toolbar), "remove", NULL,
                 "Delete Task", "Delete the selected task",
                 G_CALLBACK(on_delete_task));
 
     lw->sync_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
-        "Selected/google-symbol", "\xe2\x9f\xb3", "Sync",
+        "google-symbol", "\xe2\x9f\xb3", "Sync",
         "Sync with Google Tasks now", G_CALLBACK(on_sync)));
     lw->hide_done_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
-        "Selected/hidden", "\xf0\x9f\x91\x81", "Completed",
+        "hidden", "\xf0\x9f\x91\x81", "Completed",
         "Hide completed tasks", G_CALLBACK(on_toggle_done_visible)));
     hide_done_icon_refresh(lw);      /* the persisted state's icon          */
     bt_app_register_toolbar(app, toolbar);
@@ -1802,6 +2000,21 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
                                            lw, NULL);
     g_signal_connect(sb_sel, "changed",
                      G_CALLBACK(on_sidebar_changed), lw);
+    /* Let list rows be dragged to reorder them.  The dest protocol is
+     * fully custom (motion answers the status itself; only the drop
+     * requests the row data) — see the sidebar DnD banner.                  */
+    gtk_tree_view_enable_model_drag_source(GTK_TREE_VIEW(lw->sb_view),
+        GDK_BUTTON1_MASK, &SB_ROW_TARGET, 1, GDK_ACTION_MOVE);
+    gtk_tree_view_enable_model_drag_dest(GTK_TREE_VIEW(lw->sb_view),
+        &SB_ROW_TARGET, 1, GDK_ACTION_MOVE);
+    g_signal_connect(lw->sb_view, "drag-motion",
+                     G_CALLBACK(on_sb_drag_motion), lw);
+    g_signal_connect(lw->sb_view, "drag-leave",
+                     G_CALLBACK(on_sb_drag_leave), NULL);
+    g_signal_connect(lw->sb_view, "drag-drop",
+                     G_CALLBACK(on_sb_drag_drop), lw);
+    g_signal_connect(lw->sb_view, "drag-data-received",
+                     G_CALLBACK(on_sb_drag_received), lw);
     GtkWidget *sb_scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sb_scroll),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
