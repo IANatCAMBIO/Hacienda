@@ -13,7 +13,11 @@ the database schema and the sync engine see [Internals](Internals.md).
   real lists nest under a collapsible **Lists** header, each shown
   with its emoji when one is set. Lists sort alphabetically until you
   drag one into place — from then on your custom order sticks (it is
-  local-only; Google Tasks has no list order to sync). The compact
+  local-only; Google Tasks has no list order to sync). One honest
+  caveat if you launch from a terminal on macOS: dragging a list may
+  print a `Gdk-CRITICAL … gdk_atom_intern` line on the console. It is
+  harmless noise from a bug in the Mac build of the GTK library
+  itself, not in Hacienda — the drag works fine. The compact
   **+ ✎ −** bar at the bottom creates, renames (with an emoji picker)
   and deletes lists. The sidebar starts hidden; the toolbar's
   **Sidebar** button toggles it and the choice persists.

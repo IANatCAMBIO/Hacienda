@@ -255,7 +255,16 @@ the user).  A logic test harness lives in the session scratchpad
     `gtk_window_get_size` is the client area (~28 pt difference).
 11. The live ini rewrites drop comments and carry per-machine values —
     it stays gitignored; document defaults in `hacienda.ini.defaults`.
-12. Google's DEFAULT tasklist cannot be deleted — `tasklists.delete`
+12. `Gdk-CRITICAL … gdk_atom_intern: assertion 'atom_name != NULL'` on
+    the console during a sidebar list drag (or exotic clipboard
+    flavors) is a GTK-quartz bug, NOT ours — do not re-investigate:
+    `gdkselection-quartz.c:199` (3.24.52) interns
+    `uti.preferredMIMEType.UTF8String`, which is NULL for the `dyn.*`
+    UTIs macOS wraps around custom pasteboard types like
+    GTK_TREE_MODEL_ROW.  Harmless (that flavor is skipped, the row
+    flavor still resolves); documented in User_Guide.md.  Don't
+    suppress with a log filter.
+13. Google's DEFAULT tasklist cannot be deleted — `tasklists.delete`
     returns 400 "Invalid Value" from any client, and an unhandled
     failure there aborts the whole sync pass (blocking every later
     push).  Handled ACCURATELY (no hidden state): every sync GETs
