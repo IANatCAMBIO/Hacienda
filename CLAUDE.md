@@ -82,7 +82,12 @@ the user).  A logic test harness lives in the session scratchpad
   fallback); registered with `bt_app_register_toolbar` so the
   icons/both/text style applies live (Settings combo + right-click
   radio menu).  Task buttons sit at the RIGHT end behind an invisible
-  expanding separator; Sync stays on the toolbar.
+  expanding separator; Sync stays on the toolbar.  After Sync: the
+  completed-visibility toggle (`show_completed`, default 1) — it shows
+  hidden.png while completed tasks are visible and visible.png while
+  hidden (the icon names the ACTION), swapped live via
+  `hide_done_icon_refresh`; the filter applies to every task-pane view
+  including Blue Notes rows.
 - Thin `gtk_separator_new` rules under the toolbar and above the status
   bar.  Status bar: margins 8/8/3/3 (NOT border_width) and
   `label { font-size: 85%; }` on both labels — measured pixel-identical

@@ -17,4 +17,6 @@ sync_interval_min=5
 native_menubar=0
 # Render task titles in bold in the task list (1|0, default 0; Settings → Appearance).
 bold_task_titles=0
+# Show completed tasks in the task list (1|0, default 1; toolbar toggle).
+show_completed=1
 google_sync_enabled=1

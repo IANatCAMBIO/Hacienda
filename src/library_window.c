@@ -68,6 +68,7 @@ typedef struct {
     GtkWidget    *status_left;       /* selection info label                */
     GtkWidget    *status_right;      /* latest event message label          */
     GtkWidget    *sync_item;         /* the Lists-menu Sync item            */
+    GtkWidget    *hide_done_item;    /* completed-visibility toggle button  */
     gint          sel_kind;
     gint64        sel_id;
     gboolean      populating;
@@ -411,11 +412,14 @@ append_bn_rows(BtLibrary *lw, gboolean only_pinned)
     }
     GHashTable *pins = bt_db_bn_pins(lw->app->db);
     gboolean bold = bt_app_config_get_bool("bold_task_titles", FALSE);
+    gboolean show_done = bt_app_config_get_bool("show_completed", TRUE);
     gint shown = 0;
     for (guint i = 0; i < acts->len; i++) {
         BtNoteAction *na = g_ptr_array_index(acts, i);
         gboolean pinned = g_hash_table_contains(pins, na->ref);
         if (only_pinned && !pinned)
+            continue;
+        if (!show_done && na->done)
             continue;
         gchar *esc = g_markup_escape_text(
             *na->text != '\0' ? na->text : "(empty item)", -1);
@@ -550,8 +554,12 @@ refresh_tasks(BtLibrary *lw)
     }
 
     gboolean bold = bt_app_config_get_bool("bold_task_titles", FALSE);
+    gboolean show_done = bt_app_config_get_bool("show_completed", TRUE);
+    guint appended = 0;              /* rows actually in the pane           */
     for (guint i = 0; i < tasks->len; i++) {
         BtTask *t = g_ptr_array_index(tasks, i);
+        if (!show_done && t->done)   /* toolbar completed-visibility toggle */
+            continue;
         GPtrArray *subs = t->parent_id == 0
             ? g_hash_table_lookup(subs_by_parent,
                                   GINT_TO_POINTER((gint)t->id))
@@ -577,11 +585,12 @@ refresh_tasks(BtLibrary *lw)
                            -1);
         g_free(desc);
         g_free(due);
+        appended++;
     }
 
     /* Pinned Tasks also gathers pinned Blue Notes action items (their
      * pin state is local — the bn_pins table).                              */
-    guint shown = tasks->len;        /* rows in the pane (for the status)   */
+    guint shown = appended;          /* rows in the pane (for the status)   */
     if (lw->sel_kind == SB_KIND_PINNED &&
         bt_app_config_get_bool("blue_notes_sync", FALSE)) {
         gint bn = append_bn_rows(lw, TRUE);
@@ -600,8 +609,8 @@ refresh_tasks(BtLibrary *lw)
         BtList *l = bt_db_list_get(lw->app->db, lw->sel_id);
         gchar *loc = g_strdup_printf("%s \xe2\x80\x94 %u task%s",
                                      l != NULL ? l->name : "?",
-                                     tasks->len,
-                                     tasks->len == 1 ? "" : "s");
+                                     shown,
+                                     shown == 1 ? "" : "s");
         gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
         g_free(loc);
         bt_list_free(l);
@@ -626,6 +635,38 @@ full_refresh(BtLibrary *lw)
     gtk_widget_set_visible(lw->sync_item,
         bt_app_config_get_bool("google_sync_enabled", TRUE));
     bt_editor_refresh_all(lw->app);
+}
+
+/* hide_done_icon_refresh() — point the completed-visibility toggle's
+ * icon + tooltip at the ACTION it offers: hidden.png while completed
+ * tasks are visible (click to hide them), visible.png while they are
+ * hidden (click to bring them back).                                        */
+static void
+hide_done_icon_refresh(BtLibrary *lw)
+{
+    gboolean show = bt_app_config_get_bool("show_completed", TRUE);
+    GtkWidget *icon = bt_app_icon_image_sized(lw->app,
+        show ? "Selected/hidden" : "Selected/visible", 24);
+    if (icon != NULL) {
+        gtk_widget_show(icon);
+        gtk_tool_button_set_icon_widget(
+            GTK_TOOL_BUTTON(lw->hide_done_item), icon);
+    }
+    gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->hide_done_item),
+        show ? "Hide completed tasks" : "Show completed tasks");
+}
+
+/* on_toggle_done_visible() — the toolbar toggle behind it: flip the
+ * persisted show_completed flag and rebuild the task pane.                  */
+static void
+on_toggle_done_visible(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    BtLibrary *lw = data;
+    gboolean show = !bt_app_config_get_bool("show_completed", TRUE);
+    bt_app_config_set("show_completed", show ? "1" : "0");
+    hide_done_icon_refresh(lw);
+    refresh_tasks(lw);
 }
 
 /* notify_changed_hook() / notify_tasks_hook() / notify_status_hook() —
@@ -1714,6 +1755,10 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     lw->sync_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
         "Selected/google-symbol", "\xe2\x9f\xb3", "Sync",
         "Sync with Google Tasks now", G_CALLBACK(on_sync)));
+    lw->hide_done_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
+        "Selected/hidden", "\xf0\x9f\x91\x81", "Completed",
+        "Hide completed tasks", G_CALLBACK(on_toggle_done_visible)));
+    hide_done_icon_refresh(lw);      /* the persisted state's icon          */
     bt_app_register_toolbar(app, toolbar);
     gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
     /* Thin rule between the toolbar and the panes (Blue Notes look).        */
