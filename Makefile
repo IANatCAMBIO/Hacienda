@@ -19,7 +19,7 @@
 
 # Semantic version — the single source: baked into the binary (BT_VERSION,
 # shown in the About dialog).
-VERSION  := 1.3.2
+VERSION  := 1.3.4
 
 # The compiler to use.  clang is the system compiler on macOS.
 CC       := cc
@@ -84,8 +84,9 @@ OBJS     := $(SRCS:src/%.c=build/%.o)
 # The final executable name.
 BIN      := hacienda
 
-# Default target: build the application binary.
-all: $(BIN)
+# Default target: build the application binary (and keep the clangd
+# compilation database fresh — it only regenerates on Makefile changes).
+all: $(BIN) compile_commands.json
 
 # Link all object files into the final binary.
 $(BIN): $(OBJS)
@@ -98,6 +99,26 @@ $(BIN): $(OBJS)
 build/%.o: src/%.c $(wildcard src/*.h) Makefile
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+# --- clangd / IDE support ----------------------------------------------------
+# compile_commands.json gives clangd the same include paths as the real
+# build (without it the IDE reports "gtk/gtk.h not found").  Regenerated
+# whenever the Makefile changes; machine-specific, so it stays gitignored.
+# JSONFLAGS escapes the double quotes in CFLAGS (e.g. -DBT_VERSION='"…"')
+# for embedding in a JSON string: make turns each " into \\\", the shell's
+# double-quoting collapses that to \", which is what JSON needs.
+JSONFLAGS := $(subst ",\\\",$(CFLAGS))
+
+compile_commands.json: Makefile
+	@{ echo '['; \
+	first=1; \
+	for f in $(SRCS); do \
+	  [ $$first -eq 1 ] || echo ','; first=0; \
+	  printf '  {"directory": "%s", "file": "%s", "command": "%s -c %s"}' \
+	    "$(CURDIR)" "$$f" "$(CC) $(JSONFLAGS)" "$$f"; \
+	done; \
+	echo; echo ']'; } > $@
+	@echo "wrote $@"
 
 # Build and launch the application.
 run: $(BIN)

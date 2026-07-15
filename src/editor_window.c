@@ -785,6 +785,7 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
 
     ed->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_default_size(GTK_WINDOW(ed->window), 520, 620);
+    gtk_window_set_position(GTK_WINDOW(ed->window), GTK_WIN_POS_CENTER);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 12);
