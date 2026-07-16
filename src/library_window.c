@@ -24,7 +24,7 @@ enum {
     SB_KIND_ALL,                     /* "All Tasks" virtual list            */
     SB_KIND_BN_ACTIONS,              /* Blue Notes "Action Items" list      */
     SB_KIND_TODAY,                   /* "Due Today" virtual list            */
-    SB_KIND_TOMORROW,                /* "Due Tomorrow" virtual list         */
+    SB_KIND_FORECAST,                /* "Weekly Forecast" virtual list      */
     SB_KIND_HEADER,                  /* the "Lists" section header          */
     SB_KIND_LIST                     /* a real list                         */
 };
@@ -46,7 +46,6 @@ enum {
     TL_DESC,                         /* gchar*: the tall markup cell        */
     TL_DUE,                          /* gchar*: formatted due date ("")     */
     TL_DUE_RAW,                      /* gint64: due timestamp (sort/tint)   */
-    TL_PINNED,                       /* gboolean                            */
     TL_REF,                          /* gchar*: Blue Notes "NOTEID:ORD"
                                       * address, NULL for real tasks        */
     TL_N_COLS
@@ -65,6 +64,13 @@ typedef struct {
     GtkWidget    *sb_view;
     GtkListStore *task_store;
     GtkWidget    *task_view;
+    GtkWidget    *task_scroll;       /* the regular task pane; swapped
+                                      * with forecast_box (visibility)      */
+    GtkWidget    *forecast_box;      /* Weekly Forecast: the scroller
+                                      * holding the 7 stacked day lists     */
+    GtkWidget    *day_labels[7];     /* the day headings, Sunday first      */
+    GtkListStore *day_stores[7];     /* one store per day view              */
+    GtkWidget    *day_views[7];      /* the per-day tree views              */
     GtkWidget    *sidebar_box;       /* for the toolbar show/hide toggle    */
     GtkWidget    *status_left;       /* selection info label                */
     GtkWidget    *status_right;      /* latest event message label          */
@@ -136,6 +142,12 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
     gchar *line = t->done
         ? g_strdup_printf("%s<s>%s</s>%s", open, title, close)
         : g_strdup_printf("%s%s%s", open, title, close);
+    if (t->priority) {               /* high priority wears a red flag      */
+        gchar *flagged = g_strdup_printf(
+            "<span foreground=\"#c01c28\">\xe2\x9a\x91</span> %s", line);
+        g_free(line);
+        line = flagged;
+    }
     if (t->parent_id != 0) {         /* a subtask row in a virtual view     */
         gchar *sub = g_strdup_printf("\xe2\x86\xb3 %s", line);
         g_free(line);
@@ -233,10 +245,11 @@ scroll_keep_apply(gpointer data)
     return G_SOURCE_REMOVE;
 }
 
+/* scroll_keep_queue_win() — the same, given the scrolled window itself
+ * (the Weekly Forecast's one outer scroller wraps a box, not a view).       */
 static void
-scroll_keep_queue(GtkWidget *view)
+scroll_keep_queue_win(GtkWidget *scroll)
 {
-    GtkWidget *scroll = gtk_widget_get_parent(view);
     if (!GTK_IS_SCROLLED_WINDOW(scroll))
         return;
     GtkAdjustment *vadj = gtk_scrolled_window_get_vadjustment(
@@ -247,9 +260,17 @@ scroll_keep_queue(GtkWidget *view)
     g_idle_add(scroll_keep_apply, sk);
 }
 
+static void
+scroll_keep_queue(GtkWidget *view)
+{
+    scroll_keep_queue_win(gtk_widget_get_parent(view));
+}
+
 /* ---------------------------------------------------------------------------
  * refresh_sidebar() — rebuild the sidebar and restore the selection.
  * ------------------------------------------------------------------------- */
+
+static gint64 bn_embed_list(BtLibrary *lw);
 
 /* sidebar_show_pinned() — whether the Pinned Tasks meta row should
  * exist: any pinned task, or (while the integration is on) any pinned
@@ -298,13 +319,16 @@ refresh_sidebar(BtLibrary *lw)
     } metas[] = {                    /* emoji + two spaces, like lists      */
         { SB_KIND_PINNED,   "\xf0\x9f\x93\x8d  Pinned Tasks" },
         { SB_KIND_ALL,      "\xf0\x9f\x94\xae  All Tasks" },
-        { SB_KIND_TODAY,    "\xf0\x9f\x8c\x9e  Due Today" },
-        { SB_KIND_TOMORROW, "\xf0\x9f\x8c\x99  Due Tomorrow" },
+        { SB_KIND_TODAY,    "\xe2\x98\x80\xef\xb8\x8f  Due Today" },
+        { SB_KIND_FORECAST, "\xf0\x9f\x8c\xa4\xef\xb8\x8f  Weekly Forecast" },
     };
     lw->pinned_row_shown = sidebar_show_pinned(lw);
     for (gsize i = 0; i < G_N_ELEMENTS(metas); i++) {
         if (metas[i].kind == SB_KIND_PINNED && !lw->pinned_row_shown)
             continue;                /* hidden while nothing is pinned      */
+        if (metas[i].kind == SB_KIND_FORECAST &&
+            !bt_app_config_get_bool("weekly_forecast", TRUE))
+            continue;                /* disabled in Settings                */
         gtk_tree_store_append(lw->sb_store, &iter, NULL);
         gtk_tree_store_set(lw->sb_store, &iter,
                            SB_KIND, metas[i].kind,
@@ -352,8 +376,10 @@ refresh_sidebar(BtLibrary *lw)
 
     /* The Blue Notes Action Items list sits among the real lists (but
      * cannot be deleted or hold new tasks); it exists only while the
-     * integration is enabled in Settings.                                   */
-    if (bt_app_config_get_bool("blue_notes_sync", FALSE)) {
+     * integration is enabled in Settings AND the items are not embedded
+     * in a regular list (blue_notes_embed_list).                            */
+    if (bt_app_config_get_bool("blue_notes_sync", FALSE) &&
+        bn_embed_list(lw) == 0) {
         gtk_tree_store_append(lw->sb_store, &iter, &header);
         gtk_tree_store_set(lw->sb_store, &iter,
                            SB_KIND, SB_KIND_BN_ACTIONS,
@@ -413,32 +439,71 @@ refresh_sidebar(BtLibrary *lw)
 }
 
 /* ---------------------------------------------------------------------------
- * append_bn_rows() — append Blue Notes action items to the task pane
- * (fetched through the blue_notes CLI; see bnotes.h).  Rows carry their
- * "NOTEID:ORD" address in TL_REF and 0 in TL_ID; TL_PINNED comes from
- * the local bn_pins table (pinning is a Hacienda concept).  With
- * only_pinned, unpinned items are skipped (the Pinned Tasks view).
- * Returns the number of rows appended, or -1 when the CLI failed (the
- * error is posted to the status bar).
+ * Blue Notes rows — fetched ONCE per refresh through the blue_notes CLI
+ * (see bnotes.h) and appended in filtered passes, so high-priority
+ * items can float above other rows without spawning the CLI twice.
  * ------------------------------------------------------------------------- */
-static gint
-append_bn_rows(BtLibrary *lw, gboolean only_pinned)
+typedef struct {
+    GPtrArray  *acts;                /* BtNoteAction* items (NULL until
+                                      * bn_rows_fetch succeeds)             */
+    GHashTable *pins;                /* pinned refs (local bn_pins)         */
+    GHashTable *prios;               /* high-priority refs (bn_priority)    */
+} BnRows;
+
+/* bn_rows_fetch() — run the CLI and load the local pin/priority sets.
+ * FALSE on CLI failure (the error is posted to the status bar).             */
+static gboolean
+bn_rows_fetch(BtLibrary *lw, BnRows *br)
 {
     gchar *err = NULL;
-    GPtrArray *acts = bt_bnotes_actions(&err);
-    if (acts == NULL) {
+    br->acts = bt_bnotes_actions(&err);
+    if (br->acts == NULL) {
         bt_app_status(lw->app, "%s", err);
         g_free(err);
-        return -1;
+        return FALSE;
     }
-    GHashTable *pins = bt_db_bn_pins(lw->app->db);
+    br->pins  = bt_db_bn_pins(lw->app->db);
+    br->prios = bt_db_bn_priorities(lw->app->db);
+    return TRUE;
+}
+
+static void
+bn_rows_clear(BnRows *br)
+{
+    if (br->acts == NULL)
+        return;
+    g_hash_table_destroy(br->pins);
+    g_hash_table_destroy(br->prios);
+    bt_bnotes_actions_free(br->acts);
+    br->acts = NULL;
+}
+
+/* ---------------------------------------------------------------------------
+ * append_bn_items() — append fetched Blue Notes action items to the
+ * task pane.  Rows carry their "NOTEID:ORD" address in TL_REF and 0 in
+ * TL_ID; pin and priority state are Hacienda-local (bn_pins /
+ * bn_priority — Blue Notes knows neither concept).  The dimmed
+ * "❗ Action Items · note N" line marks where the item really lives.
+ *   only_pinned      — skip unpinned items (the Pinned Tasks view).
+ *   priority_filter  — 1 = only high-priority items, 0 = only normal,
+ *                      -1 = everything (callers make a 1-then-0 pass
+ *                      pair to float priority items).
+ * Returns the number of rows appended.
+ * ------------------------------------------------------------------------- */
+static gint
+append_bn_items(BtLibrary *lw, const BnRows *br, gboolean only_pinned,
+                gint priority_filter)
+{
     gboolean bold = bt_app_config_get_bool("bold_task_titles", FALSE);
     gboolean show_done = bt_app_config_get_bool("show_completed", TRUE);
     gint shown = 0;
-    for (guint i = 0; i < acts->len; i++) {
-        BtNoteAction *na = g_ptr_array_index(acts, i);
-        gboolean pinned = g_hash_table_contains(pins, na->ref);
+    for (guint i = 0; i < br->acts->len; i++) {
+        BtNoteAction *na = g_ptr_array_index(br->acts, i);
+        gboolean pinned = g_hash_table_contains(br->pins, na->ref);
+        gboolean prio   = g_hash_table_contains(br->prios, na->ref);
         if (only_pinned && !pinned)
+            continue;
+        if (priority_filter >= 0 && prio != (priority_filter != 0))
             continue;
         if (!show_done && na->done)
             continue;
@@ -450,8 +515,10 @@ append_bn_rows(BtLibrary *lw, gboolean only_pinned)
         const gchar *close = bold ? (na->done ? "</s></b>" : "</b>")
                                   : (na->done ? "</s>" : "");
         gchar *desc = g_strdup_printf(
-            "%s%s%s\n<small><span alpha=\"60%%\">Blue Notes \xc2\xb7 "
-            "note %s</span></small>",
+            "%s%s%s%s\n<small><span alpha=\"60%%\">\xe2\x9d\x97 Action "
+            "Items \xc2\xb7 note %s</span></small>",
+            prio ? "<span foreground=\"#c01c28\">\xe2\x9a\x91</span> "
+                 : "",
             open, esc, close, note);
         gchar *due = bt_due_format(na->due);
         GtkTreeIter iter;
@@ -462,7 +529,6 @@ append_bn_rows(BtLibrary *lw, gboolean only_pinned)
                            TL_DESC, desc,
                            TL_DUE, due,
                            TL_DUE_RAW, na->due,
-                           TL_PINNED, pinned,
                            TL_REF, na->ref,
                            -1);
         g_free(desc);
@@ -471,22 +537,45 @@ append_bn_rows(BtLibrary *lw, gboolean only_pinned)
         g_free(note);
         shown++;
     }
-    g_hash_table_destroy(pins);
-    bt_bnotes_actions_free(acts);
     return shown;
 }
 
-/* refresh_bn_actions() — the Action Items list view: every item, plus
- * the status-bar location line.                                             */
+/* bn_embed_list() — the list id Blue Notes action items are embedded in
+ * ("blue_notes_embed_list", Settings), or 0 when they live in their own
+ * sidebar list.  0 while the integration is off; a stale id (the list
+ * was deleted) also reads as 0, so the Action Items row comes back
+ * rather than the items vanishing.                                          */
+static gint64
+bn_embed_list(BtLibrary *lw)
+{
+    if (!bt_app_config_get_bool("blue_notes_sync", FALSE))
+        return 0;
+    gchar *v = bt_app_config_get("blue_notes_embed_list");
+    gint64 id = v != NULL ? g_ascii_strtoll(v, NULL, 10) : 0;
+    g_free(v);
+    if (id != 0) {
+        BtList *l = bt_db_list_get(lw->app->db, id);
+        if (l == NULL || l->deleted)
+            id = 0;
+        bt_list_free(l);
+    }
+    return id;
+}
+
+/* refresh_bn_actions() — the Action Items list view: every item, high
+ * priority first, plus the status-bar location line.                        */
 static void
 refresh_bn_actions(BtLibrary *lw)
 {
-    gint n = append_bn_rows(lw, FALSE);
-    if (n < 0) {
+    BnRows br = { NULL, NULL, NULL };
+    if (!bn_rows_fetch(lw, &br)) {
         gtk_label_set_text(GTK_LABEL(lw->status_left),
                            "Action Items (Blue Notes)");
         return;
     }
+    gint n = append_bn_items(lw, &br, FALSE, 1)
+           + append_bn_items(lw, &br, FALSE, 0);
+    bn_rows_clear(&br);
     gchar *loc = g_strdup_printf(
         "Action Items (from Blue Notes) \xe2\x80\x94 %d item%s",
         n, n == 1 ? "" : "s");
@@ -495,11 +584,200 @@ refresh_bn_actions(BtLibrary *lw)
 }
 
 /* ---------------------------------------------------------------------------
+ * TaskRowCtx — the shared lookups behind the task rows of one refresh
+ * (avoid per-row queries).  Subtasks come as ONE query grouped in
+ * memory, not one query per top-level row; list names are loaded only
+ * for the virtual views (the "in <list>" line).
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    GHashTable *att_counts;          /* task id → attachment count          */
+    GPtrArray  *all_subs;            /* owns the subtask rows below         */
+    GHashTable *subs_by_parent;      /* parent id → GPtrArray of borrowed   */
+    GHashTable *list_names;          /* list id → name, NULL for list views */
+    gboolean    bold;                /* the bold_task_titles setting        */
+    gboolean    show_done;           /* the show_completed toggle           */
+} TaskRowCtx;
+
+static void
+task_row_ctx_init(BtLibrary *lw, TaskRowCtx *ctx, gboolean virtual_view)
+{
+    ctx->att_counts = bt_db_attachment_counts(lw->app->db);
+    ctx->all_subs = bt_db_subtasks_all_visible(lw->app->db);
+    ctx->subs_by_parent =
+        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
+                              (GDestroyNotify)g_ptr_array_unref);
+    for (guint i = 0; i < ctx->all_subs->len; i++) {
+        BtTask *s = g_ptr_array_index(ctx->all_subs, i);
+        GPtrArray *bucket = g_hash_table_lookup(ctx->subs_by_parent,
+            GINT_TO_POINTER((gint)s->parent_id));
+        if (bucket == NULL) {
+            bucket = g_ptr_array_new();
+            g_hash_table_insert(ctx->subs_by_parent,
+                GINT_TO_POINTER((gint)s->parent_id), bucket);
+        }
+        g_ptr_array_add(bucket, s);
+    }
+    ctx->list_names = NULL;
+    if (virtual_view) {
+        ctx->list_names = g_hash_table_new_full(g_direct_hash,
+                                                g_direct_equal,
+                                                NULL, g_free);
+        GPtrArray *lists = bt_db_lists(lw->app->db, FALSE);
+        for (guint i = 0; i < lists->len; i++) {
+            BtList *l = g_ptr_array_index(lists, i);
+            g_hash_table_insert(ctx->list_names,
+                                GINT_TO_POINTER((gint)l->id),
+                                g_strdup(l->name));
+        }
+        bt_ptr_array_free_lists(lists);
+    }
+    ctx->bold = bt_app_config_get_bool("bold_task_titles", FALSE);
+    ctx->show_done = bt_app_config_get_bool("show_completed", TRUE);
+}
+
+static void
+task_row_ctx_clear(TaskRowCtx *ctx)
+{
+    g_hash_table_destroy(ctx->att_counts);
+    g_hash_table_destroy(ctx->subs_by_parent);
+    bt_ptr_array_free_tasks(ctx->all_subs);
+    if (ctx->list_names != NULL)
+        g_hash_table_destroy(ctx->list_names);
+}
+
+/* append_task_rows() — append `tasks` to `store` through the shared-
+ * lookup context, honoring the completed-visibility toggle.  Returns
+ * the number of rows actually appended.                                     */
+static guint
+append_task_rows(GtkListStore *store, GPtrArray *tasks,
+                 const TaskRowCtx *ctx)
+{
+    guint appended = 0;              /* rows actually in the pane           */
+    for (guint i = 0; i < tasks->len; i++) {
+        BtTask *t = g_ptr_array_index(tasks, i);
+        if (!ctx->show_done && t->done)
+            continue;                /* toolbar completed-visibility toggle */
+        GPtrArray *subs = t->parent_id == 0
+            ? g_hash_table_lookup(ctx->subs_by_parent,
+                                  GINT_TO_POINTER((gint)t->id))
+            : NULL;
+        const gchar *list_name = ctx->list_names != NULL
+            ? g_hash_table_lookup(ctx->list_names,
+                                  GINT_TO_POINTER((gint)t->list_id))
+            : NULL;
+        gint att_count = GPOINTER_TO_INT(
+            g_hash_table_lookup(ctx->att_counts,
+                                GINT_TO_POINTER((gint)t->id)));
+        gchar *desc = task_desc_markup(t, list_name, att_count, subs,
+                                       ctx->bold);
+        gchar *due  = bt_due_format(t->due);
+        GtkTreeIter iter;
+        gtk_list_store_append(store, &iter);
+        gtk_list_store_set(store, &iter,
+                           TL_ID, t->id,
+                           TL_DONE, t->done,
+                           TL_DESC, desc,
+                           TL_DUE, due,
+                           TL_DUE_RAW, t->due,
+                           -1);
+        g_free(desc);
+        g_free(due);
+        appended++;
+    }
+    return appended;
+}
+
+/* ---------------------------------------------------------------------------
+ * refresh_forecast() — the Weekly Forecast view: seven per-day list
+ * views stacked vertically (Sunday through Saturday), each under a
+ * day-of-the-week heading, scrolling together as one page.  Rebuilds
+ * every day's store and heading; the panel itself is swapped in by
+ * refresh_tasks.
+ * ------------------------------------------------------------------------- */
+static void
+refresh_forecast(BtLibrary *lw)
+{
+    /* Days elapsed since this week's Sunday: GDateTime weekdays run
+     * 1 (Monday) through 7 (Sunday), so it is the weekday mod 7.            */
+    GDateTime *now = g_date_time_new_now_local();
+    gint since_sunday = g_date_time_get_day_of_week(now) % 7;
+
+    /* One outer scroller wraps the whole week — restore its position
+     * after the rebuild (clearing the stores collapses the page).           */
+    scroll_keep_queue_win(lw->forecast_box);
+
+    TaskRowCtx ctx;                  /* shared lookups (see above)          */
+    task_row_ctx_init(lw, &ctx, TRUE);
+    guint shown = 0;                 /* task rows across the week           */
+    for (gint d = 0; d < 7; d++) {
+        gint offset = d - since_sunday;      /* this day vs. today          */
+        GDateTime *day = g_date_time_add_days(now, offset);
+        gchar *name = g_date_time_format(day, "%A");
+        gchar *date = g_date_time_format(day, "%b %-e");
+        /* Today wears a small blue dot (the sidebar selection blue)
+         * beside its name, plus the "— Today" tag on the date line.         */
+        gchar *hdr = g_strdup_printf(
+            "%s<b>%s</b>\n<small><span alpha=\"60%%\">%s%s"
+            "</span></small>",
+            offset == 0 ? "<small><span foreground=\"#5683e0\">"
+                          "\xe2\x97\x8f</span></small> " : "",
+            name, date,
+            offset == 0 ? " \xe2\x80\x94 Today" : "");
+        gtk_label_set_markup(GTK_LABEL(lw->day_labels[d]), hdr);
+        g_free(hdr);
+        g_free(name);
+        g_free(date);
+        g_date_time_unref(day);
+
+        gtk_list_store_clear(lw->day_stores[d]);
+        gint64 lo, hi;               /* the day's local midnight bounds     */
+        bt_day_bounds(offset, &lo, &hi);
+        GPtrArray *tasks = bt_db_tasks_due_between(lw->app->db, lo, hi);
+        guint n = append_task_rows(lw->day_stores[d], tasks, &ctx);
+        bt_ptr_array_free_tasks(tasks);
+        if (n == 0) {
+            /* An empty day still shows a one-row list: an inert dimmed
+             * placeholder (id 0 — checkbox hidden, activation ignored).     */
+            GtkTreeIter iter;
+            gtk_list_store_append(lw->day_stores[d], &iter);
+            gtk_list_store_set(lw->day_stores[d], &iter,
+                               TL_ID, (gint64)0,
+                               TL_DESC, "<i><span alpha=\"55%\">"
+                                        "No tasks due</span></i>",
+                               TL_DUE, "",
+                               -1);
+        }
+        shown += n;
+    }
+    g_date_time_unref(now);
+    task_row_ctx_clear(&ctx);
+
+    gchar *loc = g_strdup_printf(
+        "Weekly Forecast \xe2\x80\x94 %u task%s this week",
+        shown, shown == 1 ? "" : "s");
+    gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
+    g_free(loc);
+}
+
+/* ---------------------------------------------------------------------------
  * refresh_tasks() — rebuild the task pane for the current selection.
+ * The Weekly Forecast has its own panel of seven day views; selecting
+ * it swaps that panel in for the regular task list (and back).
  * ------------------------------------------------------------------------- */
 static void
 refresh_tasks(BtLibrary *lw)
 {
+    gboolean forecast = lw->sel_kind == SB_KIND_FORECAST;
+    gtk_widget_set_visible(lw->task_scroll, !forecast);
+    gtk_widget_set_visible(lw->forecast_box, forecast);
+    if (forecast) {
+        /* Drop the hidden regular pane's rows: a stale selection there
+         * would still feed the toolbar's Delete Task.                       */
+        gtk_list_store_clear(lw->task_store);
+        refresh_forecast(lw);
+        return;
+    }
+
     scroll_keep_queue(lw->task_view);
     gtk_list_store_clear(lw->task_store);
 
@@ -528,13 +806,6 @@ refresh_tasks(BtLibrary *lw)
         view_name = "Due Today";
         break;
     }
-    case SB_KIND_TOMORROW: {
-        gint64 lo, hi;
-        bt_day_bounds(1, &lo, &hi);
-        tasks = bt_db_tasks_due_between(lw->app->db, lo, hi);
-        view_name = "Due Tomorrow";
-        break;
-    }
     case SB_KIND_LIST:
     default:
         tasks = bt_db_tasks_toplevel(lw->app->db, lw->sel_id);
@@ -542,99 +813,53 @@ refresh_tasks(BtLibrary *lw)
         break;
     }
 
-    /* One pass of shared lookups (avoid per-row queries).  Subtasks come
-     * as ONE query grouped in memory, not one query per top-level row.      */
-    GHashTable *att_counts = bt_db_attachment_counts(lw->app->db);
-    GPtrArray *all_subs = bt_db_subtasks_all_visible(lw->app->db);
-    GHashTable *subs_by_parent =     /* parent id → GPtrArray of borrowed   */
-        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
-                              (GDestroyNotify)g_ptr_array_unref);
-    for (guint i = 0; i < all_subs->len; i++) {
-        BtTask *s = g_ptr_array_index(all_subs, i);
-        GPtrArray *bucket = g_hash_table_lookup(subs_by_parent,
-            GINT_TO_POINTER((gint)s->parent_id));
-        if (bucket == NULL) {
-            bucket = g_ptr_array_new();
-            g_hash_table_insert(subs_by_parent,
-                GINT_TO_POINTER((gint)s->parent_id), bucket);
-        }
-        g_ptr_array_add(bucket, s);
-    }
-    GHashTable *list_names = NULL;   /* list id → name (virtual views)      */
-    if (virtual_view) {
-        list_names = g_hash_table_new_full(g_direct_hash, g_direct_equal,
-                                           NULL, g_free);
-        GPtrArray *lists = bt_db_lists(lw->app->db, FALSE);
-        for (guint i = 0; i < lists->len; i++) {
-            BtList *l = g_ptr_array_index(lists, i);
-            g_hash_table_insert(list_names,
-                                GINT_TO_POINTER((gint)l->id),
-                                g_strdup(l->name));
-        }
-        bt_ptr_array_free_lists(lists);
-    }
+    /* Blue Notes action items embedded in THIS list (Settings'
+     * blue_notes_embed_list): high-priority items go above the tasks,
+     * the rest come after them.                                             */
+    BnRows br = { NULL, NULL, NULL };
+    gboolean embed = lw->sel_kind == SB_KIND_LIST &&
+                     lw->sel_id == bn_embed_list(lw) &&
+                     bn_rows_fetch(lw, &br);
+    gint bn_shown = 0;               /* embedded action items appended      */
+    if (embed)
+        bn_shown += append_bn_items(lw, &br, FALSE, 1);
 
-    gboolean bold = bt_app_config_get_bool("bold_task_titles", FALSE);
-    gboolean show_done = bt_app_config_get_bool("show_completed", TRUE);
-    guint appended = 0;              /* rows actually in the pane           */
-    for (guint i = 0; i < tasks->len; i++) {
-        BtTask *t = g_ptr_array_index(tasks, i);
-        if (!show_done && t->done)   /* toolbar completed-visibility toggle */
-            continue;
-        GPtrArray *subs = t->parent_id == 0
-            ? g_hash_table_lookup(subs_by_parent,
-                                  GINT_TO_POINTER((gint)t->id))
-            : NULL;
-        const gchar *list_name = virtual_view && list_names != NULL
-            ? g_hash_table_lookup(list_names,
-                                  GINT_TO_POINTER((gint)t->list_id))
-            : NULL;
-        gint att_count = GPOINTER_TO_INT(g_hash_table_lookup(att_counts,
-            GINT_TO_POINTER((gint)t->id)));
-        gchar *desc = task_desc_markup(t, list_name, att_count, subs,
-                                       bold);
-        gchar *due  = bt_due_format(t->due);
-        GtkTreeIter iter;
-        gtk_list_store_append(lw->task_store, &iter);
-        gtk_list_store_set(lw->task_store, &iter,
-                           TL_ID, t->id,
-                           TL_DONE, t->done,
-                           TL_DESC, desc,
-                           TL_DUE, due,
-                           TL_DUE_RAW, t->due,
-                           TL_PINNED, t->pinned,
-                           -1);
-        g_free(desc);
-        g_free(due);
-        appended++;
+    TaskRowCtx ctx;                  /* shared lookups (see above)          */
+    task_row_ctx_init(lw, &ctx, virtual_view);
+    guint appended = append_task_rows(lw->task_store, tasks, &ctx);
+    task_row_ctx_clear(&ctx);
+
+    if (embed) {
+        bn_shown += append_bn_items(lw, &br, FALSE, 0);
+        bn_rows_clear(&br);
     }
 
     /* Pinned Tasks also gathers pinned Blue Notes action items (their
-     * pin state is local — the bn_pins table).                              */
+     * pin state is local — the bn_pins table), high priority first.         */
     guint shown = appended;          /* rows in the pane (for the status)   */
     if (lw->sel_kind == SB_KIND_PINNED &&
-        bt_app_config_get_bool("blue_notes_sync", FALSE)) {
-        gint bn = append_bn_rows(lw, TRUE);
-        if (bn > 0)
-            shown += (guint)bn;
+        bt_app_config_get_bool("blue_notes_sync", FALSE) &&
+        bn_rows_fetch(lw, &br)) {
+        shown += (guint)(append_bn_items(lw, &br, TRUE, 1) +
+                         append_bn_items(lw, &br, TRUE, 0));
+        bn_rows_clear(&br);
     }
 
     /* Status bar left: where we are + how many rows.                        */
     BtList *sel_list = virtual_view ? NULL
                        : bt_db_list_get(lw->app->db, lw->sel_id);
-    gchar *loc = g_strdup_printf("%s \xe2\x80\x94 %u task%s",
-                                 virtual_view    ? view_name
-                                 : sel_list != NULL ? sel_list->name : "?",
-                                 shown, shown == 1 ? "" : "s");
+    const gchar *where = virtual_view    ? view_name
+                       : sel_list != NULL ? sel_list->name : "?";
+    gchar *loc = bn_shown > 0
+        ? g_strdup_printf("%s \xe2\x80\x94 %u task%s + %d action item%s",
+                          where, appended, appended == 1 ? "" : "s",
+                          bn_shown, bn_shown == 1 ? "" : "s")
+        : g_strdup_printf("%s \xe2\x80\x94 %u task%s",
+                          where, shown, shown == 1 ? "" : "s");
     gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
     g_free(loc);
     bt_list_free(sel_list);
 
-    g_hash_table_destroy(att_counts);
-    g_hash_table_destroy(subs_by_parent);
-    bt_ptr_array_free_tasks(all_subs);
-    if (list_names != NULL)
-        g_hash_table_destroy(list_names);
     bt_ptr_array_free_tasks(tasks);
 }
 
@@ -1009,6 +1234,9 @@ on_task_activated(GtkTreeView *view, GtkTreePath *path,
     }
     gint64 id;
     gtk_tree_model_get(model, &iter, TL_ID, &id, -1);
+    if (id == 0)                     /* the forecast's "No tasks due"
+                                      * placeholder rows                     */
+        return;
     bt_editor_open(lw->app, id);
 }
 
@@ -1050,29 +1278,26 @@ on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
     full_refresh(lw);
 }
 
+/* on_forecast_done_toggled() — the done checkbox of a Weekly Forecast
+ * day view.  Each day view has its own store (the handler above is
+ * bound to the main task store), stashed on the renderer as
+ * "bt-model".  Day views hold real tasks only — no Blue Notes rows.         */
 static void
-on_task_pinned_toggled(GtkCellRendererToggle *cell, gchar *path_str,
-                       gpointer data)
+on_forecast_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
+                         gpointer data)
 {
-    (void)cell;
     BtLibrary *lw = data;
+    GtkTreeModel *model = g_object_get_data(G_OBJECT(cell), "bt-model");
     GtkTreeIter iter;
-    GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
-    if (!gtk_tree_model_get_iter_from_string(model, &iter, path_str))
+    if (model == NULL ||
+        !gtk_tree_model_get_iter_from_string(model, &iter, path_str))
         return;
     gint64 id;
-    gboolean pinned;
-    gchar *ref = NULL;
-    gtk_tree_model_get(model, &iter, TL_ID, &id, TL_PINNED, &pinned,
-                       TL_REF, &ref, -1);
-    if (ref != NULL) {
-        /* Blue Notes row: the pin lives in the local bn_pins table
-         * (Blue Notes itself has no pin concept).                          */
-        bt_db_bn_pin_set(lw->app->db, ref, !pinned);
-        g_free(ref);
-    } else {
-        bt_db_task_set_pinned(lw->app->db, id, !pinned);
-    }
+    gboolean done;
+    gtk_tree_model_get(model, &iter, TL_ID, &id, TL_DONE, &done, -1);
+    if (id == 0)
+        return;
+    bt_db_task_set_done(lw->app->db, id, !done);
     full_refresh(lw);
 }
 
@@ -1091,6 +1316,21 @@ task_row_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
     g_object_set(cell,
                  "cell-background", even ? NULL : ROW_TINT,
                  NULL);
+}
+
+/* forecast_toggle_bg_func() — the day views' checkbox data func: the
+ * row stripe, plus hiding the checkbox on the "No tasks due"
+ * placeholder rows (id 0 — day stores never hold Blue Notes rows, so
+ * the id alone identifies them).                                            */
+static void
+forecast_toggle_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
+                        GtkTreeModel *model, GtkTreeIter *iter,
+                        gpointer data)
+{
+    task_row_bg_func(col, cell, model, iter, data);
+    gint64 id;
+    gtk_tree_model_get(model, iter, TL_ID, &id, -1);
+    g_object_set(cell, "visible", id != 0, NULL);
 }
 
 /* due_color_func() — tint the Due cell by urgency at draw time (rolls
@@ -1330,6 +1570,26 @@ on_edit_list(GtkWidget *w, gpointer data)
     g_free(emoji);
 }
 
+/* on_sidebar_activated() — double-click on a real list opens the Edit
+ * List dialog (the first click of the pair already settled the
+ * selection on the row).  Metas, the Lists header (which keeps its
+ * default expand/collapse) and the Blue Notes row do nothing.               */
+static void
+on_sidebar_activated(GtkTreeView *view, GtkTreePath *path,
+                     GtkTreeViewColumn *col, gpointer data)
+{
+    (void)col;
+    BtLibrary *lw = data;
+    GtkTreeModel *model = gtk_tree_view_get_model(view);
+    GtkTreeIter iter;
+    if (!gtk_tree_model_get_iter(model, &iter, path))
+        return;
+    gint kind;
+    gtk_tree_model_get(model, &iter, SB_KIND, &kind, -1);
+    if (kind == SB_KIND_LIST)
+        on_edit_list(NULL, lw);
+}
+
 /* on_delete_list() — confirm + tombstone the selected real list.            */
 static void
 on_delete_list(GtkWidget *w, gpointer data)
@@ -1517,6 +1777,57 @@ ctx_done_item(BtLibrary *lw, GtkWidget *menu, GArray *ids,
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 }
 
+/* on_ctx_set_pinned() — Pin / Unpin on the selection (local-only; the
+ * sidebar's Pinned Tasks row follows via full_refresh).                     */
+static void
+on_ctx_set_pinned(GtkWidget *item, gpointer data)
+{
+    BtLibrary *lw = data;
+    GArray *ids = item_ids(item);
+    gboolean pinned = GPOINTER_TO_INT(
+        g_object_get_data(G_OBJECT(item), "bt-flag"));
+    for (guint i = 0; i < ids->len; i++)
+        bt_db_task_set_pinned(lw->app->db,
+                              g_array_index(ids, gint64, i), pinned);
+    full_refresh(lw);
+    bt_app_status(lw->app, "%s %u task%s",
+                  pinned ? "Pinned" : "Unpinned",
+                  ids->len, ids->len == 1 ? "" : "s");
+}
+
+/* on_ctx_set_priority() — Set / Clear High Priority on the selection
+ * (local-only; the views re-sort via full_refresh).                         */
+static void
+on_ctx_set_priority(GtkWidget *item, gpointer data)
+{
+    BtLibrary *lw = data;
+    GArray *ids = item_ids(item);
+    gboolean priority = GPOINTER_TO_INT(
+        g_object_get_data(G_OBJECT(item), "bt-flag"));
+    for (guint i = 0; i < ids->len; i++)
+        bt_db_task_set_priority(lw->app->db,
+                                g_array_index(ids, gint64, i), priority);
+    full_refresh(lw);
+    bt_app_status(lw->app, "%s high priority on %u task%s",
+                  priority ? "Set" : "Cleared",
+                  ids->len, ids->len == 1 ? "" : "s");
+}
+
+/* ctx_flag_item() — one bulk context-menu item: the selection rides on
+ * the item as its own g_array_ref ("bt-ids"), the boolean to apply as
+ * "bt-flag".                                                                */
+static void
+ctx_flag_item(BtLibrary *lw, GtkWidget *menu, GArray *ids,
+              const gchar *label, gboolean flag, GCallback cb)
+{
+    GtkWidget *item = gtk_menu_item_new_with_label(label);
+    g_object_set_data_full(G_OBJECT(item), "bt-ids", g_array_ref(ids),
+                           (GDestroyNotify)g_array_unref);
+    g_object_set_data(G_OBJECT(item), "bt-flag", GINT_TO_POINTER(flag));
+    g_signal_connect(item, "activate", cb, lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+}
+
 /* on_ctx_move() — a destination picked in the Move to List menu: move
  * every selected TOP-LEVEL task not already there (subtasks travel with
  * their parents; a selected subtask on its own cannot move).                */
@@ -1591,6 +1902,31 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
     /* Mark Complete / Mark Incomplete — the bulk staples.                   */
     ctx_done_item(lw, menu, ids, single, TRUE);
     ctx_done_item(lw, menu, ids, single, FALSE);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu),
+                          gtk_separator_menu_item_new());
+
+    /* Pin / Unpin and High Priority: a single row gets just the action
+     * that applies to it; a multi-selection (possibly mixed states)
+     * gets both directions.                                                 */
+    if (single && t != NULL) {
+        ctx_flag_item(lw, menu, ids,
+                      t->pinned ? "Unpin Task" : "Pin Task",
+                      !t->pinned, G_CALLBACK(on_ctx_set_pinned));
+        ctx_flag_item(lw, menu, ids,
+                      t->priority ? "Clear High Priority"
+                                  : "Set High Priority",
+                      !t->priority, G_CALLBACK(on_ctx_set_priority));
+    } else {
+        ctx_flag_item(lw, menu, ids, "Pin All", TRUE,
+                      G_CALLBACK(on_ctx_set_pinned));
+        ctx_flag_item(lw, menu, ids, "Unpin All", FALSE,
+                      G_CALLBACK(on_ctx_set_pinned));
+        ctx_flag_item(lw, menu, ids, "Set All High Priority", TRUE,
+                      G_CALLBACK(on_ctx_set_priority));
+        ctx_flag_item(lw, menu, ids, "Clear All High Priority", FALSE,
+                      G_CALLBACK(on_ctx_set_priority));
+    }
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu),
                           gtk_separator_menu_item_new());
@@ -1959,6 +2295,82 @@ tool_button(BtLibrary *lw, GtkToolbar *bar, const gchar *icon,
     return item;
 }
 
+/* ---------------------------------------------------------------------------
+ * forecast_day_section() — build one Weekly Forecast day section: a
+ * heading label (day of the week over the date, set per refresh) above
+ * a two-column (done + task) list view with its own store, sharing the
+ * main pane's stripes, activation handler and row markup.  The view is
+ * framed but NOT scrolled — it takes its natural full-content height;
+ * the whole week scrolls together in the panel's one outer scroller.
+ * Fills lw->day_labels / day_stores / day_views [d].
+ * ------------------------------------------------------------------------- */
+static GtkWidget *
+forecast_day_section(BtLibrary *lw, gint d)
+{
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+
+    lw->day_labels[d] = gtk_label_new(NULL);
+    gtk_label_set_justify(GTK_LABEL(lw->day_labels[d]),
+                          GTK_JUSTIFY_CENTER);
+    gtk_label_set_ellipsize(GTK_LABEL(lw->day_labels[d]),
+                            PANGO_ELLIPSIZE_END);
+    gtk_box_pack_start(GTK_BOX(box), lw->day_labels[d], FALSE, FALSE, 2);
+
+    lw->day_stores[d] = gtk_list_store_new(TL_N_COLS, G_TYPE_INT64,
+                                           G_TYPE_BOOLEAN, G_TYPE_STRING,
+                                           G_TYPE_STRING, G_TYPE_INT64,
+                                           G_TYPE_STRING);
+    lw->day_views[d] = gtk_tree_view_new_with_model(
+        GTK_TREE_MODEL(lw->day_stores[d]));
+    g_object_unref(lw->day_stores[d]);
+    gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(lw->day_views[d]),
+                                      FALSE);
+    gtk_tree_view_set_enable_search(GTK_TREE_VIEW(lw->day_views[d]),
+                                    FALSE);
+    /* No selection: seven views would each keep their own, leaving up
+     * to seven "selected" rows on screen.  Double-click activation
+     * (and the checkbox) work without one.                                   */
+    gtk_tree_selection_set_mode(
+        gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->day_views[d])),
+        GTK_SELECTION_NONE);
+    g_signal_connect(lw->day_views[d], "row-activated",
+                     G_CALLBACK(on_task_activated), lw);
+
+    GtkCellRenderer *done_cell = gtk_cell_renderer_toggle_new();
+    g_object_set_data(G_OBJECT(done_cell), "bt-model",
+                      lw->day_stores[d]);
+    g_signal_connect(done_cell, "toggled",
+                     G_CALLBACK(on_forecast_done_toggled), lw);
+    GtkTreeViewColumn *cdone =
+        gtk_tree_view_column_new_with_attributes("\xe2\x9c\x93",
+            done_cell, "active", TL_DONE, NULL);
+    gtk_tree_view_column_set_cell_data_func(cdone, done_cell,
+                                            forecast_toggle_bg_func,
+                                            NULL, NULL);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(lw->day_views[d]), cdone);
+
+    GtkCellRenderer *desc_cell = gtk_cell_renderer_text_new();
+    g_object_set(desc_cell,
+                 "ypad", 6,
+                 "ellipsize", PANGO_ELLIPSIZE_END,
+                 NULL);
+    GtkTreeViewColumn *cdesc =
+        gtk_tree_view_column_new_with_attributes("Task", desc_cell,
+            "markup", TL_DESC, NULL);
+    gtk_tree_view_column_set_cell_data_func(cdesc, desc_cell,
+                                            task_row_bg_func, NULL, NULL);
+    gtk_tree_view_column_set_expand(cdesc, TRUE);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(lw->day_views[d]), cdesc);
+
+    /* A frame so each day reads as its own list even where the white
+     * rows meet the 6 px gaps.                                               */
+    GtkWidget *frame = gtk_frame_new(NULL);
+    gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_IN);
+    gtk_container_add(GTK_CONTAINER(frame), lw->day_views[d]);
+    gtk_box_pack_start(GTK_BOX(box), frame, FALSE, FALSE, 0);
+    return box;
+}
+
 /* on_library_configure() — track the live client size for persistence.      */
 static gboolean
 on_library_configure(GtkWidget *w, GdkEventConfigure *event, gpointer data)
@@ -2067,13 +2479,6 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                        gtk_separator_tool_item_new(), -1);
 
-    tool_button(lw, GTK_TOOLBAR(toolbar), "add2", NULL,
-                "New Task", "Create a task in the selected list",
-                G_CALLBACK(on_new_task));
-    tool_button(lw, GTK_TOOLBAR(toolbar), "remove", NULL,
-                "Delete Task", "Delete the selected task",
-                G_CALLBACK(on_delete_task));
-
     lw->sync_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
         "google-symbol", "\xe2\x9f\xb3", "Sync",
         "Sync with Google Tasks now", G_CALLBACK(on_sync)));
@@ -2081,6 +2486,15 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
         "hidden", "\xf0\x9f\x91\x81", "Completed",
         "Hide completed tasks", G_CALLBACK(on_toggle_done_visible)));
     hide_done_icon_refresh(lw);      /* the persisted state's icon          */
+    gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
+                       gtk_separator_tool_item_new(), -1);
+
+    tool_button(lw, GTK_TOOLBAR(toolbar), "add2", NULL,
+                "New Task", "Create a task in the selected list",
+                G_CALLBACK(on_new_task));
+    tool_button(lw, GTK_TOOLBAR(toolbar), "remove", NULL,
+                "Delete Task", "Delete the selected task",
+                G_CALLBACK(on_delete_task));
 
     /* Expanding blank separator pushes the About button to the right
      * edge (the Blue Notes layout).                                         */
@@ -2163,6 +2577,8 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
                                            lw, NULL);
     g_signal_connect(sb_sel, "changed",
                      G_CALLBACK(on_sidebar_changed), lw);
+    g_signal_connect(lw->sb_view, "row-activated",
+                     G_CALLBACK(on_sidebar_activated), lw);
     /* Let list rows be dragged to reorder them.  The dest protocol is
      * fully custom (motion answers the status itself; only the drop
      * requests the row data) — see the sidebar DnD banner.                  */
@@ -2212,8 +2628,13 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     gtk_box_pack_end(GTK_BOX(sb_actions), sb_edit, FALSE, FALSE, 0);
     gtk_box_pack_end(GTK_BOX(sb_actions), sb_add, FALSE, FALSE, 0);
 
+    /* A thin rule between the tree and the mini action bar — the same
+     * unstyled theme separator as the one under the toolbar.                */
+    GtkWidget *sb_rule = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+
     GtkWidget *sb_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_pack_start(GTK_BOX(sb_box), sb_scroll, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(sb_box), sb_rule, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(sb_box), sb_actions, FALSE, FALSE, 0);
     gtk_paned_pack1(GTK_PANED(paned), sb_box, FALSE, FALSE);
     lw->sidebar_box = sb_box;        /* for the toolbar show/hide toggle    */
@@ -2222,7 +2643,7 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     lw->task_store = gtk_list_store_new(TL_N_COLS, G_TYPE_INT64,
                                         G_TYPE_BOOLEAN, G_TYPE_STRING,
                                         G_TYPE_STRING, G_TYPE_INT64,
-                                        G_TYPE_BOOLEAN, G_TYPE_STRING);
+                                        G_TYPE_STRING);
     lw->task_view = gtk_tree_view_new_with_model(
         GTK_TREE_MODEL(lw->task_store));
     g_object_unref(lw->task_store);
@@ -2279,23 +2700,33 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     gtk_tree_view_column_set_sort_column_id(cdue, TL_DUE_RAW);
     gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cdue);
 
-    /* Pinned checkbox column.                                               */
-    GtkCellRenderer *pin_cell = gtk_cell_renderer_toggle_new();
-    g_signal_connect(pin_cell, "toggled",
-                     G_CALLBACK(on_task_pinned_toggled), lw);
-    GtkTreeViewColumn *cpin =
-        gtk_tree_view_column_new_with_attributes("Pinned", pin_cell,
-            "active", TL_PINNED, NULL);
-    gtk_tree_view_column_set_cell_data_func(cpin, pin_cell,
-                                            task_row_bg_func, NULL, NULL);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cpin);
-
-    GtkWidget *task_scroll = gtk_scrolled_window_new(NULL, NULL);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(task_scroll),
+    lw->task_scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(lw->task_scroll),
                                    GTK_POLICY_AUTOMATIC,
                                    GTK_POLICY_AUTOMATIC);
-    gtk_container_add(GTK_CONTAINER(task_scroll), lw->task_view);
-    gtk_paned_pack2(GTK_PANED(paned), task_scroll, TRUE, FALSE);
+    gtk_container_add(GTK_CONTAINER(lw->task_scroll), lw->task_view);
+
+    /* The Weekly Forecast panel: seven full-width day sections stacked
+     * vertically, 6 px apart so the lists never touch, scrolling
+     * together in one outer scroller.  It shares the pane with the
+     * regular task list; refresh_tasks swaps their visibility.               */
+    GtkWidget *week_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(week_box), 6);
+    for (gint d = 0; d < 7; d++)
+        gtk_box_pack_start(GTK_BOX(week_box),
+                           forecast_day_section(lw, d), FALSE, FALSE, 0);
+    lw->forecast_box = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(lw->forecast_box),
+                                   GTK_POLICY_NEVER,
+                                   GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(lw->forecast_box), week_box);
+
+    GtkWidget *task_pane = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(task_pane), lw->task_scroll,
+                       TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(task_pane), lw->forecast_box,
+                       TRUE, TRUE, 0);
+    gtk_paned_pack2(GTK_PANED(paned), task_pane, TRUE, FALSE);
 
     /* --- Status bar -------------------------------------------------------- */
     /* Same geometry as the Blue Notes status bar: 8 px side margins,
@@ -2341,6 +2772,12 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
      * brings it back); the toggle persists the user's last choice.          */
     if (!bt_app_config_get_bool("sidebar_visible", FALSE))
         gtk_widget_hide(lw->sidebar_box);
+    /* show_all made BOTH task-pane variants visible — restore the
+     * regular-list / Weekly Forecast split for the current selection.       */
+    gtk_widget_set_visible(lw->task_scroll,
+                           lw->sel_kind != SB_KIND_FORECAST);
+    gtk_widget_set_visible(lw->forecast_box,
+                           lw->sel_kind == SB_KIND_FORECAST);
     /* No Sync button while the Google master switch is off.                 */
     if (!bt_app_config_get_bool("google_sync_enabled", TRUE))
         gtk_widget_hide(lw->sync_item);

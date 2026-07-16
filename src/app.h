@@ -159,8 +159,9 @@ gboolean bt_app_confirm(GtkWindow *parent, const gchar *title,
  * every change.  Keys used (see hacienda.ini.defaults): sync —
  * google_sync_enabled, google_client_id, google_client_secret,
  * gtasks_refresh_token, sync_interval_min; Blue Notes — blue_notes_sync,
- * blue_notes_cli; UI — toolbar_style, bold_task_titles, native_menubar,
- * show_completed, sidebar_visible, win_w, win_h.
+ * blue_notes_cli, blue_notes_embed_list; UI — toolbar_style,
+ * bold_task_titles, native_menubar,
+ * show_completed, sidebar_visible, weekly_forecast, win_w, win_h.
  * ------------------------------------------------------------------------- */
 void      bt_app_config_init(const gchar *argv0);
 gchar    *bt_app_config_get(const gchar *key);         /* NULL when unset   */

@@ -9,7 +9,13 @@ the database schema and the sync engine see [Internals](Internals.md).
 
 - **Sidebar** — bold rolled-up views at the top: **Pinned Tasks**
   (present only while something is pinned), **All Tasks**, **Due
-  Today** and **Due Tomorrow** (rolling over at local midnight). Your
+  Today** (rolling over at local midnight) and **Weekly Forecast** —
+  the current week, Sunday through Saturday, as seven day lists
+  stacked down the page, each headed by its day and date (today is
+  marked) and showing the tasks due that day; check off tasks in
+  place or double-click to edit. The Weekly Forecast view can be
+  switched off in Settings → Appearance, which removes it from the
+  sidebar entirely. Your
   real lists nest under a collapsible **Lists** header, each shown
   with its emoji when one is set. Lists sort alphabetically until you
   drag one into place — from then on your custom order sticks (it is
@@ -19,26 +25,33 @@ the database schema and the sync engine see [Internals](Internals.md).
   harmless noise from a bug in the Mac build of the GTK library
   itself, not in Hacienda — the drag works fine. The compact
   **+ ✎ −** bar at the bottom creates, renames (with an emoji picker)
-  and deletes lists. The sidebar starts hidden; the toolbar's
+  and deletes lists; double-clicking a list opens that same rename
+  dialog. The sidebar starts hidden; the toolbar's
   **Sidebar** button toggles it and the choice persists.
 - **Task rows** are tall: title (optionally bold — see Settings),
   notes preview, attachment count, and up to four subtask lines with
-  their own checkboxes rendered inline. Columns: a done checkbox, the
-  task, the due date, and a pinned checkbox. Rows alternate
+  their own checkboxes rendered inline. Tasks marked **High
+  Priority** (a checkbox in the editor) sort to the top of every
+  list they appear in and wear a red ⚑ beside the title. The flag
+  is local to Hacienda — Google Tasks has no priority, so it never
+  syncs. Columns: a done checkbox, the
+  task, and the due date. Pinning is done from the editor window's
+  Pinned checkbox or the task's right-click menu. Rows alternate
   white/light-blue; click the Due header to sort (soonest first,
   undated rows last). Due dates are color-coded: green while the date
   is still ahead, gold on the day itself, red once it has passed.
-- **Toolbar** — the Sidebar toggle, then New List, Delete List, New
-  Task, Delete Task and Sync, then a visibility toggle that shows or
-  hides completed tasks (it applies to every view, Blue Notes items
-  included). At the far right, the logo button opens the About dialog
+- **Toolbar** — the Sidebar toggle, then Sync and a visibility toggle
+  that shows or hides completed tasks (it applies to every view, Blue
+  Notes items included), then New Task and Delete Task. At the far right, the logo button opens the About dialog
   (program info plus live database statistics). Button style —
   icons, icons + text, or text — is set in Settings or by
   right-clicking an empty spot on the toolbar.
 - **Multi-select** (Cmd/Shift-click) for bulk actions via the
-  right-click menu: mark complete or incomplete, **Move to List**,
-  Delete. **Open in Google Tasks** opens a single selected task in
-  the browser (for tasks that have synced).
+  right-click menu: mark complete or incomplete, pin or unpin, set
+  or clear **High Priority**, **Move to List**, Delete. With a
+  single task selected the pin and priority items show only the
+  direction that applies. **Open in Google Tasks** opens a single
+  selected task in the browser (for tasks that have synced).
 - **Double-click a task** to open its editor window.
 - Menus: *File → Settings…*, *Clear Completed Tasks*, *Sync Now* and
   *Quit*; *Help → About Hacienda*. With gtk-mac-integration built in,
@@ -140,13 +153,22 @@ action items can show up here: enable the integration in Settings and
 an **Action Items (from Blue Notes)** section appears under Lists
 while it's on.
 
+- **Embedding** — Settings' "Show action items in" can place the
+  items inside one of your regular lists instead (say, the list you
+  actually work from). The separate Action Items section disappears
+  and the items ride along in that list, each wearing a dimmed
+  "❗ Action Items · note N" tag so it's clear where they really
+  live. They stay Blue Notes items: the same reduced editor, the
+  same CLI write-through.
 - Tick the checkbox to mark an item done — the line strikes through
   in the note itself. Double-click to open the reduced editor: done
   and due date are editable; the text lives in the note, so title,
   notes, subtasks and attachments are shown but locked.
 - **Pinning works** and is Hacienda-local (Blue Notes has no pin
   concept); pinned action items appear in the Pinned Tasks view
-  alongside your tasks.
+  alongside your tasks. **High Priority works the same way** —
+  Hacienda-local, never written to Blue Notes — and floats the item
+  to the top of whichever Hacienda view shows it.
 - Everything goes through the `blue_notes` command-line interface —
   never its database file — so a running Blue Notes GUI and Hacienda
   cooperate safely (the CLI forwards to the GUI over its socket).

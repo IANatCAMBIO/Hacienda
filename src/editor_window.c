@@ -35,6 +35,7 @@ typedef struct {
     GtkWidget    *title_entry;
     GtkWidget    *done_check;
     GtkWidget    *pinned_check;
+    GtkWidget    *priority_check;    /* insensitive in Blue Notes editors   */
     GtkWidget    *due_entry;
     GtkTextBuffer *notes_buf;
     GtkListStore *sub_store;         /* NULL for subtask editors            */
@@ -132,10 +133,14 @@ editor_save_now(BtEditor *ed)
             bt_app_status(ed->app, "%s",
                           err != NULL ? err : "Blue Notes update failed");
         g_free(err);
-        /* The pin is LOCAL (bn_pins table) — no CLI involved.               */
+        /* The pin and priority are LOCAL (bn_pins / bn_priority tables)
+         * — no CLI involved.                                                */
         bt_db_bn_pin_set(ed->app->db, ed->bn_ref,
                          gtk_toggle_button_get_active(
                              GTK_TOGGLE_BUTTON(ed->pinned_check)));
+        bt_db_bn_priority_set(ed->app->db, ed->bn_ref,
+                              gtk_toggle_button_get_active(
+                                  GTK_TOGGLE_BUTTON(ed->priority_check)));
         editor_title_refresh(ed);
         editor_notify(ed);
         return;
@@ -153,6 +158,8 @@ editor_save_now(BtEditor *ed)
                     GTK_TOGGLE_BUTTON(ed->done_check));
     t->pinned = gtk_toggle_button_get_active(
                     GTK_TOGGLE_BUTTON(ed->pinned_check));
+    t->priority = gtk_toggle_button_get_active(
+                    GTK_TOGGLE_BUTTON(ed->priority_check));
     t->due    = editor_due_entry_parse(ed, t->due);
     bt_db_task_update(ed->app->db, t);
     bt_task_free(t);
@@ -565,6 +572,9 @@ editor_load_bnote(BtEditor *ed)
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->pinned_check),
                                  bt_db_bn_pin_get(ed->app->db,
                                                   ed->bn_ref));
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->priority_check),
+                                 bt_db_bn_priority_get(ed->app->db,
+                                                       ed->bn_ref));
     due_entry_refresh(ed, found->due);
     ed->bn_done = found->done;       /* the change-detection baseline       */
     ed->bn_due  = found->due;
@@ -676,6 +686,8 @@ editor_load(BtEditor *ed)
                                  t->done);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->pinned_check),
                                  t->pinned);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->priority_check),
+                                 t->priority);
     due_entry_refresh(ed, t->due);
 
     GtkTextIter a, b;
@@ -815,6 +827,16 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
     g_signal_connect(ed->pinned_check, "toggled",
                      G_CALLBACK(on_toggle_changed), ed);
     gtk_box_pack_start(GTK_BOX(row), ed->pinned_check, FALSE, FALSE, 0);
+    ed->priority_check = gtk_check_button_new_with_label("High Priority");
+    g_signal_connect(ed->priority_check, "toggled",
+                     G_CALLBACK(on_toggle_changed), ed);
+    if (bn)                          /* Hacienda-local, like the pin (the
+                                      * bn_priority table)                   */
+        gtk_widget_set_tooltip_text(ed->priority_check,
+            "Kept in Hacienda only \xe2\x80\x94 affects ordering here, "
+            "not Blue Notes");
+    gtk_box_pack_start(GTK_BOX(row), ed->priority_check,
+                       FALSE, FALSE, 0);
 
     GtkWidget *due_btn = small_button("\xf0\x9f\x93\x85",
                                       G_CALLBACK(on_due_calendar), ed);

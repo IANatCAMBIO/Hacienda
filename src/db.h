@@ -1,19 +1,22 @@
 /* ===========================================================================
  * db.h — SQLite storage for Hacienda
  *
- * Schema (PRAGMA user_version = 3; v2 added lists.emoji, v3 the five
- * Google-mirror task columns):
+ * Schema (PRAGMA user_version = 4; v2 added lists.emoji, v3 the five
+ * Google-mirror task columns, v4 tasks.priority):
  *
  *   lists        id, name, emoji, position, gtasks_id, updated_at, deleted
  *   tasks        id, list_id, parent_id (NULL = top-level; ONE level of
  *                nesting only — a subtask can never be a parent),
  *                title, notes, due (unix local midnight; 0 = none), done,
- *                pinned, position, gtasks_id, updated_at, deleted,
+ *                pinned, priority (local-only; sorts first in every
+ *                view), position, gtasks_id, updated_at, deleted,
  *                completed_at, etag, web_link, glinks, assigned
  *   attachments  id, task_id, path, added_at   (local-only; never synced)
  *   sync_state   key, value                    (e.g. "last_sync")
  *   bn_pins      ref                           (pinned Blue Notes action
  *                                               items; local-only)
+ *   bn_priority  ref                           (high-priority Blue Notes
+ *                                               action items; local-only)
  *
  * Deletion is a SOFT flag everywhere (`deleted` = tombstone): the Google
  * Tasks sync needs to see "this existed and was deleted locally" to
@@ -64,6 +67,9 @@ typedef struct {
     gint64    due;                   /* unix local midnight; 0 = no date    */
     gboolean  done;
     gboolean  pinned;
+    gboolean  priority;              /* high priority — local-only, like
+                                      * pinned (Google has no priority);
+                                      * sorts to the top of every view      */
     gint      position;
     gchar    *gtasks_id;             /* Google task id, or NULL             */
     gint64    updated_at;
@@ -115,6 +121,13 @@ GPtrArray *bt_db_lists(BtDatabase *db, gboolean include_deleted);
 void bt_db_lists_reorder(BtDatabase *db, const gint64 *ids, gsize n);
 
 BtList  *bt_db_list_get(BtDatabase *db, gint64 id);
+
+/* Seed the emoji of the list bound to `gtasks_id` — ONLY while its
+ * emoji is empty, so a later user edit sticks.  Used by the sync to
+ * mark Google's undeletable default list.  No updated_at bump (the
+ * emoji is local-only; this must not dirty the row for sync).               */
+void bt_db_list_emoji_if_empty(BtDatabase *db, const gchar *gtasks_id,
+                               const gchar *emoji);
 
 /* Create a list.  `emoji` is the optional local-only display prefix
  * (NULL/"" for none) — it is never part of the synced name.                 */
@@ -177,13 +190,14 @@ GPtrArray *bt_db_tasks_in_list_all(BtDatabase *db, gint64 list_id);
 gint64 bt_db_task_create(BtDatabase *db, gint64 list_id, gint64 parent_id,
                          const gchar *title);
 
-/* Write the editable fields (title/notes/due/done/pinned) from `t` back
- * to its row and stamp updated_at.                                          */
+/* Write the editable fields (title/notes/due/done/pinned/priority) from
+ * `t` back to its row and stamp updated_at.                                 */
 void bt_db_task_update(BtDatabase *db, const BtTask *t);
 
 /* Field setters used by the list-view toggles (stamp updated_at).           */
 void bt_db_task_set_done(BtDatabase *db, gint64 id, gboolean done);
 void bt_db_task_set_pinned(BtDatabase *db, gint64 id, gboolean pinned);
+void bt_db_task_set_priority(BtDatabase *db, gint64 id, gboolean priority);
 
 /* Tombstone the task and its subtasks.                                      */
 void bt_db_task_delete(BtDatabase *db, gint64 id);
@@ -221,7 +235,7 @@ GHashTable *bt_db_attachment_counts(BtDatabase *db);
  * Either out-pointer may be NULL; a failed query leaves 0.                  */
 void bt_db_totals(BtDatabase *db, gint *n_tasks, gint *n_lists);
 
-/* ------------------------------ Blue Notes pins -------------------------- */
+/* -------------------- Blue Notes pins and priorities --------------------- */
 
 /* Pinned state for Blue Notes action items (pinning is a Hacienda
  * concept; Blue Notes has none, so membership lives in the local
@@ -233,6 +247,17 @@ void        bt_db_bn_pin_set(BtDatabase *db, const gchar *ref,
 /* All pinned refs as a set (string keys, owned by the table); free with
  * g_hash_table_destroy.                                                     */
 GHashTable *bt_db_bn_pins(BtDatabase *db);
+
+/* High-priority state for Blue Notes action items — the same local
+ * design as pins (bn_priority table, "NOTEID:ORD" keys): Blue Notes
+ * has no priority concept, so the flag only affects where the items
+ * appear in Hacienda's views.                                               */
+gboolean    bt_db_bn_priority_get(BtDatabase *db, const gchar *ref);
+void        bt_db_bn_priority_set(BtDatabase *db, const gchar *ref,
+                                  gboolean priority);
+
+/* All high-priority refs as a set; free with g_hash_table_destroy.          */
+GHashTable *bt_db_bn_priorities(BtDatabase *db);
 
 /* Drop every gtasks_id/etag of one list's tasks — used when the bound
  * remote list vanished and the list is re-created remotely: its tasks

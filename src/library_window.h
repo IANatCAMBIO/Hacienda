@@ -11,7 +11,7 @@
  *   │ Pinned Tasks  │  ✓ │ Task (tall rows: title, notes preview,  │
  *   │ All Tasks     │    │ attachments, subtasks) │ Due │ Pinned   │
  *   │ Due Today     │                                              │
- *   │ Due Tomorrow  │                                              │
+ *   │ Wkly Forecast │                                              │
  *   │ ── Lists ──   │                                              │
  *   │ <the lists>   │                                              │
  *   │       + ✎ −   │  (sidebar mini bar: new/edit/delete list)    │
@@ -20,8 +20,10 @@
  *   └──────────────────────────────────────────────────────────────┘
  *
  * The sidebar's top four rows are VIRTUAL lists — aggregates over every
- * real list (pinned flag / all / due today / due tomorrow).  Tasks
- * cannot be created inside them; New Task needs a real list selected.
+ * real list (pinned flag / all / due today / the current week, Sunday
+ * through Saturday, as seven day sections; hidden entirely while the
+ * "weekly_forecast" setting is off).  Tasks cannot be created inside
+ * them; New Task needs a real list selected.
  * =========================================================================== */
 
 #ifndef BT_LIBRARY_WINDOW_H

@@ -32,7 +32,7 @@ the user).  A logic test harness lives in the session scratchpad
 |---|---|
 | `src/main.c` | GtkApplication entry; config → curl_global_init → db → oauth snapshot → window → auto-sync; icon-theme path for HiDPI expanders |
 | `src/app.[ch]` | Shared `BtApp` context; ini config; dialogs; toolbar style system (icons/both/text + right-click menu); HiDPI icon loader; CSS helper; date helpers |
-| `src/db.[ch]` | SQLite schema (user_version 3) + CRUD; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
+| `src/db.[ch]` | SQLite schema (user_version 4) + CRUD; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
 | `src/library_window.[ch]` | Sidebar (virtual lists + collapsible Lists section), tall task rows, toolbar, mini +/✎/− bar, multi-select context menu, status bar |
 | `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); reduced Blue Notes variant; read-only "From Google" section |
 | `src/settings_window.[ch]` | Singleton settings: sync master switch, sign in/out, auto-sync interval, Blue Notes integration, toolbar style, native menubar |
@@ -82,9 +82,10 @@ the user).  A logic test harness lives in the session scratchpad
   `bt_app_tool_item_new` (local PNG at 24 px logical, Pango-markup glyph
   fallback); registered with `bt_app_register_toolbar` so the
   icons/both/text style applies live (Settings combo + right-click
-  radio menu).  Layout: the Sidebar toggle, a drawn divider, then the
-  task buttons and Sync (all left-packed).  After Sync: the
-  completed-visibility toggle (`show_completed`, default 1) — it shows
+  radio menu).  Layout (all left-packed): the Sidebar toggle, a drawn
+  divider, Sync, the completed-visibility toggle, a second divider,
+  then New Task and Delete Task.  The completed-visibility toggle
+  (`show_completed`, default 1) shows
   hidden.png while completed tasks are visible and visible.png while
   hidden (the icon names the ACTION), swapped live via
   `hide_done_icon_refresh`; the filter applies to every task-pane view
@@ -107,17 +108,42 @@ the user).  A logic test harness lives in the session scratchpad
   overdue #c01c28, today #d19a00, ahead #26a269, computed at draw time.
 - Sidebar: gray backdrop CSS (rgb 230,230,230 / text 65,65,65 /
   selection rgb 86,131,224 white); meta rows bold (Pinned, All Tasks,
-  Due Today, Due Tomorrow).  The Pinned Tasks row exists ONLY while
+  Due Today ☀️, Weekly Forecast 🌤️).  Weekly Forecast is its OWN
+  panel, not rows in the task store: seven full-width day sections
+  (Sunday–Saturday) stacked vertically, 6 px apart, each a heading
+  label + framed (NOT individually scrolled) two-column (done ✓ +
+  markup) tree view with its own store at natural full-content
+  height, selection mode NONE (seven views would each keep their own
+  selection; double-click activation works without one) — the whole
+  week scrolls together in one outer scroller
+  (position restored via scroll_keep_queue_win); refresh_tasks swaps
+  task_scroll ↔ forecast_box visibility (re-applied after the
+  construction-time show_all, which shows both) and clears the hidden
+  regular store (a stale selection there would feed the toolbar's
+  Delete Task).  Day headings are set per refresh (today: blue ● + "— Today"); the
+  day checkbox resolves its store via "bt-model" object data on the
+  renderer.  Empty days show an inert dimmed "No tasks due" row
+  (id 0 — checkbox hidden by forecast_toggle_bg_func, activation
+  ignored).
+  In-list day-section headers and side-by-side day columns were both
+  tried and rejected (2026-07-16) — don't reintroduce.
+  The row exists only while `weekly_forecast`=1 (Settings →
+  Appearance; default on).  The Pinned Tasks row exists ONLY while
   something is pinned (`bt_db_has_pinned`, counting bn_pins when the
   Blue Notes integration is on); editor pin flips arrive via
   notify_tasks, so `notify_tasks_hook` rebuilds the sidebar on the
-  0 ↔ nonzero transition (tracked in `pinned_row_shown`) — the task-list
-  pin checkbox already full_refreshes.  Real lists nest under a collapsible bold
+  0 ↔ nonzero transition (tracked in `pinned_row_shown`) — the
+  context-menu pin actions already full_refresh.  There is NO pinned
+  column in the task list (removed 2026-07-16): pinning happens in the
+  editor or the right-click menu (which BN rows never get — BN items
+  pin via their editor only).  Real lists nest under a collapsible bold
   "Lists" header whose expansion is SNAPSHOTTED before every rebuild
   (first population expands; force-open when the selection lives
   inside).  List labels: `emoji + two spaces + name` when an emoji is
-  set.  Mini action bar at the bottom: flat compact + ✎ − buttons,
-  right-aligned.  Sidebar starts HIDDEN by default
+  set.  Double-clicking a list row opens the Edit List dialog (metas/
+  header/BN row: no-op).  Mini action bar at the bottom: flat compact
+  + ✎ − buttons, right-aligned, under a thin theme separator (same as
+  the toolbar rule — black was tried and rejected as too harsh).  Sidebar starts HIDDEN by default
   (`sidebar_visible`, write-through on toggle).  Lists are ALPHABETICAL
   by default and drag-reorderable: `bt_db_lists` sorts by lower(name)
   until sync_state `lists_custom_order` exists (set by
@@ -142,8 +168,10 @@ the user).  A logic test harness lives in the session scratchpad
   chosen item's activate, so it is safe).
 - Task view is `GTK_SELECTION_MULTIPLE`; right-click INSIDE an existing
   selection keeps it, outside collapses to the clicked row; context
-  actions (mark complete/incomplete, move, delete) apply to the whole
-  selection; "Open in Google Tasks" is single-row only.  Bulk data
+  actions (mark complete/incomplete, pin/unpin, set/clear high
+  priority, move, delete) apply to the whole selection — single rows
+  get only the pin/priority direction that applies; "Open in Google
+  Tasks" is single-row only.  Bulk data
   rides on menu items as `g_array_ref`'d id arrays with destroy
   notifies.
 - Editor: 600 ms debounced write-through saves; done/pinned save
@@ -187,7 +215,10 @@ the user).  A logic test harness lives in the session scratchpad
   etag`, and a 412 SKIPS the push (remote wins; next pull reconciles).
   Conflicts otherwise resolve newest-wins; deletion beats concurrent
   edit.  Replies stamp rows clean (remote updated + fresh etag).
-- LOCAL-ONLY fields (never sent): `pinned`, list `emoji`, attachments.
+- LOCAL-ONLY fields (never sent): `pinned`, task `priority` (binary
+  high-priority flag; every view query sorts `priority DESC` first so
+  flagged tasks top any list they appear in, red ⚑ in the task cell,
+  "High Priority" editor checkbox), list `emoji`, attachments.
   The API has NO starring and `due` is DATE-ONLY (time is documented as
   discarded and unreadable) — both confirmed against the docs; don't
   re-attempt.
@@ -222,14 +253,23 @@ the user).  A logic test harness lives in the session scratchpad
   single-writer design (CLI routes through the running GUI's socket).
   Row format: `NOTEID:ORD \t [x]|[ ] \t YYYY-MM-DD|- \t text`.
 - Shown as "Action Items (from Blue Notes)" under Lists while
-  `blue_notes_sync=1`; not deletable/editable as a list; items open the
-  reduced editor (done + due writable via CLI; title/notes/subtasks/
-  attachments insensitive — no CLI verbs for them).  PINNING works:
-  it is local-only state in the `bn_pins` table keyed by the item's
-  "NOTEID:ORD" ref (Blue Notes has no pin concept); pinned action
-  items also appear in the Pinned Tasks view (`append_bn_rows` with
-  only_pinned).  BN rows are detected by TL_REF != NULL (id 0), NOT
-  by the selected sidebar kind — they can appear in Pinned too.  The Blue
+  `blue_notes_sync=1` — unless `blue_notes_embed_list` (Settings'
+  "Show action items in" combo) names a real list: then the sidebar
+  row disappears and the items ride in that list's view instead,
+  tagged "❗ Action Items · note N" (a stale/deleted embed id falls
+  back to the own-section mode — see `bn_embed_list`).  Not
+  deletable/editable as a list; items open the reduced editor (done +
+  due writable via CLI; title/notes/subtasks/attachments insensitive
+  — no CLI verbs for them).  PINNING and HIGH PRIORITY work: both are
+  local-only state (`bn_pins` / `bn_priority` tables) keyed by the
+  item's "NOTEID:ORD" ref (Blue Notes knows neither concept); pinned
+  action items also appear in the Pinned Tasks view.  BN rows are
+  fetched ONCE per refresh (`bn_rows_fetch` — the CLI is expensive)
+  and appended via `append_bn_items` in a priority-then-rest pass
+  pair; in the embedded list the priority pass lands ABOVE the tasks,
+  the rest after them.  BN rows are detected by TL_REF != NULL
+  (id 0), NOT by the selected sidebar kind — they can appear in
+  Pinned and the embed list too.  The Blue
   Notes editor tracks loaded done/due and only shells the CLI for
   fields that actually changed.  The Settings CLI-path entry persists
   per keystroke but only refreshes on Enter/focus-out (a per-keystroke
@@ -277,4 +317,6 @@ the user).  A logic test harness lives in the session scratchpad
     front (like the Blue Notes list), and if a stale tombstone for it
     exists anyway, sync_lists RESTORES the list + its same-moment task
     tombstones (`bt_db_list_restore`) instead of deleting or hiding
-    anything.
+    anything.  sync_lists also seeds the default list's emoji to 🔴
+    (`bt_db_list_emoji_if_empty` — only while empty, no updated_at
+    bump) so it is visibly marked; a user's later emoji edit sticks.

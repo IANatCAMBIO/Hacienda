@@ -22,6 +22,8 @@ typedef struct {
     GtkWidget *state_label;          /* "Signed in" / "Not signed in"       */
     GtkWidget *bn_check;             /* Blue Notes action items toggle      */
     GtkWidget *bn_cli_entry;         /* blue_notes command path             */
+    GtkWidget *bn_embed_combo;       /* where action items appear           */
+    GArray    *bn_embed_ids;         /* combo index → list id (0 = own)     */
     gboolean   loading;              /* suppress write-through on load      */
 } BtSettings;
 
@@ -134,6 +136,30 @@ on_bn_toggled(GtkWidget *w, gpointer data)
     bt_app_notify_changed(sw->app);
 }
 
+/* on_bn_embed_changed() — where Blue Notes action items appear: their
+ * own sidebar list (index 0) or embedded inside a chosen real list.
+ * Persist the list id and refresh (the sidebar row and the target
+ * list's view both change).                                                 */
+static void
+on_bn_embed_changed(GtkComboBox *combo, gpointer data)
+{
+    BtSettings *sw = data;
+    if (sw->loading)
+        return;
+    gint active = gtk_combo_box_get_active(combo);
+    if (active < 0 || active >= (gint)sw->bn_embed_ids->len)
+        return;
+    gint64 id = g_array_index(sw->bn_embed_ids, gint64, active);
+    if (id == 0) {
+        bt_app_config_set("blue_notes_embed_list", NULL);
+    } else {
+        gchar *v = g_strdup_printf("%" G_GINT64_FORMAT, id);
+        bt_app_config_set("blue_notes_embed_list", v);
+        g_free(v);
+    }
+    bt_app_notify_changed(sw->app);
+}
+
 /* on_bn_cli_changed() — the CLI path entry: persist ONLY.  The library
  * refresh happens on commit (focus-out/Enter) — refreshing per
  * keystroke would synchronously spawn the half-typed command with the
@@ -166,6 +192,20 @@ on_bn_cli_focus_out(GtkWidget *w, GdkEventFocus *event, gpointer data)
     (void)event;
     on_bn_cli_commit(w, data);
     return FALSE;                    /* propagate                           */
+}
+
+/* on_forecast_toggled() — Appearance: show or hide the sidebar's Weekly
+ * Forecast view.  The full notify rebuilds the sidebar; a hidden view
+ * that was selected falls back to the first list there.                     */
+static void
+on_forecast_toggled(GtkWidget *w, gpointer data)
+{
+    BtSettings *sw = data;
+    if (sw->loading)
+        return;
+    gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
+    bt_app_config_set("weekly_forecast", on ? "1" : "0");
+    bt_app_notify_changed(sw->app);
 }
 
 /* on_bold_titles_toggled() — Appearance: bold task titles on/off,
@@ -220,6 +260,8 @@ on_settings_destroy(GtkWidget *w, gpointer data)
     BtSettings *sw = data;
     if (settings == sw)
         settings = NULL;
+    if (sw->bn_embed_ids != NULL)
+        g_array_free(sw->bn_embed_ids, TRUE);
     g_free(sw->db_path);
     g_free(sw);
 }
@@ -352,6 +394,48 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     gtk_box_pack_start(GTK_BOX(bn_row), sw->bn_cli_entry, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), bn_row, FALSE, FALSE, 0);
 
+    /* Where the action items appear: their own sidebar list, or
+     * embedded (tagged) inside one of the real lists.                       */
+    GtkWidget *embed_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_pack_start(GTK_BOX(embed_row),
+                       gtk_label_new("Show action items in:"),
+                       FALSE, FALSE, 0);
+    sw->bn_embed_combo = gtk_combo_box_text_new();
+    sw->bn_embed_ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+    gint64 own = 0;
+    g_array_append_val(sw->bn_embed_ids, own);
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(sw->bn_embed_combo),
+                                   "Their own list");
+    gchar *embed_v = bt_app_config_get("blue_notes_embed_list");
+    gint64 embed_id = embed_v != NULL
+                      ? g_ascii_strtoll(embed_v, NULL, 10) : 0;
+    g_free(embed_v);
+    gint embed_active = 0;           /* combo index to preselect            */
+    GPtrArray *lists = bt_db_lists(app->db, FALSE);
+    for (guint i = 0; i < lists->len; i++) {
+        BtList *l = g_ptr_array_index(lists, i);
+        gchar *label = *l->emoji != '\0'
+            ? g_strdup_printf("%s  %s", l->emoji, l->name)
+            : g_strdup(l->name);
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(sw->bn_embed_combo), label);
+        g_free(label);
+        g_array_append_val(sw->bn_embed_ids, l->id);
+        if (l->id == embed_id)
+            embed_active = (gint)sw->bn_embed_ids->len - 1;
+    }
+    bt_ptr_array_free_lists(lists);
+    gtk_combo_box_set_active(GTK_COMBO_BOX(sw->bn_embed_combo),
+                             embed_active);
+    gtk_widget_set_tooltip_text(sw->bn_embed_combo,
+        "Embedded items keep an \xe2\x9d\x97 Action Items tag and stay "
+        "editable only through Blue Notes");
+    g_signal_connect(sw->bn_embed_combo, "changed",
+                     G_CALLBACK(on_bn_embed_changed), sw);
+    gtk_box_pack_start(GTK_BOX(embed_row), sw->bn_embed_combo,
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), embed_row, FALSE, FALSE, 0);
+
     gtk_box_pack_start(GTK_BOX(vbox),
                        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
                        FALSE, FALSE, 2);
@@ -367,6 +451,14 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     g_signal_connect(bold_check, "toggled",
                      G_CALLBACK(on_bold_titles_toggled), sw);
     gtk_box_pack_start(GTK_BOX(vbox), bold_check, FALSE, FALSE, 0);
+
+    GtkWidget *forecast_check = gtk_check_button_new_with_label(
+        "Show the Weekly Forecast view (this week, day by day)");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(forecast_check),
+        bt_app_config_get_bool("weekly_forecast", TRUE));
+    g_signal_connect(forecast_check, "toggled",
+                     G_CALLBACK(on_forecast_toggled), sw);
+    gtk_box_pack_start(GTK_BOX(vbox), forecast_check, FALSE, FALSE, 0);
 
     /* Toolbar style: icons / text below icons / text only.  Applies live
      * to every registered toolbar; also reachable by right-clicking any

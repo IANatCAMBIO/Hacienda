@@ -29,7 +29,13 @@ toolbar_style=icons
 # PATH; Settings → Blue Notes).
 blue_notes_sync=0
 # blue_notes_cli=blue_notes
+# blue_notes_embed_list — a list id: embed the action items in that
+# list (tagged) instead of their own sidebar section; unset = their
+# own section (Settings → Blue Notes → "Show action items in").
 # Sidebar visibility (1|0, default 0; the toolbar Sidebar toggle).
 sidebar_visible=0
+# Show the Weekly Forecast view in the sidebar (1|0, default 1;
+# Settings → Appearance).
+weekly_forecast=1
 # win_w/win_h — the library window size, written on clean close and
 # restored at launch (980x640 fallback); not meant for hand-editing.

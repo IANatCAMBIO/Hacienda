@@ -600,6 +600,12 @@ sync_lists(BtApp *app, BtDatabase *db, const gchar *token,
         }
     }
 
+    /* Google's undeletable DEFAULT list always wears a 🔴 indicator:
+     * seeded only while the emoji is empty, so a user's later Edit List
+     * choice sticks (clearing it brings the dot back next sync).             */
+    if (ok && default_gid != NULL)
+        bt_db_list_emoji_if_empty(db, default_gid, "\xf0\x9f\x94\xb4");
+
     for (guint i = 0; i < remote->len; i++)
         remote_list_free(g_ptr_array_index(remote, i));
     g_ptr_array_free(remote, TRUE);

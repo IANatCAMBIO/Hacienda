@@ -212,6 +212,7 @@ bt_db_open(const gchar *path, GError **err)
         "  due          INTEGER NOT NULL DEFAULT 0,"
         "  done         INTEGER NOT NULL DEFAULT 0,"
         "  pinned       INTEGER NOT NULL DEFAULT 0,"
+        "  priority     INTEGER NOT NULL DEFAULT 0,"
         "  position     INTEGER NOT NULL DEFAULT 0,"
         "  gtasks_id    TEXT,"
         "  updated_at   INTEGER NOT NULL DEFAULT 0,"
@@ -235,12 +236,15 @@ bt_db_open(const gchar *path, GError **err)
     exec(db,
         "CREATE TABLE IF NOT EXISTS bn_pins ("
         "  ref TEXT PRIMARY KEY)");   /* pinned Blue Notes items          */
+    exec(db,
+        "CREATE TABLE IF NOT EXISTS bn_priority ("
+        "  ref TEXT PRIMARY KEY)");   /* high-priority Blue Notes items   */
     exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_list "
              "ON tasks(list_id, parent_id, position)");
 
     /* Guarded migrations (on fresh files the ALTERs fail silently —
      * CREATE already has the columns): v2 = lists.emoji; v3 = the five
-     * Google-mirror task columns.                                           */
+     * Google-mirror task columns; v4 = tasks.priority (local-only).         */
     sqlite3_stmt *vst = NULL;
     gint uv = 0;                     /* the file's schema version           */
     if (sqlite3_prepare_v2(sq, "PRAGMA user_version", -1, &vst, NULL)
@@ -262,7 +266,10 @@ bt_db_open(const gchar *path, GError **err)
         sqlite3_exec(sq, "ALTER TABLE tasks ADD COLUMN assigned TEXT",
                      NULL, NULL, NULL);
     }
-    exec(db, "PRAGMA user_version = 3");
+    if (uv < 4)
+        sqlite3_exec(sq, "ALTER TABLE tasks ADD COLUMN priority "
+                     "INTEGER NOT NULL DEFAULT 0", NULL, NULL, NULL);
+    exec(db, "PRAGMA user_version = 4");
     return db;
 }
 
@@ -448,12 +455,32 @@ bt_db_list_restore(BtDatabase *db, gint64 id)
     sqlite3_free(sql);
 }
 
+/* bt_db_list_emoji_if_empty() — seed the emoji of the list bound to
+ * `gtasks_id` (see db.h).  Deliberately NO updated_at bump: the emoji
+ * is local-only and must not dirty the row for sync.                        */
+void
+bt_db_list_emoji_if_empty(BtDatabase *db, const gchar *gtasks_id,
+                          const gchar *emoji)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db->sq,
+            "UPDATE lists SET emoji = ?1 WHERE gtasks_id = ?2 AND "
+            "emoji = '' AND deleted = 0", -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, emoji, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 2, gtasks_id, -1, SQLITE_TRANSIENT);
+        step_done(db, st, "list emoji seed");
+    } else {
+        step_done(db, NULL, "list emoji seed");
+    }
+    sqlite3_finalize(st);
+}
+
 /* ---------------------------------------------------------------------------
  * read_task() — build a BtTask from the standard tasks SELECT.
  * ------------------------------------------------------------------------- */
 #define TASK_COLS "id, list_id, COALESCE(parent_id, 0), title, notes, due, " \
                   "done, pinned, position, gtasks_id, updated_at, deleted, " \
-                  "completed_at, etag, web_link, glinks, assigned"
+                  "completed_at, etag, web_link, glinks, assigned, priority"
 
 static BtTask *
 read_task(sqlite3_stmt *st)
@@ -476,6 +503,7 @@ read_task(sqlite3_stmt *st)
     t->web_link     = column_text_dup(st, 14);
     t->glinks       = column_text_dup(st, 15);
     t->assigned     = column_text_dup(st, 16);
+    t->priority     = sqlite3_column_int(st, 17) != 0;
     if (t->title == NULL) t->title = g_strdup("");
     if (t->notes == NULL) t->notes = g_strdup("");
     return t;
@@ -519,13 +547,18 @@ bt_db_task_get(BtDatabase *db, gint64 id)
     return t;
 }
 
+/* View queries sort `priority DESC` first: a high-priority task rises
+ * to the top of every list it appears in (within its parent group for
+ * subtask queries).                                                         */
+
 /* bt_db_tasks_toplevel() — visible top-level tasks of a list.               */
 GPtrArray *
 bt_db_tasks_toplevel(BtDatabase *db, gint64 list_id)
 {
     return task_query(db,
         "SELECT " TASK_COLS " FROM tasks WHERE list_id = ? AND "
-        "parent_id IS NULL AND deleted = 0 ORDER BY position, id",
+        "parent_id IS NULL AND deleted = 0 "
+        "ORDER BY priority DESC, position, id",
         1, list_id, 0);
 }
 
@@ -535,7 +568,8 @@ bt_db_subtasks(BtDatabase *db, gint64 parent_id)
 {
     return task_query(db,
         "SELECT " TASK_COLS " FROM tasks WHERE parent_id = ? AND "
-        "deleted = 0 ORDER BY position, id", 1, parent_id, 0);
+        "deleted = 0 ORDER BY priority DESC, position, id",
+        1, parent_id, 0);
 }
 
 /* bt_db_subtasks_all_visible() — every visible subtask, one query.          */
@@ -544,7 +578,8 @@ bt_db_subtasks_all_visible(BtDatabase *db)
 {
     return task_query(db,
         "SELECT " TASK_COLS " FROM tasks WHERE parent_id IS NOT NULL AND "
-        "deleted = 0 ORDER BY parent_id, position, id", 0, 0, 0);
+        "deleted = 0 ORDER BY parent_id, priority DESC, position, id",
+        0, 0, 0);
 }
 
 /* bt_db_tasks_pinned() — the Pinned Tasks meta list.                        */
@@ -553,7 +588,7 @@ bt_db_tasks_pinned(BtDatabase *db)
 {
     return task_query(db,
         "SELECT " TASK_COLS " FROM tasks WHERE pinned = 1 AND deleted = 0 "
-        "ORDER BY list_id, position, id", 0, 0, 0);
+        "ORDER BY priority DESC, list_id, position, id", 0, 0, 0);
 }
 
 /* bt_db_has_pinned() — any pinned task (or BN pin) exists (see db.h).       */
@@ -582,16 +617,18 @@ bt_db_tasks_all_visible(BtDatabase *db)
 {
     return task_query(db,
         "SELECT " TASK_COLS " FROM tasks WHERE parent_id IS NULL AND "
-        "deleted = 0 ORDER BY list_id, position, id", 0, 0, 0);
+        "deleted = 0 ORDER BY priority DESC, list_id, position, id",
+        0, 0, 0);
 }
 
-/* bt_db_tasks_due_between() — the Due Today / Due Tomorrow meta lists.      */
+/* bt_db_tasks_due_between() — the Due Today / Weekly Forecast views.        */
 GPtrArray *
 bt_db_tasks_due_between(BtDatabase *db, gint64 lo, gint64 hi)
 {
     return task_query(db,
         "SELECT " TASK_COLS " FROM tasks WHERE due >= ? AND due < ? AND "
-        "deleted = 0 ORDER BY due, list_id, position", 2, lo, hi);
+        "deleted = 0 ORDER BY priority DESC, due, list_id, position",
+        2, lo, hi);
 }
 
 /* bt_db_tasks_in_list_all() — one list's rows incl. tombstones (sync),
@@ -659,7 +696,8 @@ bt_db_task_update(BtDatabase *db, const BtTask *t)
             "completed_at = CASE WHEN ?4 = 1 AND done = 0 THEN ?6 "
             "                    WHEN ?4 = 0 THEN 0 "
             "                    ELSE completed_at END, "
-            "done = ?4, pinned = ?5, updated_at = ?6 WHERE id = ?7", -1,
+            "done = ?4, pinned = ?5, updated_at = ?6, priority = ?8 "
+            "WHERE id = ?7", -1,
             &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, t->title, -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(st, 2, t->notes, -1, SQLITE_TRANSIENT);
@@ -668,6 +706,7 @@ bt_db_task_update(BtDatabase *db, const BtTask *t)
         sqlite3_bind_int(st, 5, t->pinned ? 1 : 0);
         sqlite3_bind_int64(st, 6, now());
         sqlite3_bind_int64(st, 7, t->id);
+        sqlite3_bind_int(st, 8, t->priority ? 1 : 0);
         step_done(db, st, "task update");
     } else {
         step_done(db, NULL, "task update");
@@ -706,6 +745,19 @@ bt_db_task_set_pinned(BtDatabase *db, gint64 id, gboolean pinned)
     gchar *sql = g_strdup_printf(
         "UPDATE tasks SET pinned = %d, updated_at = %lld WHERE id = %lld",
         pinned ? 1 : 0, (long long)now(), (long long)id);
+    exec(db, sql);
+    g_free(sql);
+}
+
+/* bt_db_task_set_priority() — toggle the local-only high-priority flag
+ * (see db.h).                                                               */
+void
+bt_db_task_set_priority(BtDatabase *db, gint64 id, gboolean priority)
+{
+    gchar *sql = g_strdup_printf(
+        "UPDATE tasks SET priority = %d, updated_at = %lld "
+        "WHERE id = %lld",
+        priority ? 1 : 0, (long long)now(), (long long)id);
     exec(db, sql);
     g_free(sql);
 }
@@ -915,8 +967,8 @@ bt_db_list_apply_remote(BtDatabase *db, gint64 id, const gchar *name,
 
 /* bt_db_task_apply_remote() — overwrite the synced fields (title, notes,
  * due, done) plus the Google-mirror metadata (completed_at, etag,
- * web_link, glinks, assigned) from remote data; pinned is local-only
- * and untouched.                                                             */
+ * web_link, glinks, assigned) from remote data; pinned and priority are
+ * local-only and untouched.                                                  */
 void
 bt_db_task_apply_remote(BtDatabase *db, const BtTask *t)
 {
@@ -1030,6 +1082,63 @@ bt_db_bn_pins(BtDatabase *db)
         }
     } else {
         step_done(db, NULL, "bn pins query");
+    }
+    sqlite3_finalize(st);
+    return set;
+}
+
+/* bt_db_bn_priority_get() — is this Blue Notes item high-priority (see
+ * db.h)?                                                                    */
+gboolean
+bt_db_bn_priority_get(BtDatabase *db, const gchar *ref)
+{
+    sqlite3_stmt *st = NULL;
+    gboolean priority = FALSE;
+    if (sqlite3_prepare_v2(db->sq,
+            "SELECT 1 FROM bn_priority WHERE ref = ?", -1,
+            &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, ref, -1, SQLITE_TRANSIENT);
+        priority = sqlite3_step(st) == SQLITE_ROW;
+    } else {
+        step_done(db, NULL, "bn priority get");
+    }
+    sqlite3_finalize(st);
+    return priority;
+}
+
+/* bt_db_bn_priority_set() — flag/unflag a Blue Notes item (see db.h).       */
+void
+bt_db_bn_priority_set(BtDatabase *db, const gchar *ref, gboolean priority)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db->sq,
+            priority ? "INSERT OR IGNORE INTO bn_priority(ref) VALUES(?)"
+                     : "DELETE FROM bn_priority WHERE ref = ?", -1,
+            &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, ref, -1, SQLITE_TRANSIENT);
+        step_done(db, st, "bn priority set");
+    } else {
+        step_done(db, NULL, "bn priority set");
+    }
+    sqlite3_finalize(st);
+}
+
+/* bt_db_bn_priorities() — the high-priority-refs set (see db.h).            */
+GHashTable *
+bt_db_bn_priorities(BtDatabase *db)
+{
+    GHashTable *set = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                            g_free, NULL);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db->sq, "SELECT ref FROM bn_priority", -1,
+                           &st, NULL) == SQLITE_OK) {
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            gchar *ref = column_text_dup(st, 0);
+            if (ref != NULL)
+                g_hash_table_add(set, ref);
+        }
+    } else {
+        step_done(db, NULL, "bn priorities query");
     }
     sqlite3_finalize(st);
     return set;
