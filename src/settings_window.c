@@ -406,10 +406,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     g_array_append_val(sw->bn_embed_ids, own);
     gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(sw->bn_embed_combo),
                                    "Their own list");
-    gchar *embed_v = bt_app_config_get("blue_notes_embed_list");
-    gint64 embed_id = embed_v != NULL
-                      ? g_ascii_strtoll(embed_v, NULL, 10) : 0;
-    g_free(embed_v);
+    gint64 embed_id = bt_app_config_get_int64("blue_notes_embed_list", 0);
     gint embed_active = 0;           /* combo index to preselect            */
     GPtrArray *lists = bt_db_lists(app->db, FALSE);
     for (guint i = 0; i < lists->len; i++) {

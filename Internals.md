@@ -12,7 +12,7 @@ and the sync engine. For everyday use see the
 | `src/main.c`               | GtkApplication entry point; config, database and OAuth init, auto-sync timer |
 | `src/app.[ch]`             | Shared `BtApp` context: ini config, dialogs, toolbar styles, icon loading, date helpers |
 | `src/db.[ch]`              | SQLite layer: lists, tasks, subtasks, attachments; tombstones and `updated_at` for sync |
-| `src/library_window.[ch]`  | Sidebar, tall task rows, toolbar, context menus, status bar |
+| `src/library_window.[ch]`  | Sidebar, tall task rows, Weekly Forecast panel, toolbar, context menus, status bar |
 | `src/editor_window.[ch]`   | Per-task editor (and the reduced Blue Notes variant); debounced write-through saves |
 | `src/settings_window.[ch]` | The Settings window                                |
 | `src/oauth.[ch]`           | OAuth 2.0 installed-app flow: PKCE, loopback redirect |
@@ -48,6 +48,8 @@ CREATE TABLE tasks (
   due          INTEGER NOT NULL DEFAULT 0,    -- UNIX local midnight; 0 = none
   done         INTEGER NOT NULL DEFAULT 0,
   pinned       INTEGER NOT NULL DEFAULT 0,    -- local-only, never synced
+  priority     INTEGER NOT NULL DEFAULT 0,    -- high-priority flag;
+                                              -- local-only, never synced
   position     INTEGER NOT NULL DEFAULT 0,
   gtasks_id    TEXT,                          -- bound Google task
   updated_at   INTEGER NOT NULL DEFAULT 0,    -- UNIX seconds
@@ -66,13 +68,14 @@ CREATE TABLE attachments (
   added_at   INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE bn_pins    (ref TEXT PRIMARY KEY);  -- pinned Blue Notes items
+CREATE TABLE sync_state  (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE bn_pins     (ref TEXT PRIMARY KEY); -- pinned Blue Notes items
+CREATE TABLE bn_priority (ref TEXT PRIMARY KEY); -- high-priority BN items
 
 CREATE INDEX idx_tasks_list ON tasks(list_id, parent_id, position);
 ```
 
-The schema version rides in `PRAGMA user_version` (currently 3);
+The schema version rides in `PRAGMA user_version` (currently 4);
 older files are migrated in place at open.
 
 Semantics worth knowing when querying directly:
@@ -87,15 +90,18 @@ Semantics worth knowing when querying directly:
 - `gtasks_id`, `etag` and `updated_at` are the sync identity: a row
   with a NULL `gtasks_id` has never been pushed; `updated_at` newer
   than the remote copy means locally dirty.
-- `position` (both tables) and `lists.emoji` are local-only.
+- `position` (both tables), `lists.emoji`, `tasks.pinned` and
+  `tasks.priority` are local-only — Google Tasks has neither pinning
+  nor priority, so none of them ever sync.
   `tasks.web_link`, `glinks` and `assigned` are read-only mirrors of
   Google fields, shown in the editor's From Google section.
 - `sync_state` is a key/value scratchpad: `last_sync` (start time of
   the last successful pass), `default_list_gid` (Google's undeletable
   default tasklist), `lists_custom_order` (set once the user
   drag-reorders lists).
-- `bn_pins` keys are Blue Notes `NOTEID:ORD` refs — pinning for
-  action items lives entirely on this side.
+- `bn_pins` and `bn_priority` keys are Blue Notes `NOTEID:ORD` refs —
+  pinning and the high-priority flag for action items live entirely
+  on this side (Blue Notes knows neither concept).
 
 Two practical cautions: the app sets a 5-second busy timeout (the GUI
 and the sync worker share the file), so brief external readers coexist

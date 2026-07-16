@@ -6,10 +6,10 @@
  *
  *   ┌──────────────────────────────────────────────────────────────┐
  *   │ menubar (File / Help)                                        │
- *   │ toolbar: Sidebar │ New Task  Delete Task  Sync  Show/Hide ✓  │
+ *   │ toolbar: Sidebar │ Sync  Show/Hide ✓ │ New Task  Delete Task │
  *   ├───────────────┬──────────────────────────────────────────────┤
  *   │ Pinned Tasks  │  ✓ │ Task (tall rows: title, notes preview,  │
- *   │ All Tasks     │    │ attachments, subtasks) │ Due │ Pinned   │
+ *   │ All Tasks     │    │ attachments, subtasks) │ Due            │
  *   │ Due Today     │                                              │
  *   │ Wkly Forecast │                                              │
  *   │ ── Lists ──   │                                              │

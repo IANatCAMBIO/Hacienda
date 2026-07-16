@@ -35,7 +35,8 @@ typedef struct {
     GtkWidget    *title_entry;
     GtkWidget    *done_check;
     GtkWidget    *pinned_check;
-    GtkWidget    *priority_check;    /* insensitive in Blue Notes editors   */
+    GtkWidget    *priority_check;    /* writable in BN editors too — the
+                                      * flag is local (bn_priority table)   */
     GtkWidget    *due_entry;
     GtkTextBuffer *notes_buf;
     GtkListStore *sub_store;         /* NULL for subtask editors            */

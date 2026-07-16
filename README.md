@@ -11,8 +11,9 @@ macOS and Linux.
 
 TLDR; your tasks live in a single SQLite file you can take anywhere.
 You organize them in a Library window — lists in the sidebar (plus
-rolled-up views for pinned, due-today and due-tomorrow tasks across
-every list), tasks as tall rows that show the notes preview, subtasks
+rolled-up views across every list: pinned tasks, due today, and a
+Weekly Forecast that lays the week out day by day), tasks as tall
+rows that show the notes preview, subtasks
 and a color-coded due date at a glance — and each task opens in its
 own editor window: notes, one level of subtasks, file attachments, a
 due date typed or picked from a calendar. It syncs both ways with

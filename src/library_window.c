@@ -51,6 +51,17 @@ enum {
     TL_N_COLS
 };
 
+/* task_store_new() — the one task-row store shape (the TL_* columns
+ * above), shared by the main task pane and the seven Weekly Forecast
+ * day stores so the column list can never drift between them.               */
+static GtkListStore *
+task_store_new(void)
+{
+    return gtk_list_store_new(TL_N_COLS, G_TYPE_INT64, G_TYPE_BOOLEAN,
+                              G_TYPE_STRING, G_TYPE_STRING, G_TYPE_INT64,
+                              G_TYPE_STRING);
+}
+
 /* ---------------------------------------------------------------------------
  * BtLibrary — the window's state.
  *   sel_kind/sel_id — current sidebar selection (survives refreshes).
@@ -550,9 +561,7 @@ bn_embed_list(BtLibrary *lw)
 {
     if (!bt_app_config_get_bool("blue_notes_sync", FALSE))
         return 0;
-    gchar *v = bt_app_config_get("blue_notes_embed_list");
-    gint64 id = v != NULL ? g_ascii_strtoll(v, NULL, 10) : 0;
-    g_free(v);
+    gint64 id = bt_app_config_get_int64("blue_notes_embed_list", 0);
     if (id != 0) {
         BtList *l = bt_db_list_get(lw->app->db, id);
         if (l == NULL || l->deleted)
@@ -706,6 +715,15 @@ refresh_forecast(BtLibrary *lw)
      * after the rebuild (clearing the stores collapses the page).           */
     scroll_keep_queue_win(lw->forecast_box);
 
+    /* ONE query spans the week (Sunday's midnight to the exclusive end
+     * of Saturday); each day section filters its slice out below —
+     * seven per-day queries would rescan the table for the same rows.       */
+    gint64 day_lo[7], day_hi[7];     /* each day's local midnight bounds    */
+    for (gint d = 0; d < 7; d++)
+        bt_day_bounds(d - since_sunday, &day_lo[d], &day_hi[d]);
+    GPtrArray *week = bt_db_tasks_due_between(lw->app->db,
+                                              day_lo[0], day_hi[6]);
+
     TaskRowCtx ctx;                  /* shared lookups (see above)          */
     task_row_ctx_init(lw, &ctx, TRUE);
     guint shown = 0;                 /* task rows across the week           */
@@ -730,11 +748,16 @@ refresh_forecast(BtLibrary *lw)
         g_date_time_unref(day);
 
         gtk_list_store_clear(lw->day_stores[d]);
-        gint64 lo, hi;               /* the day's local midnight bounds     */
-        bt_day_bounds(offset, &lo, &hi);
-        GPtrArray *tasks = bt_db_tasks_due_between(lw->app->db, lo, hi);
+        /* The day's slice of the week query — borrowed pointers, and
+         * the filter keeps the query's priority-first row order.            */
+        GPtrArray *tasks = g_ptr_array_new();
+        for (guint i = 0; i < week->len; i++) {
+            BtTask *t = g_ptr_array_index(week, i);
+            if (t->due >= day_lo[d] && t->due < day_hi[d])
+                g_ptr_array_add(tasks, t);
+        }
         guint n = append_task_rows(lw->day_stores[d], tasks, &ctx);
-        bt_ptr_array_free_tasks(tasks);
+        g_ptr_array_free(tasks, TRUE);
         if (n == 0) {
             /* An empty day still shows a one-row list: an inert dimmed
              * placeholder (id 0 — checkbox hidden, activation ignored).     */
@@ -749,6 +772,7 @@ refresh_forecast(BtLibrary *lw)
         }
         shown += n;
     }
+    bt_ptr_array_free_tasks(week);
     g_date_time_unref(now);
     task_row_ctx_clear(&ctx);
 
@@ -1240,8 +1264,8 @@ on_task_activated(GtkTreeView *view, GtkTreePath *path,
     bt_editor_open(lw->app, id);
 }
 
-/* on_task_done_toggled() / on_task_pinned_toggled() — the two toggle
- * columns write straight through to the row.                                */
+/* on_task_done_toggled() — the ✓ toggle column writes straight through
+ * to the row.                                                               */
 static void
 on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
                      gpointer data)
@@ -1777,22 +1801,32 @@ ctx_done_item(BtLibrary *lw, GtkWidget *menu, GArray *ids,
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 }
 
+/* ctx_flag_apply() — shared body of on_ctx_set_pinned /
+ * on_ctx_set_priority: run the local-only flag setter over the
+ * selection ids riding on the menu item (per the "bt-flag" direction),
+ * full_refresh, and post "<on/off verb> N task(s)" to the status bar.       */
+static void
+ctx_flag_apply(GtkWidget *item, BtLibrary *lw,
+               void (*set)(BtDatabase *, gint64, gboolean),
+               const gchar *on_verb, const gchar *off_verb)
+{
+    GArray *ids = item_ids(item);
+    gboolean flag = GPOINTER_TO_INT(
+        g_object_get_data(G_OBJECT(item), "bt-flag"));
+    for (guint i = 0; i < ids->len; i++)
+        set(lw->app->db, g_array_index(ids, gint64, i), flag);
+    full_refresh(lw);
+    bt_app_status(lw->app, "%s %u task%s", flag ? on_verb : off_verb,
+                  ids->len, ids->len == 1 ? "" : "s");
+}
+
 /* on_ctx_set_pinned() — Pin / Unpin on the selection (local-only; the
  * sidebar's Pinned Tasks row follows via full_refresh).                     */
 static void
 on_ctx_set_pinned(GtkWidget *item, gpointer data)
 {
-    BtLibrary *lw = data;
-    GArray *ids = item_ids(item);
-    gboolean pinned = GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(item), "bt-flag"));
-    for (guint i = 0; i < ids->len; i++)
-        bt_db_task_set_pinned(lw->app->db,
-                              g_array_index(ids, gint64, i), pinned);
-    full_refresh(lw);
-    bt_app_status(lw->app, "%s %u task%s",
-                  pinned ? "Pinned" : "Unpinned",
-                  ids->len, ids->len == 1 ? "" : "s");
+    ctx_flag_apply(item, data, bt_db_task_set_pinned,
+                   "Pinned", "Unpinned");
 }
 
 /* on_ctx_set_priority() — Set / Clear High Priority on the selection
@@ -1800,17 +1834,8 @@ on_ctx_set_pinned(GtkWidget *item, gpointer data)
 static void
 on_ctx_set_priority(GtkWidget *item, gpointer data)
 {
-    BtLibrary *lw = data;
-    GArray *ids = item_ids(item);
-    gboolean priority = GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(item), "bt-flag"));
-    for (guint i = 0; i < ids->len; i++)
-        bt_db_task_set_priority(lw->app->db,
-                                g_array_index(ids, gint64, i), priority);
-    full_refresh(lw);
-    bt_app_status(lw->app, "%s high priority on %u task%s",
-                  priority ? "Set" : "Cleared",
-                  ids->len, ids->len == 1 ? "" : "s");
+    ctx_flag_apply(item, data, bt_db_task_set_priority,
+                   "Set high priority on", "Cleared high priority on");
 }
 
 /* ctx_flag_item() — one bulk context-menu item: the selection rides on
@@ -2316,10 +2341,7 @@ forecast_day_section(BtLibrary *lw, gint d)
                             PANGO_ELLIPSIZE_END);
     gtk_box_pack_start(GTK_BOX(box), lw->day_labels[d], FALSE, FALSE, 2);
 
-    lw->day_stores[d] = gtk_list_store_new(TL_N_COLS, G_TYPE_INT64,
-                                           G_TYPE_BOOLEAN, G_TYPE_STRING,
-                                           G_TYPE_STRING, G_TYPE_INT64,
-                                           G_TYPE_STRING);
+    lw->day_stores[d] = task_store_new();
     lw->day_views[d] = gtk_tree_view_new_with_model(
         GTK_TREE_MODEL(lw->day_stores[d]));
     g_object_unref(lw->day_stores[d]);
@@ -2640,10 +2662,7 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     lw->sidebar_box = sb_box;        /* for the toolbar show/hide toggle    */
 
     /* Task pane.                                                            */
-    lw->task_store = gtk_list_store_new(TL_N_COLS, G_TYPE_INT64,
-                                        G_TYPE_BOOLEAN, G_TYPE_STRING,
-                                        G_TYPE_STRING, G_TYPE_INT64,
-                                        G_TYPE_STRING);
+    lw->task_store = task_store_new();
     lw->task_view = gtk_tree_view_new_with_model(
         GTK_TREE_MODEL(lw->task_store));
     g_object_unref(lw->task_store);

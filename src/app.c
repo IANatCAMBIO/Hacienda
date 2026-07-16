@@ -402,6 +402,20 @@ bt_app_config_get_bool(const gchar *key, gboolean def)
 }
 
 /* ---------------------------------------------------------------------------
+ * bt_app_config_get_int64() — read an integer setting (see app.h).
+ * ------------------------------------------------------------------------- */
+gint64
+bt_app_config_get_int64(const gchar *key, gint64 def)
+{
+    gchar *v = bt_app_config_get(key);
+    if (v == NULL)
+        return def;
+    gint64 n = g_ascii_strtoll(v, NULL, 10);
+    g_free(v);
+    return n;
+}
+
+/* ---------------------------------------------------------------------------
  * bt_app_config_set() — change one setting and write the ini through.
  * NULL removes the key.  Unchanged values skip the rewrite.
  * ------------------------------------------------------------------------- */
