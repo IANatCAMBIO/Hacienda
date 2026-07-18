@@ -823,7 +823,7 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
     g_signal_connect(ed->done_check, "toggled",
                      G_CALLBACK(on_toggle_changed), ed);
     gtk_box_pack_start(GTK_BOX(row), ed->done_check, FALSE, FALSE, 0);
-    ed->pinned_check = gtk_check_button_new_with_label("Pinned");
+    ed->pinned_check = gtk_check_button_new_with_label("Favorite");
     g_signal_connect(ed->pinned_check, "toggled",
                      G_CALLBACK(on_toggle_changed), ed);
     gtk_box_pack_start(GTK_BOX(row), ed->pinned_check, FALSE, FALSE, 0);

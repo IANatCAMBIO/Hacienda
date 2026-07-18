@@ -150,8 +150,8 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
     gchar *line = t->done
         ? g_strdup_printf("%s<s>%s</s>%s", open, title, close)
         : g_strdup_printf("%s%s%s", open, title, close);
-    if (t->pinned) {                  /* pinned task wears a pushpin          */
-        gchar *p = g_strdup_printf("\xf0\x9f\x93\x8c  %s", line);
+    if (t->pinned) {                  /* favorite task wears a star           */
+        gchar *p = g_strdup_printf("\xe2\xad\x90\xef\xb8\x8f  %s", line);
         g_free(line);
         line = p;
     }
@@ -332,7 +332,7 @@ refresh_sidebar(BtLibrary *lw)
         gint kind;
         const gchar *label;
     } metas[] = {                    /* emoji + two spaces, like lists      */
-        { SB_KIND_PINNED,   "\xf0\x9f\x93\x8d  Pinned Tasks" },
+        { SB_KIND_PINNED,   "\xe2\xad\x90\xef\xb8\x8f  Favorites" },
         { SB_KIND_ALL,      "\xf0\x9f\x94\xae  All Tasks" },
         { SB_KIND_TODAY,    "\xe2\x98\x80\xef\xb8\x8f  Due Today" },
         { SB_KIND_FORECAST, "\xf0\x9f\x8c\xa4\xef\xb8\x8f  Weekly Forecast" },
@@ -530,7 +530,7 @@ append_bn_items(BtLibrary *lw, const BnRows *br, gboolean only_pinned,
         const gchar *close = bold ? (na->done ? "</s></b>" : "</b>")
                                   : (na->done ? "</s>" : "");
         const gchar *prio_pfx   = prio   ? "\xf0\x9f\x9a\xa8  " : "";
-        const gchar *pinned_pfx = pinned ? "\xf0\x9f\x93\x8c  " : "";
+        const gchar *pinned_pfx = pinned ? "\xe2\xad\x90\xef\xb8\x8f  " : "";
         gchar *desc = g_strdup_printf(
             "%s%s%s%s%s\n<small><span alpha=\"60%%\">\xe2\x9d\x97 Action "
             "Items \xc2\xb7 note %s</span></small>",
@@ -810,7 +810,7 @@ refresh_tasks(BtLibrary *lw)
     switch (lw->sel_kind) {
     case SB_KIND_PINNED:
         tasks = bt_db_tasks_pinned(lw->app->db);
-        view_name = "Pinned Tasks";
+        view_name = "Favorites";
         break;
     case SB_KIND_ALL:
         tasks = bt_db_tasks_all_visible(lw->app->db);
@@ -1860,7 +1860,7 @@ on_ctx_set_pinned(GtkWidget *item, gpointer data)
                               g_array_index(ids, gint64, i), pinned);
     full_refresh(lw);
     bt_app_status(lw->app, "%s %u task%s",
-                  pinned ? "Pinned" : "Unpinned",
+                  pinned ? "Added to Favorites" : "Removed from Favorites",
                   ids->len, ids->len == 1 ? "" : "s");
 }
 
@@ -1958,7 +1958,7 @@ on_ctx_bn_set_pinned(GtkWidget *item, gpointer data)
     bt_db_bn_pin_set(lw->app->db, ref, pinned);
     full_refresh(lw);
     bt_app_status(lw->app, "%s action item",
-                  pinned ? "Pinned" : "Unpinned");
+                  pinned ? "Added to Favorites" : "Removed from Favorites");
 }
 
 static void
@@ -2081,7 +2081,7 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
         gtk_menu_shell_append(GTK_MENU_SHELL(bn_menu),
                               gtk_separator_menu_item_new());
         GtkWidget *pin_item = gtk_menu_item_new_with_label(
-            pinned ? "Unpin Task" : "Pin Task");
+            pinned ? "Remove from Favorites" : "Add to Favorites");
         g_object_set_data_full(G_OBJECT(pin_item), "bt-ref",
                                g_strdup(ref), g_free);
         g_object_set_data(G_OBJECT(pin_item), "bt-flag",
@@ -2130,16 +2130,16 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
      * gets both directions.                                                 */
     if (single && t != NULL) {
         ctx_flag_item(lw, menu, ids,
-                      t->pinned ? "Unpin Task" : "Pin Task",
+                      t->pinned ? "Remove from Favorites" : "Add to Favorites",
                       !t->pinned, G_CALLBACK(on_ctx_set_pinned));
         ctx_flag_item(lw, menu, ids,
                       t->priority ? "Clear High Priority"
                                   : "Set High Priority",
                       !t->priority, G_CALLBACK(on_ctx_set_priority));
     } else {
-        ctx_flag_item(lw, menu, ids, "Pin All", TRUE,
+        ctx_flag_item(lw, menu, ids, "Add All to Favorites", TRUE,
                       G_CALLBACK(on_ctx_set_pinned));
-        ctx_flag_item(lw, menu, ids, "Unpin All", FALSE,
+        ctx_flag_item(lw, menu, ids, "Remove All from Favorites", FALSE,
                       G_CALLBACK(on_ctx_set_pinned));
         ctx_flag_item(lw, menu, ids, "Set All High Priority", TRUE,
                       G_CALLBACK(on_ctx_set_priority));
