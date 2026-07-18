@@ -16,7 +16,9 @@
 #endif
 
 /* Odd-row stripe tint of the task list (the Blue Notes list palette).       */
-#define ROW_TINT "#e8f2fb"
+#define ROW_TINT      "#e8f2fb"
+/* Background applied to the row currently held during a manual drag.        */
+#define DRAG_ROW_TINT "#fde68a"
 
 /* Sidebar row kinds (SB_KIND column).                                       */
 enum {
@@ -1321,19 +1323,32 @@ on_forecast_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
 
 /* task_row_bg_func() — cell data function giving list rows alternating
  * white / light-blue backgrounds regardless of theme (the Blue Notes
- * notes-list stripes).                                                      */
+ * notes-list stripes).  data is BtLibrary * for the task pane columns so
+ * the dragged row can be highlighted; NULL is safe (forecast day views).   */
 static void
 task_row_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
                  GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
 {
-    (void)col; (void)data;
+    (void)col;
+    BtLibrary *lw = data;            /* may be NULL for forecast day views  */
     GtkTreePath *path = gtk_tree_model_get_path(model, iter);
     gboolean even =                  /* row parity drives the tint          */
         (gtk_tree_path_get_indices(path)[0] % 2) == 0;
+    const gchar *bg = even ? NULL : ROW_TINT;
+
+    /* While dragging, paint the held row amber so it is easy to track.     */
+    if (lw && lw->drag_active && lw->drag_row_ref) {
+        GtkTreePath *drag_path =
+            gtk_tree_row_reference_get_path(lw->drag_row_ref);
+        if (drag_path) {
+            if (gtk_tree_path_compare(path, drag_path) == 0)
+                bg = DRAG_ROW_TINT;
+            gtk_tree_path_free(drag_path);
+        }
+    }
+
     gtk_tree_path_free(path);
-    g_object_set(cell,
-                 "cell-background", even ? NULL : ROW_TINT,
-                 NULL);
+    g_object_set(cell, "cell-background", bg, NULL);
 }
 
 /* forecast_toggle_bg_func() — the day views' checkbox data func: the
@@ -1955,6 +1970,7 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
                         gtk_tree_row_reference_free(lw->drag_row_ref);
                     lw->drag_row_ref =
                         gtk_tree_row_reference_new(model, path);
+                    gtk_widget_queue_draw(view); /* paint amber highlight    */
                     gtk_tree_path_free(path);
                     return TRUE;       /* consume — don't change selection   */
                 }
@@ -2772,6 +2788,30 @@ on_task_drag_motion(GtkWidget *widget, GdkEventMotion *ev, gpointer data)
                 gtk_tree_model_get_iter(model, &drag_it, drag_path)) {
                 gint64 at_id;
                 gtk_tree_model_get(model, &at_it, TL_ID, &at_id, -1);
+
+                /* BN rows (id=0) can't be drag targets.  When the cursor
+                 * is over a BN row, skip the entire contiguous BN section
+                 * and find the nearest real task row in the travel
+                 * direction so the drag row can move past them.             */
+                if (at_id == 0) {
+                    gint drag_idx0 = gtk_tree_path_get_indices(drag_path)[0];
+                    gint at_idx0   = gtk_tree_path_get_indices(at_path)[0];
+                    gboolean going_dn = at_idx0 > drag_idx0;
+                    GtkTreeIter scan = at_it;
+                    while (going_dn ? gtk_tree_model_iter_next(model, &scan)
+                                    : gtk_tree_model_iter_previous(model, &scan)) {
+                        gint64 sid;
+                        gtk_tree_model_get(model, &scan, TL_ID, &sid, -1);
+                        if (sid != 0) {
+                            at_id = sid;
+                            at_it = scan;
+                            gtk_tree_path_free(at_path);
+                            at_path = gtk_tree_model_get_path(model, &at_it);
+                            break;
+                        }
+                    }
+                }
+
                 if (at_id != 0) {
                     gint drag_idx = gtk_tree_path_get_indices(drag_path)[0];
                     gint at_idx   = gtk_tree_path_get_indices(at_path)[0];
@@ -2787,39 +2827,6 @@ on_task_drag_motion(GtkWidget *widget, GdkEventMotion *ev, gpointer data)
                     else
                         gtk_list_store_move_after(lw->task_store,
                                                  &drag_it, &at_it);
-
-                    /* Warp the pointer to the centre of the drag handle in
-                     * the dragged row's new position.  drag_row_ref tracks
-                     * the row through the move, so its path is already
-                     * updated.  Without this the cursor drifts into the
-                     * body of the (now-displaced) big row.                  */
-                    GtkTreePath *new_drag_path =
-                        gtk_tree_row_reference_get_path(lw->drag_row_ref);
-                    if (new_drag_path) {
-                        GtkTreeViewColumn *cdrag =
-                            g_object_get_data(G_OBJECT(lw->task_view),
-                                              "bt-cdrag");
-                        GdkRectangle cell_rect;
-                        gtk_tree_view_get_cell_area(
-                            GTK_TREE_VIEW(widget), new_drag_path,
-                            cdrag, &cell_rect);
-                        gint bx, by;
-                        gdk_window_get_origin(
-                            gtk_tree_view_get_bin_window(
-                                GTK_TREE_VIEW(widget)),
-                            &bx, &by);
-                        gint wx = bx + cell_rect.x + cell_rect.width  / 2;
-                        gint wy = by + cell_rect.y + cell_rect.height / 2;
-                        GdkDisplay *dpy =
-                            gtk_widget_get_display(widget);
-                        GdkDevice *ptr =
-                            gdk_seat_get_pointer(
-                                gdk_display_get_default_seat(dpy));
-                        gdk_device_warp(ptr,
-                                        gtk_widget_get_screen(widget),
-                                        wx, wy);
-                        gtk_tree_path_free(new_drag_path);
-                    }
                 }
             }
         }
@@ -2848,6 +2855,7 @@ on_task_drag_release(GtkWidget *widget, GdkEventButton *ev, gpointer data)
         lw->drag_lock_ref = NULL;
     }
     task_view_save_manual_order(lw);
+    gtk_widget_queue_draw(widget);   /* clear the amber highlight            */
     GdkWindow *win = gtk_widget_get_window(widget);
     if (win) gdk_window_set_cursor(win, NULL);
     return FALSE;
@@ -3234,7 +3242,7 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     gtk_tree_view_column_set_title(cdrag, "");
     gtk_tree_view_column_pack_start(cdrag, drag_cell, FALSE);
     gtk_tree_view_column_set_cell_data_func(cdrag, drag_cell,
-                                            drag_handle_func, NULL, NULL);
+                                            drag_handle_func, lw, NULL);
     gtk_tree_view_column_set_clickable(cdrag, FALSE);
     gtk_tree_view_column_set_sizing(cdrag, GTK_TREE_VIEW_COLUMN_FIXED);
     gtk_tree_view_column_set_fixed_width(cdrag, 26);
@@ -3249,7 +3257,7 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
         gtk_tree_view_column_new_with_attributes("\xe2\x9c\x93",
             done_cell, "active", TL_DONE, NULL);
     gtk_tree_view_column_set_cell_data_func(cdone, done_cell,
-                                            task_row_bg_func, NULL, NULL);
+                                            task_row_bg_func, lw, NULL);
     gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cdone);
 
     /* Task description column — the tall multi-line markup cell.            */
@@ -3262,7 +3270,7 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
         gtk_tree_view_column_new_with_attributes("Task", desc_cell,
             "markup", TL_DESC, NULL);
     gtk_tree_view_column_set_cell_data_func(cdesc, desc_cell,
-                                            task_row_bg_func, NULL, NULL);
+                                            task_row_bg_func, lw, NULL);
     gtk_tree_view_column_set_expand(cdesc, TRUE);
     gtk_tree_view_column_set_resizable(cdesc, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cdesc);
@@ -3273,7 +3281,7 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
         gtk_tree_view_column_new_with_attributes("Due Date", due_cell,
             "text", TL_DUE, NULL);
     gtk_tree_view_column_set_cell_data_func(cdue, due_cell,
-                                            due_color_func, NULL, NULL);
+                                            due_color_func, lw, NULL);
     gtk_tree_view_column_set_resizable(cdue, TRUE);
     gtk_tree_sortable_set_sort_func(
         GTK_TREE_SORTABLE(lw->task_store), TL_DUE_RAW,
