@@ -392,7 +392,7 @@ refresh_sidebar(BtLibrary *lw)
     /* First pass: groups and their lists.                                   */
     for (guint gi = 0; gi < groups->len; gi++) {
         BtGroup *grp = g_ptr_array_index(groups, gi);
-        gchar *glabel = g_strdup_printf("\xf0\x9f\x93\x81  %s", grp->name);
+        gchar *glabel = g_strdup(grp->name);
         GtkTreeIter grp_iter;
         gtk_tree_store_append(lw->sb_store, &grp_iter, &header);
         gtk_tree_store_set(lw->sb_store, &grp_iter,
@@ -525,8 +525,12 @@ refresh_sidebar(BtLibrary *lw)
         gtk_tree_path_free(p);
     }
     (void)sel_in_group;              /* groups expand themselves above      */
-    if (have_selected)
+    if (have_selected) {
         gtk_tree_selection_select_iter(sel, &selected);
+        GtkTreePath *sp = gtk_tree_model_get_path(model, &selected);
+        gtk_tree_view_set_cursor(GTK_TREE_VIEW(lw->sb_view), sp, NULL, FALSE);
+        gtk_tree_path_free(sp);
+    }
     lw->sb_populated = TRUE;
     lw->populating = FALSE;
 }
@@ -1093,22 +1097,28 @@ sb_row_selectable(GtkTreeSelection *sel, GtkTreeModel *model,
     return kind != SB_KIND_HEADER;
 }
 
-/* on_sidebar_changed() — selection drives the task pane.  A group row
- * just tracks the selection state; it has no task view of its own.          */
+/* on_sidebar_changed() — selection drives the task pane.  With MULTIPLE
+ * selection the cursor row (last pressed) drives sel_kind/sel_id; group
+ * rows are tracked but don't switch the task pane.                          */
 static void
 on_sidebar_changed(GtkTreeSelection *sel, gpointer data)
 {
+    (void)sel;
     BtLibrary *lw = data;
     if (lw->populating)
         return;
-    GtkTreeModel *model;
-    GtkTreeIter iter;
-    if (!gtk_tree_selection_get_selected(sel, &model, &iter))
+    GtkTreePath *cursor = NULL;
+    gtk_tree_view_get_cursor(GTK_TREE_VIEW(lw->sb_view), &cursor, NULL);
+    if (cursor == NULL)
         return;
-    gtk_tree_model_get(model, &iter,
-                       SB_KIND, &lw->sel_kind,
-                       SB_ID, &lw->sel_id,
-                       -1);
+    GtkTreeModel *model = GTK_TREE_MODEL(lw->sb_store);
+    GtkTreeIter iter;
+    if (gtk_tree_model_get_iter(model, &iter, cursor))
+        gtk_tree_model_get(model, &iter,
+                           SB_KIND, &lw->sel_kind,
+                           SB_ID,   &lw->sel_id,
+                           -1);
+    gtk_tree_path_free(cursor);
     if (lw->sel_kind != SB_KIND_GROUP)
         refresh_tasks(lw);
 }
@@ -1120,213 +1130,6 @@ selected_list_id(BtLibrary *lw)
     return lw->sel_kind == SB_KIND_LIST ? lw->sel_id : 0;
 }
 
-/* ===========================================================================
- * Sidebar drag & drop — reordering the real lists.
- *
- * The dest protocol is fully custom, mirroring Blue Notes (its quirk
- * #13): GtkTreeView's default drag-motion handler requests the row DATA
- * on every motion to validate the drop, and on quartz those replies
- * arrive before the release — a received handler treating every
- * delivery as a drop would finish the drag mid-air.  So the motion
- * handler answers gdk_drag_status() itself, ONLY the drop requests the
- * data, and the received handler is the one place the move happens.
- * =========================================================================== */
-
-/* The one drag flavor: GtkTreeView rows within this app.                    */
-static const GtkTargetEntry SB_ROW_TARGET =
-    { (gchar *)"GTK_TREE_MODEL_ROW", GTK_TARGET_SAME_APP, 0 };
-
-/* sb_drop_target() — resolve and validate the drop target under the
- * pointer.  Only a real list row may move (the dragged row is the
- * sidebar's selected row — a press always settles the single-mode
- * selection before the drag threshold), and only BEFORE/AFTER another
- * real list row; meta rows, the header, and the Blue Notes row take
- * part in neither end.  Lists cannot nest, so INTO positions are
- * coerced to the nearer edge.  Returns TRUE and fills `path_out`
- * (caller frees) + `pos_out` when the drop is legal.                        */
-static gboolean
-sb_drop_target(BtLibrary *lw, GdkDragContext *context, gint x, gint y,
-               GtkTreePath **path_out, GtkTreeViewDropPosition *pos_out)
-{
-    *path_out = NULL;
-    *pos_out  = GTK_TREE_VIEW_DROP_BEFORE;
-
-    if (gtk_drag_get_source_widget(context) != lw->sb_view)
-        return FALSE;                /* only the sidebar's own rows         */
-    if (gtk_drag_dest_find_target(lw->sb_view, context, NULL) == GDK_NONE)
-        return FALSE;                /* not a GTK_TREE_MODEL_ROW drag       */
-
-    GtkTreeModel *model = GTK_TREE_MODEL(lw->sb_store);
-    GtkTreeIter iter;
-
-    /* The dragged row must be a real list.                                  */
-    gint src_kind = -1;
-    GtkTreePath *src_path = NULL;
-    GtkTreeModel *m;
-    if (gtk_tree_selection_get_selected(
-            gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->sb_view)),
-            &m, &iter)) {
-        gtk_tree_model_get(m, &iter, SB_KIND, &src_kind, -1);
-        src_path = gtk_tree_model_get_path(m, &iter);
-    }
-    if (src_kind != SB_KIND_LIST || src_path == NULL) {
-        if (src_path != NULL)
-            gtk_tree_path_free(src_path);
-        return FALSE;
-    }
-
-    /* ... and the row under the pointer another real list.                  */
-    GtkTreePath *path = NULL;        /* row under the pointer               */
-    GtkTreeViewDropPosition pos = GTK_TREE_VIEW_DROP_BEFORE;
-    gboolean ok = FALSE;
-    if (gtk_tree_view_get_dest_row_at_pos(GTK_TREE_VIEW(lw->sb_view),
-                                          x, y, &path, &pos)) {
-        gint kind = -1;
-        if (gtk_tree_model_get_iter(model, &iter, path))
-            gtk_tree_model_get(model, &iter, SB_KIND, &kind, -1);
-        if (kind == SB_KIND_LIST && gtk_tree_path_compare(src_path, path) != 0) {
-            /* Both src and dest must share the same parent (same group, or
-             * both ungrouped under the header) so we don't reorder across
-             * group boundaries via DnD — use the right-click menu for that. */
-            GtkTreePath *sp = gtk_tree_path_copy(src_path);
-            GtkTreePath *dp = gtk_tree_path_copy(path);
-            gtk_tree_path_up(sp);
-            gtk_tree_path_up(dp);
-            ok = gtk_tree_path_compare(sp, dp) == 0;
-            gtk_tree_path_free(sp);
-            gtk_tree_path_free(dp);
-        }
-        if (pos == GTK_TREE_VIEW_DROP_INTO_OR_BEFORE)
-            pos = GTK_TREE_VIEW_DROP_BEFORE;
-        else if (pos == GTK_TREE_VIEW_DROP_INTO_OR_AFTER)
-            pos = GTK_TREE_VIEW_DROP_AFTER;
-    }
-    gtk_tree_path_free(src_path);
-    if (ok) {
-        *path_out = path;
-        *pos_out  = pos;
-    } else if (path != NULL) {
-        gtk_tree_path_free(path);
-    }
-    return ok;
-}
-
-/* on_sb_drag_motion() — answer the status ourselves and draw the drop
- * indicator; returning TRUE keeps the data-requesting default handler
- * out (the quartz hazard above).                                            */
-static gboolean
-on_sb_drag_motion(GtkWidget *widget, GdkDragContext *context,
-                  gint x, gint y, guint time, gpointer data)
-{
-    BtLibrary *lw = data;
-    GtkTreePath *path = NULL;        /* legal target row (or NULL)          */
-    GtkTreeViewDropPosition pos;     /* indicator position                  */
-    gboolean ok = sb_drop_target(lw, context, x, y, &path, &pos);
-    gtk_tree_view_set_drag_dest_row(GTK_TREE_VIEW(widget),
-                                    ok ? path : NULL, pos);
-    gdk_drag_status(context, ok ? GDK_ACTION_MOVE : 0, time);
-    if (path != NULL)
-        gtk_tree_path_free(path);
-    return TRUE;
-}
-
-/* on_sb_drag_leave() — clear the drop indicator (also fires right
- * before every drop).                                                       */
-static void
-on_sb_drag_leave(GtkWidget *widget, GdkDragContext *context, guint time,
-                 gpointer data)
-{
-    (void)context; (void)time; (void)data;
-    gtk_tree_view_set_drag_dest_row(GTK_TREE_VIEW(widget), NULL,
-                                    GTK_TREE_VIEW_DROP_BEFORE);
-}
-
-/* on_sb_drag_drop() — the button was released on a legal target:
- * request the row data (the move itself runs in on_sb_drag_received,
- * the only place the dragged row can be decoded).  TRUE keeps the
- * default handler out; FALSE cancels a targetless drop cleanly.             */
-static gboolean
-on_sb_drag_drop(GtkWidget *widget, GdkDragContext *context, gint x, gint y,
-                guint time, gpointer data)
-{
-    BtLibrary *lw = data;
-    GtkTreePath *path = NULL;        /* legal target row (or NULL)          */
-    GtkTreeViewDropPosition pos;     /* unused here                         */
-    gboolean ok = sb_drop_target(lw, context, x, y, &path, &pos);
-    if (path != NULL)
-        gtk_tree_path_free(path);
-    if (!ok)
-        return FALSE;
-    gtk_drag_get_data(widget, context,
-                      gdk_atom_intern_static_string("GTK_TREE_MODEL_ROW"),
-                      time);
-    return TRUE;
-}
-
-/* on_sb_drag_received() — the drop: splice the dragged list before/
- * after the anchor in the CURRENT display order and persist the whole
- * sequence (bt_db_lists_reorder — also flips the ordering from the
- * alphabetical default to custom).  Fires exactly once per drop — only
- * on_sb_drag_drop requests the data, so x/y are real drop coordinates.
- * The default handler is stopped: it would try to splice the dragged
- * row into the tree store itself.                                           */
-static void
-on_sb_drag_received(GtkWidget *widget, GdkDragContext *context,
-                    gint x, gint y, GtkSelectionData *seldata, guint info,
-                    guint time, gpointer data)
-{
-    (void)info;
-    BtLibrary *lw = data;
-    g_signal_stop_emission_by_name(widget, "drag-data-received");
-
-    GtkTreeModel *model = GTK_TREE_MODEL(lw->sb_store);
-    GtkTreeModel *src_model = NULL;  /* model the drag started in           */
-    GtkTreePath *src_path = NULL;    /* dragged row's path                  */
-    GtkTreePath *dest_path = NULL;   /* target row's path                   */
-    GtkTreeViewDropPosition pos = GTK_TREE_VIEW_DROP_BEFORE;
-    GtkTreeIter iter;
-    gint64 dragged = 0;              /* dragged list id                     */
-    gint64 anchor = 0;               /* target list id                      */
-
-    if (gtk_tree_get_row_drag_data(seldata, &src_model, &src_path) &&
-        src_model == model &&
-        sb_drop_target(lw, context, x, y, &dest_path, &pos)) {
-        if (gtk_tree_model_get_iter(model, &iter, src_path))
-            gtk_tree_model_get(model, &iter, SB_ID, &dragged, -1);
-        if (gtk_tree_model_get_iter(model, &iter, dest_path))
-            gtk_tree_model_get(model, &iter, SB_ID, &anchor, -1);
-    }
-
-    gboolean success = dragged != 0 && anchor != 0 && dragged != anchor;
-    if (success) {
-        gboolean after = pos == GTK_TREE_VIEW_DROP_AFTER;
-        /* Current display order minus the dragged id, re-inserted at
-         * the anchor.                                                       */
-        GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
-        GPtrArray *lists = bt_db_lists(lw->app->db, FALSE);
-        for (guint i = 0; i < lists->len; i++) {
-            BtList *l = g_ptr_array_index(lists, i);
-            if (l->id == dragged)
-                continue;            /* re-inserted at the anchor below     */
-            if (l->id == anchor && !after)
-                g_array_append_val(ids, dragged);
-            g_array_append_val(ids, l->id);
-            if (l->id == anchor && after)
-                g_array_append_val(ids, dragged);
-        }
-        bt_ptr_array_free_lists(lists);
-        bt_db_lists_reorder(lw->app->db, (const gint64 *)ids->data,
-                            ids->len);
-        g_array_free(ids, TRUE);
-        refresh_sidebar(lw);         /* reselects the dragged list          */
-    }
-
-    if (src_path != NULL)
-        gtk_tree_path_free(src_path);
-    if (dest_path != NULL)
-        gtk_tree_path_free(dest_path);
-    gtk_drag_finish(context, success, FALSE, time);
-}
 
 /* ===========================================================================
  * Task pane behavior.
@@ -1680,21 +1483,23 @@ static void
 on_sb_ctx_move_to_group(GtkWidget *item, gpointer data)
 {
     BtLibrary *lw   = data;
-    gint64 list_id  = (gint64)(gintptr)
-        g_object_get_data(G_OBJECT(item), "bt-list-id");
+    GArray    *ids  = g_object_get_data(G_OBJECT(item), "bt-ids");
     gint64 group_id = (gint64)(gintptr)
         g_object_get_data(G_OBJECT(item), "bt-group-id");
-    bt_db_list_set_group(lw->app->db, list_id, group_id);
+    for (guint i = 0; i < ids->len; i++)
+        bt_db_list_set_group(lw->app->db,
+                             g_array_index(ids, gint64, i), group_id);
     full_refresh(lw);
 }
 
 static void
 on_sb_ctx_remove_from_group(GtkWidget *item, gpointer data)
 {
-    BtLibrary *lw  = data;
-    gint64 list_id = (gint64)(gintptr)
-        g_object_get_data(G_OBJECT(item), "bt-list-id");
-    bt_db_list_set_group(lw->app->db, list_id, 0);
+    BtLibrary *lw = data;
+    GArray   *ids = g_object_get_data(G_OBJECT(item), "bt-ids");
+    for (guint i = 0; i < ids->len; i++)
+        bt_db_list_set_group(lw->app->db,
+                             g_array_index(ids, gint64, i), 0);
     full_refresh(lw);
 }
 
@@ -1758,7 +1563,9 @@ on_sb_ctx_delete_group(GtkWidget *item, gpointer data)
 
 /* on_sb_button_press() — right-click on the sidebar: group management menu
  * on SB_KIND_LIST (Move to Group / Remove from Group) and on SB_KIND_GROUP
- * (Rename Group / Remove Group).                                             */
+ * (Rename Group / Remove Group).  Right-clicking inside an existing
+ * multi-selection operates on all selected lists; outside collapses to
+ * the clicked row first.                                                     */
 static gboolean
 on_sb_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
 {
@@ -1769,43 +1576,67 @@ on_sb_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
                                        (gint)event->x, (gint)event->y,
                                        &path, NULL, NULL, NULL))
         return FALSE;
-    GtkTreeModel *model = GTK_TREE_MODEL(lw->sb_store);
+
+    GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(widget));
+    GtkTreeModel *model   = GTK_TREE_MODEL(lw->sb_store);
     GtkTreeIter   it;
     gint   kind = -1;
     gint64 id   = 0;
     if (gtk_tree_model_get_iter(model, &it, path))
         gtk_tree_model_get(model, &it, SB_KIND, &kind, SB_ID, &id, -1);
+
+    /* Outside existing selection → collapse to this row. */
+    if (!gtk_tree_selection_path_is_selected(sel, path)) {
+        gtk_tree_selection_unselect_all(sel);
+        gtk_tree_selection_select_path(sel, path);
+        gtk_tree_view_set_cursor(GTK_TREE_VIEW(widget), path, NULL, FALSE);
+    }
     gtk_tree_path_free(path);
 
     if (kind == SB_KIND_LIST) {
-        BtList *l = bt_db_list_get(lw->app->db, id);
-        if (l == NULL) return FALSE;
-        gint64 cur_group = l->group_id;
-        bt_list_free(l);
-        GPtrArray *groups = bt_db_groups(lw->app->db);
-        /* Count how many items the menu will have */
-        guint other_groups = 0;
-        for (guint i = 0; i < groups->len; i++) {
-            BtGroup *g = g_ptr_array_index(groups, i);
-            if (g->id != cur_group) other_groups++;
+        /* Collect all selected list ids and their group membership. */
+        GList *rows = gtk_tree_selection_get_selected_rows(sel, &model);
+        GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+        gboolean any_grouped = FALSE;
+        for (GList *r = rows; r; r = r->next) {
+            GtkTreeIter ri;
+            if (!gtk_tree_model_get_iter(model, &ri, r->data)) continue;
+            gint k; gint64 lid;
+            gtk_tree_model_get(model, &ri, SB_KIND, &k, SB_ID, &lid, -1);
+            if (k != SB_KIND_LIST) continue;
+            g_array_append_val(ids, lid);
+            BtList *l = bt_db_list_get(lw->app->db, lid);
+            if (l) {
+                if (l->group_id != 0) any_grouped = TRUE;
+                bt_list_free(l);
+            }
         }
-        if (other_groups == 0 && cur_group == 0) {
+        g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
+
+        GPtrArray *groups = bt_db_groups(lw->app->db);
+        if (groups->len == 0 && !any_grouped) {
             bt_ptr_array_free_groups(groups);
+            g_array_unref(ids);
             return FALSE;             /* no groups exist — nothing to show   */
         }
+
         GtkWidget *menu = gtk_menu_new();
         g_signal_connect(menu, "selection-done",
                          G_CALLBACK(gtk_widget_destroy), NULL);
-        if (other_groups > 0) {
+
+        /* "Move to Group" submenu — every group the selection isn't
+         * exclusively in (show all groups when selection is mixed).          */
+        if (groups->len > 0) {
             GtkWidget *move_item =
                 gtk_menu_item_new_with_label("Move to Group");
             GtkWidget *sub = gtk_menu_new();
             for (guint i = 0; i < groups->len; i++) {
                 BtGroup *g = g_ptr_array_index(groups, i);
-                if (g->id == cur_group) continue;
                 GtkWidget *gi = gtk_menu_item_new_with_label(g->name);
-                g_object_set_data(G_OBJECT(gi), "bt-list-id",
-                                  (gpointer)(gintptr)id);
+                /* ids array is shared across all items via ref */
+                g_object_set_data_full(G_OBJECT(gi), "bt-ids",
+                                       g_array_ref(ids),
+                                       (GDestroyNotify)g_array_unref);
                 g_object_set_data(G_OBJECT(gi), "bt-group-id",
                                   (gpointer)(gintptr)g->id);
                 g_signal_connect(gi, "activate",
@@ -1816,15 +1647,19 @@ on_sb_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
             gtk_menu_shell_append(GTK_MENU_SHELL(menu), move_item);
         }
         bt_ptr_array_free_groups(groups);
-        if (cur_group != 0) {
+
+        if (any_grouped) {
             GtkWidget *rem =
                 gtk_menu_item_new_with_label("Remove from Group");
-            g_object_set_data(G_OBJECT(rem), "bt-list-id",
-                              (gpointer)(gintptr)id);
+            g_object_set_data_full(G_OBJECT(rem), "bt-ids",
+                                   g_array_ref(ids),
+                                   (GDestroyNotify)g_array_unref);
             g_signal_connect(rem, "activate",
                              G_CALLBACK(on_sb_ctx_remove_from_group), lw);
             gtk_menu_shell_append(GTK_MENU_SHELL(menu), rem);
         }
+        g_array_unref(ids);
+
         gtk_widget_show_all(menu);
         gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
         return TRUE;
@@ -3526,6 +3361,7 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
         "}");
     GtkTreeSelection *sb_sel =
         gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->sb_view));
+    gtk_tree_selection_set_mode(sb_sel, GTK_SELECTION_MULTIPLE);
     gtk_tree_selection_set_select_function(sb_sel, sb_row_selectable,
                                            lw, NULL);
     g_signal_connect(sb_sel, "changed",
@@ -3534,21 +3370,6 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
                      G_CALLBACK(on_sidebar_activated), lw);
     g_signal_connect(lw->sb_view, "button-press-event",
                      G_CALLBACK(on_sb_button_press), lw);
-    /* Let list rows be dragged to reorder them.  The dest protocol is
-     * fully custom (motion answers the status itself; only the drop
-     * requests the row data) — see the sidebar DnD banner.                  */
-    gtk_tree_view_enable_model_drag_source(GTK_TREE_VIEW(lw->sb_view),
-        GDK_BUTTON1_MASK, &SB_ROW_TARGET, 1, GDK_ACTION_MOVE);
-    gtk_tree_view_enable_model_drag_dest(GTK_TREE_VIEW(lw->sb_view),
-        &SB_ROW_TARGET, 1, GDK_ACTION_MOVE);
-    g_signal_connect(lw->sb_view, "drag-motion",
-                     G_CALLBACK(on_sb_drag_motion), lw);
-    g_signal_connect(lw->sb_view, "drag-leave",
-                     G_CALLBACK(on_sb_drag_leave), NULL);
-    g_signal_connect(lw->sb_view, "drag-drop",
-                     G_CALLBACK(on_sb_drag_drop), lw);
-    g_signal_connect(lw->sb_view, "drag-data-received",
-                     G_CALLBACK(on_sb_drag_received), lw);
     GtkWidget *sb_scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sb_scroll),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
@@ -3563,9 +3384,9 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     GtkWidget *sb_add = gtk_button_new_with_label("+");
     gtk_widget_set_tooltip_text(sb_add, "Create a new task list");
     g_signal_connect(sb_add, "clicked", G_CALLBACK(on_new_list), lw);
-    /* 📁 = \xf0\x9f\x93\x81 — create a new list group */
+    /* ▶ = \xe2\x96\xb6 — create a new list group */
     GtkWidget *sb_grp = gtk_button_new_with_label(
-        "\xf0\x9f\x93\x81");
+        "\xe2\x96\xb6");
     gtk_widget_set_tooltip_text(sb_grp, "Create a new list group");
     g_signal_connect(sb_grp, "clicked", G_CALLBACK(on_new_group), lw);
     GtkWidget *sb_edit = gtk_button_new_with_label("\xe2\x9c\x8e");

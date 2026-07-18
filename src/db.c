@@ -346,14 +346,9 @@ GPtrArray *
 bt_db_lists(BtDatabase *db, gboolean include_deleted)
 {
     GPtrArray *out = g_ptr_array_new();
-    gchar *custom = bt_db_state_get(db, "lists_custom_order");
-    const gchar *order = custom != NULL
-        ? "ORDER BY position, lower(name)"
-        : "ORDER BY lower(name)";
-    g_free(custom);
     gchar *sql = g_strdup_printf(
-        "SELECT " LIST_COLS " FROM lists%s %s",
-        include_deleted ? "" : " WHERE deleted = 0", order);
+        "SELECT " LIST_COLS " FROM lists%s ORDER BY lower(name)",
+        include_deleted ? "" : " WHERE deleted = 0");
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK)
         while (sqlite3_step(st) == SQLITE_ROW)
