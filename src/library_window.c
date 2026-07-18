@@ -87,6 +87,8 @@ typedef struct {
                                       * close as the next launch's size)    */
     gboolean             drag_active;    /* live task-row drag in progress  */
     GtkTreeRowReference *drag_row_ref;   /* auto-updating ref to drag row  */
+    GtkTreeRowReference *drag_lock_ref;  /* row just swapped; locked until
+                                          * cursor re-enters drag row      */
 } BtLibrary;
 
 /* list_label() — a list's display label: the optional emoji prefixes
@@ -2560,8 +2562,10 @@ on_library_destroy(GtkWidget *w, gpointer data)
     lw->app->notify_status  = NULL;
     lw->app->library_window = NULL;
     bt_editor_close_all(lw->app);
-    if (lw->drag_row_ref != NULL)
+    if (lw->drag_row_ref  != NULL)
         gtk_tree_row_reference_free(lw->drag_row_ref);
+    if (lw->drag_lock_ref != NULL)
+        gtk_tree_row_reference_free(lw->drag_lock_ref);
     g_free(lw->db_path);
     g_free(lw);
 }
@@ -2744,22 +2748,79 @@ on_task_drag_motion(GtkWidget *widget, GdkEventMotion *ev, gpointer data)
         gtk_tree_row_reference_get_path(lw->drag_row_ref);
     if (drag_path == NULL) { gtk_tree_path_free(at_path); return FALSE; }
 
-    if (gtk_tree_path_compare(at_path, drag_path) != 0) {
-        GtkTreeIter  at_it, drag_it;
-        GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
-        if (gtk_tree_model_get_iter(model, &at_it,   at_path) &&
-            gtk_tree_model_get_iter(model, &drag_it, drag_path)) {
-            gint64 at_id;
-            gtk_tree_model_get(model, &at_it, TL_ID, &at_id, -1);
-            if (at_id != 0) {
-                gint drag_idx = gtk_tree_path_get_indices(drag_path)[0];
-                gint at_idx   = gtk_tree_path_get_indices(at_path)[0];
-                if (at_idx < drag_idx)
-                    gtk_list_store_move_before(lw->task_store,
-                                              &drag_it, &at_it);
-                else
-                    gtk_list_store_move_after(lw->task_store,
-                                             &drag_it, &at_it);
+    if (gtk_tree_path_compare(at_path, drag_path) == 0) {
+        /* Cursor is back on the dragged row — clear the anti-flicker lock
+         * so the next row the cursor enters will swap normally.              */
+        if (lw->drag_lock_ref != NULL) {
+            gtk_tree_row_reference_free(lw->drag_lock_ref);
+            lw->drag_lock_ref = NULL;
+        }
+    } else {
+        /* Check whether this is the row we just swapped with.  Row refs
+         * auto-update through moves, so lock_path tracks the locked row
+         * even after surrounding rows have shifted.                          */
+        GtkTreePath *lock_path = lw->drag_lock_ref
+            ? gtk_tree_row_reference_get_path(lw->drag_lock_ref) : NULL;
+        gboolean locked = lock_path &&
+            gtk_tree_path_compare(at_path, lock_path) == 0;
+        if (lock_path) gtk_tree_path_free(lock_path);
+
+        if (!locked) {
+            GtkTreeIter  at_it, drag_it;
+            GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
+            if (gtk_tree_model_get_iter(model, &at_it,   at_path) &&
+                gtk_tree_model_get_iter(model, &drag_it, drag_path)) {
+                gint64 at_id;
+                gtk_tree_model_get(model, &at_it, TL_ID, &at_id, -1);
+                if (at_id != 0) {
+                    gint drag_idx = gtk_tree_path_get_indices(drag_path)[0];
+                    gint at_idx   = gtk_tree_path_get_indices(at_path)[0];
+                    /* Lock the target BEFORE the move; the row ref will
+                     * auto-update to track it at its new position.           */
+                    if (lw->drag_lock_ref != NULL)
+                        gtk_tree_row_reference_free(lw->drag_lock_ref);
+                    lw->drag_lock_ref =
+                        gtk_tree_row_reference_new(model, at_path);
+                    if (at_idx < drag_idx)
+                        gtk_list_store_move_before(lw->task_store,
+                                                  &drag_it, &at_it);
+                    else
+                        gtk_list_store_move_after(lw->task_store,
+                                                 &drag_it, &at_it);
+
+                    /* Warp the pointer to the centre of the drag handle in
+                     * the dragged row's new position.  drag_row_ref tracks
+                     * the row through the move, so its path is already
+                     * updated.  Without this the cursor drifts into the
+                     * body of the (now-displaced) big row.                  */
+                    GtkTreePath *new_drag_path =
+                        gtk_tree_row_reference_get_path(lw->drag_row_ref);
+                    if (new_drag_path) {
+                        GtkTreeViewColumn *cdrag =
+                            g_object_get_data(G_OBJECT(lw->task_view),
+                                              "bt-cdrag");
+                        GdkRectangle cell_rect;
+                        gtk_tree_view_get_cell_area(
+                            GTK_TREE_VIEW(widget), new_drag_path,
+                            cdrag, &cell_rect);
+                        gint bx, by;
+                        gdk_window_get_origin(
+                            gtk_tree_view_get_bin_window(
+                                GTK_TREE_VIEW(widget)),
+                            &bx, &by);
+                        gint wx = bx + cell_rect.x + cell_rect.width  / 2;
+                        gint wy = by + cell_rect.y + cell_rect.height / 2;
+                        GdkDisplay *dpy =
+                            gtk_widget_get_display(widget);
+                        GdkDevice *ptr =
+                            gdk_seat_get_pointer(
+                                gdk_display_get_default_seat(dpy));
+                        gdk_device_warp(ptr,
+                                        gtk_widget_get_screen(widget),
+                                        wx, wy);
+                        gtk_tree_path_free(new_drag_path);
+                    }
+                }
             }
         }
     }
@@ -2781,6 +2842,10 @@ on_task_drag_release(GtkWidget *widget, GdkEventButton *ev, gpointer data)
     if (lw->drag_row_ref != NULL) {
         gtk_tree_row_reference_free(lw->drag_row_ref);
         lw->drag_row_ref = NULL;
+    }
+    if (lw->drag_lock_ref != NULL) {
+        gtk_tree_row_reference_free(lw->drag_lock_ref);
+        lw->drag_lock_ref = NULL;
     }
     task_view_save_manual_order(lw);
     GdkWindow *win = gtk_widget_get_window(widget);
