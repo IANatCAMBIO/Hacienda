@@ -1143,60 +1143,82 @@ bt_db_purge_done(BtDatabase *db, gint64 list_id)
     sqlite3_free(sql);
 }
 
-/* bt_db_bn_pin_get() — is this Blue Notes item pinned (see db.h)?           */
-gboolean
-bt_db_bn_pin_get(BtDatabase *db, const gchar *ref)
+/* bn_ref_in_table() — SELECT 1 FROM <sql> WHERE ref = ?, returns row found. */
+static gboolean
+bn_ref_in_table(BtDatabase *db, const gchar *ref,
+                const gchar *sql, const gchar *ctx)
 {
     sqlite3_stmt *st = NULL;
-    gboolean pinned = FALSE;
-    if (sqlite3_prepare_v2(db->sq,
-            "SELECT 1 FROM bn_pins WHERE ref = ?", -1,
-            &st, NULL) == SQLITE_OK) {
+    gboolean found = FALSE;
+    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, ref, -1, SQLITE_TRANSIENT);
-        pinned = sqlite3_step(st) == SQLITE_ROW;
+        found = sqlite3_step(st) == SQLITE_ROW;
     } else {
-        step_done(db, NULL, "bn pin get");
+        step_done(db, NULL, ctx);
     }
     sqlite3_finalize(st);
-    return pinned;
+    return found;
 }
 
-/* bt_db_bn_pin_set() — pin/unpin a Blue Notes item (see db.h).              */
-void
-bt_db_bn_pin_set(BtDatabase *db, const gchar *ref, gboolean pinned)
+/* bn_ref_set_in_table() — INSERT OR IGNORE / DELETE for a boolean flag.     */
+static void
+bn_ref_set_in_table(BtDatabase *db, const gchar *ref, gboolean flag,
+                    const gchar *sql_set, const gchar *sql_clear,
+                    const gchar *ctx)
 {
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq,
-            pinned ? "INSERT OR IGNORE INTO bn_pins(ref) VALUES(?)"
-                   : "DELETE FROM bn_pins WHERE ref = ?", -1,
-            &st, NULL) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(db->sq, flag ? sql_set : sql_clear,
+                           -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, ref, -1, SQLITE_TRANSIENT);
-        step_done(db, st, "bn pin set");
+        step_done(db, st, ctx);
     } else {
-        step_done(db, NULL, "bn pin set");
+        step_done(db, NULL, ctx);
     }
     sqlite3_finalize(st);
 }
 
-/* bt_db_bn_pins() — the pinned-refs set (see db.h).                         */
-GHashTable *
-bt_db_bn_pins(BtDatabase *db)
+/* bn_load_ref_set() — SELECT ref FROM <table>; collect into a GHashTable.   */
+static GHashTable *
+bn_load_ref_set(BtDatabase *db, const gchar *sql, const gchar *ctx)
 {
     GHashTable *set = g_hash_table_new_full(g_str_hash, g_str_equal,
                                             g_free, NULL);
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq, "SELECT ref FROM bn_pins", -1,
-                           &st, NULL) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK) {
         while (sqlite3_step(st) == SQLITE_ROW) {
             gchar *ref = column_text_dup(st, 0);
             if (ref != NULL)
                 g_hash_table_add(set, ref);
         }
     } else {
-        step_done(db, NULL, "bn pins query");
+        step_done(db, NULL, ctx);
     }
     sqlite3_finalize(st);
     return set;
+}
+
+/* bt_db_bn_pin_get() — is this Blue Notes item pinned (see db.h)?           */
+gboolean
+bt_db_bn_pin_get(BtDatabase *db, const gchar *ref)
+{
+    return bn_ref_in_table(db, ref,
+        "SELECT 1 FROM bn_pins WHERE ref = ?", "bn pin get");
+}
+
+/* bt_db_bn_pin_set() — pin/unpin a Blue Notes item (see db.h).              */
+void
+bt_db_bn_pin_set(BtDatabase *db, const gchar *ref, gboolean pinned)
+{
+    bn_ref_set_in_table(db, ref, pinned,
+        "INSERT OR IGNORE INTO bn_pins(ref) VALUES(?)",
+        "DELETE FROM bn_pins WHERE ref = ?", "bn pin set");
+}
+
+/* bt_db_bn_pins() — the pinned-refs set (see db.h).                         */
+GHashTable *
+bt_db_bn_pins(BtDatabase *db)
+{
+    return bn_load_ref_set(db, "SELECT ref FROM bn_pins", "bn pins query");
 }
 
 /* bt_db_bn_priority_get() — is this Blue Notes item high-priority (see
@@ -1204,56 +1226,25 @@ bt_db_bn_pins(BtDatabase *db)
 gboolean
 bt_db_bn_priority_get(BtDatabase *db, const gchar *ref)
 {
-    sqlite3_stmt *st = NULL;
-    gboolean priority = FALSE;
-    if (sqlite3_prepare_v2(db->sq,
-            "SELECT 1 FROM bn_priority WHERE ref = ?", -1,
-            &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(st, 1, ref, -1, SQLITE_TRANSIENT);
-        priority = sqlite3_step(st) == SQLITE_ROW;
-    } else {
-        step_done(db, NULL, "bn priority get");
-    }
-    sqlite3_finalize(st);
-    return priority;
+    return bn_ref_in_table(db, ref,
+        "SELECT 1 FROM bn_priority WHERE ref = ?", "bn priority get");
 }
 
 /* bt_db_bn_priority_set() — flag/unflag a Blue Notes item (see db.h).       */
 void
 bt_db_bn_priority_set(BtDatabase *db, const gchar *ref, gboolean priority)
 {
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq,
-            priority ? "INSERT OR IGNORE INTO bn_priority(ref) VALUES(?)"
-                     : "DELETE FROM bn_priority WHERE ref = ?", -1,
-            &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(st, 1, ref, -1, SQLITE_TRANSIENT);
-        step_done(db, st, "bn priority set");
-    } else {
-        step_done(db, NULL, "bn priority set");
-    }
-    sqlite3_finalize(st);
+    bn_ref_set_in_table(db, ref, priority,
+        "INSERT OR IGNORE INTO bn_priority(ref) VALUES(?)",
+        "DELETE FROM bn_priority WHERE ref = ?", "bn priority set");
 }
 
 /* bt_db_bn_priorities() — the high-priority-refs set (see db.h).            */
 GHashTable *
 bt_db_bn_priorities(BtDatabase *db)
 {
-    GHashTable *set = g_hash_table_new_full(g_str_hash, g_str_equal,
-                                            g_free, NULL);
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq, "SELECT ref FROM bn_priority", -1,
-                           &st, NULL) == SQLITE_OK) {
-        while (sqlite3_step(st) == SQLITE_ROW) {
-            gchar *ref = column_text_dup(st, 0);
-            if (ref != NULL)
-                g_hash_table_add(set, ref);
-        }
-    } else {
-        step_done(db, NULL, "bn priorities query");
-    }
-    sqlite3_finalize(st);
-    return set;
+    return bn_load_ref_set(db, "SELECT ref FROM bn_priority",
+                           "bn priorities query");
 }
 
 /* bt_db_tasks_clear_gtasks_ids() — unbind one list's tasks (see db.h).      */

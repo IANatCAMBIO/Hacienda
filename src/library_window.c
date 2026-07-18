@@ -1503,40 +1503,60 @@ on_sb_ctx_remove_from_group(GtkWidget *item, gpointer data)
     full_refresh(lw);
 }
 
+/* run_group_name_dialog() — modal entry for a group name; fills *out and
+ * returns TRUE on accept with non-empty text, FALSE otherwise.              */
+static gboolean
+run_group_name_dialog(BtLibrary *lw, const gchar *title, const gchar *button,
+                      const gchar *initial, gchar **out)
+{
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(
+        title, GTK_WINDOW(lw->window),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        "Cancel", GTK_RESPONSE_CANCEL,
+        button, GTK_RESPONSE_ACCEPT, NULL);
+    GtkWidget *entry = gtk_entry_new();
+    if (initial && *initial)
+        gtk_entry_set_text(GTK_ENTRY(entry), initial);
+    else
+        gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Group name");
+    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_box_pack_start(GTK_BOX(box), gtk_label_new("Group name:"),
+                       FALSE, FALSE, 6);
+    gtk_box_pack_start(GTK_BOX(box), entry, FALSE, FALSE, 4);
+    gtk_widget_show_all(dlg);
+    gboolean accepted = FALSE;
+    if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
+        const gchar *name = gtk_entry_get_text(GTK_ENTRY(entry));
+        if (name && *name) {
+            *out     = g_strdup(name);
+            accepted = TRUE;
+        }
+    }
+    gtk_widget_destroy(dlg);
+    return accepted;
+}
+
 static void
 on_sb_ctx_rename_group(GtkWidget *item, gpointer data)
 {
     BtLibrary *lw   = data;
     gint64 group_id = (gint64)(gintptr)
         g_object_get_data(G_OBJECT(item), "bt-group-id");
-    GtkWidget *dlg = gtk_dialog_new_with_buttons(
-        "Rename Group", GTK_WINDOW(lw->window),
-        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-        "Cancel", GTK_RESPONSE_CANCEL,
-        "Rename", GTK_RESPONSE_ACCEPT, NULL);
-    GtkWidget *entry = gtk_entry_new();
-    GPtrArray *groups = bt_db_groups(lw->app->db);
+    GPtrArray *groups  = bt_db_groups(lw->app->db);
+    gchar     *current = NULL;
     for (guint i = 0; i < groups->len; i++) {
         BtGroup *g = g_ptr_array_index(groups, i);
-        if (g->id == group_id) {
-            gtk_entry_set_text(GTK_ENTRY(entry), g->name);
-            break;
-        }
+        if (g->id == group_id) { current = g_strdup(g->name); break; }
     }
     bt_ptr_array_free_groups(groups);
-    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
-    gtk_box_pack_start(GTK_BOX(box), gtk_label_new("Group name:"),
-                       FALSE, FALSE, 6);
-    gtk_box_pack_start(GTK_BOX(box), entry, FALSE, FALSE, 4);
-    gtk_widget_show_all(dlg);
-    if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
-        const gchar *name = gtk_entry_get_text(GTK_ENTRY(entry));
-        if (name && *name) {
-            bt_db_group_rename(lw->app->db, group_id, name);
-            full_refresh(lw);
-        }
+    gchar *name = NULL;
+    if (run_group_name_dialog(lw, "Rename Group", "Rename",
+                              current ? current : "", &name)) {
+        bt_db_group_rename(lw->app->db, group_id, name);
+        full_refresh(lw);
+        g_free(name);
     }
-    gtk_widget_destroy(dlg);
+    g_free(current);
 }
 
 static void
@@ -1694,29 +1714,15 @@ on_new_group(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtLibrary *lw = data;
-    GtkWidget *dlg = gtk_dialog_new_with_buttons(
-        "New Group", GTK_WINDOW(lw->window),
-        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-        "Cancel", GTK_RESPONSE_CANCEL,
-        "Create", GTK_RESPONSE_ACCEPT, NULL);
-    GtkWidget *entry = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Group name");
-    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
-    gtk_box_pack_start(GTK_BOX(box), gtk_label_new("Group name:"),
-                       FALSE, FALSE, 6);
-    gtk_box_pack_start(GTK_BOX(box), entry, FALSE, FALSE, 4);
-    gtk_widget_show_all(dlg);
-    if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
-        const gchar *name = gtk_entry_get_text(GTK_ENTRY(entry));
-        if (name && *name) {
-            gint64 gid = bt_db_group_create(lw->app->db, name);
-            if (gid == 0)
-                bt_app_status(lw->app, "Failed to create group");
-            else
-                full_refresh(lw);
-        }
+    gchar *name = NULL;
+    if (run_group_name_dialog(lw, "New Group", "Create", NULL, &name)) {
+        gint64 gid = bt_db_group_create(lw->app->db, name);
+        if (gid == 0)
+            bt_app_status(lw->app, "Failed to create group");
+        else
+            full_refresh(lw);
+        g_free(name);
     }
-    gtk_widget_destroy(dlg);
 }
 
 /* on_new_list() — prompt (name + optional emoji), create, select.           */
