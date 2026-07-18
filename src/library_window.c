@@ -85,6 +85,8 @@ typedef struct {
                                       * while nothing is pinned)            */
     gint          win_w, win_h;      /* live client size (persisted at
                                       * close as the next launch's size)    */
+    gboolean             drag_active;    /* live task-row drag in progress  */
+    GtkTreeRowReference *drag_row_ref;   /* auto-updating ref to drag row  */
 } BtLibrary;
 
 /* list_label() — a list's display label: the optional emoji prefixes
@@ -276,6 +278,7 @@ scroll_keep_queue(GtkWidget *view)
  * ------------------------------------------------------------------------- */
 
 static gint64 bn_embed_list(BtLibrary *lw);
+static void   task_view_apply_manual_order(BtLibrary *lw);
 
 /* sidebar_show_pinned() — whether the Pinned Tasks meta row should
  * exist: any pinned task, or (while the integration is on) any pinned
@@ -853,6 +856,10 @@ refresh_tasks(BtLibrary *lw)
                          append_bn_items(lw, &br, TRUE, 0));
         bn_rows_clear(&br);
     }
+
+    /* Reorder to match the saved manual order (no-op when mode is off).       */
+    if (bt_app_config_get_bool("task_list_manual_sort", FALSE))
+        task_view_apply_manual_order(lw);
 
     /* Status bar left: where we are + how many rows.                        */
     BtList *sel_list = virtual_view ? NULL
@@ -1924,6 +1931,36 @@ static gboolean
 on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
 {
     BtLibrary *lw = data;
+
+    /* Left-click in the drag handle column starts a manual reorder. */
+    if (event->button == 1 &&
+        bt_app_config_get_bool("task_list_manual_sort", FALSE)) {
+        GtkTreePath      *path = NULL;
+        GtkTreeViewColumn *col = NULL;
+        if (gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(view),
+            (gint)event->x, (gint)event->y, &path, &col, NULL, NULL)) {
+            GtkTreeViewColumn *cdrag =
+                g_object_get_data(G_OBJECT(lw->task_view), "bt-cdrag");
+            if (col == cdrag) {
+                GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
+                GtkTreeIter it;
+                gint64 id = 0;
+                if (gtk_tree_model_get_iter(model, &it, path))
+                    gtk_tree_model_get(model, &it, TL_ID, &id, -1);
+                if (id != 0) {
+                    lw->drag_active = TRUE;
+                    if (lw->drag_row_ref != NULL)
+                        gtk_tree_row_reference_free(lw->drag_row_ref);
+                    lw->drag_row_ref =
+                        gtk_tree_row_reference_new(model, path);
+                    gtk_tree_path_free(path);
+                    return TRUE;       /* consume — don't change selection   */
+                }
+            }
+            gtk_tree_path_free(path);
+        }
+    }
+
     if (event->button != 3 || lw->sel_kind == SB_KIND_BN_ACTIONS)
         return FALSE;
 
@@ -2523,8 +2560,273 @@ on_library_destroy(GtkWidget *w, gpointer data)
     lw->app->notify_status  = NULL;
     lw->app->library_window = NULL;
     bt_editor_close_all(lw->app);
+    if (lw->drag_row_ref != NULL)
+        gtk_tree_row_reference_free(lw->drag_row_ref);
     g_free(lw->db_path);
     g_free(lw);
+}
+
+/* ===========================================================================
+ * Manual sort: order persistence, drag handlers, mode toggle.
+ * =========================================================================== */
+
+/* view_order_key() — the config key for the current view's manual sort
+ * order, or NULL if the view doesn't support it.  New string (g_free).       */
+static gchar *
+view_order_key(BtLibrary *lw)
+{
+    switch (lw->sel_kind) {
+    case SB_KIND_LIST:
+        return g_strdup_printf("manual_order_list_%" G_GINT64_FORMAT,
+                               lw->sel_id);
+    case SB_KIND_ALL:
+        return g_strdup("manual_order_all");
+    case SB_KIND_PINNED:
+        return g_strdup("manual_order_pinned");
+    case SB_KIND_TODAY:
+        return g_strdup("manual_order_today");
+    default:
+        return NULL;
+    }
+}
+
+/* task_view_save_manual_order() — serialize the task pane's current row
+ * order (real tasks only; id=0 Blue Notes rows are skipped) to config as
+ * a comma-separated id list.                                                  */
+static void
+task_view_save_manual_order(BtLibrary *lw)
+{
+    gchar *key = view_order_key(lw);
+    if (key == NULL) return;
+    GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
+    GString      *s     = g_string_new(NULL);
+    GtkTreeIter   iter;
+    if (gtk_tree_model_get_iter_first(model, &iter)) {
+        do {
+            gint64 id;
+            gchar *ref;
+            gtk_tree_model_get(model, &iter,
+                               TL_ID, &id, TL_REF, &ref, -1);
+            if (id != 0 && ref == NULL) {
+                if (s->len > 0) g_string_append_c(s, ',');
+                g_string_append_printf(s, "%" G_GINT64_FORMAT, id);
+            }
+            g_free(ref);
+        } while (gtk_tree_model_iter_next(model, &iter));
+    }
+    bt_app_config_set(key, s->str);
+    g_string_free(s, TRUE);
+    g_free(key);
+}
+
+/* task_view_apply_manual_order() — after refresh_tasks populates the store,
+ * reorder rows to match the saved manual order for the current view.  Tasks
+ * absent from the saved list appear at the tail; id=0 rows follow them.       */
+static void
+task_view_apply_manual_order(BtLibrary *lw)
+{
+    gchar *key = view_order_key(lw);
+    if (key == NULL) return;
+    gchar *saved = bt_app_config_get(key);
+    g_free(key);
+    if (saved == NULL || *saved == '\0') { g_free(saved); return; }
+    GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
+    gint n = gtk_tree_model_iter_n_children(model, NULL);
+    if (n <= 1) { g_free(saved); return; }
+
+    /* Snapshot current row IDs (in display order). */
+    gint64      *ids      = g_new(gint64, n);
+    GtkTreeIter  iter;
+    gtk_tree_model_get_iter_first(model, &iter);
+    for (gint i = 0; i < n; i++) {
+        gtk_tree_model_get(model, &iter, TL_ID, &ids[i], -1);
+        gtk_tree_model_iter_next(model, &iter);
+    }
+
+    /* Build new_order: saved ids first (in saved sequence), remainder
+     * (new tasks not yet in saved list, plus BN rows) appended at tail.      */
+    gint     *new_order = g_new(gint, n);
+    gboolean *placed    = g_new0(gboolean, n);
+    gint      fill      = 0;
+    gchar   **parts     = g_strsplit(saved, ",", -1);
+    g_free(saved);
+    for (gint i = 0; parts[i] != NULL; i++) {
+        gint64 id = g_ascii_strtoll(parts[i], NULL, 10);
+        for (gint j = 0; j < n; j++) {
+            if (ids[j] == id && !placed[j]) {
+                new_order[fill++] = j;
+                placed[j]         = TRUE;
+                break;
+            }
+        }
+    }
+    g_strfreev(parts);
+    for (gint i = 0; i < n; i++)
+        if (!placed[i])
+            new_order[fill++] = i;
+    gtk_list_store_reorder(lw->task_store, new_order);
+    g_free(new_order);
+    g_free(placed);
+    g_free(ids);
+}
+
+/* drag_handle_func() — cell data func for the drag handle column: applies
+ * the row stripe and draws the handle glyph, dimmed on id=0 rows.            */
+static void
+drag_handle_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
+                 GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
+{
+    task_row_bg_func(col, cell, model, iter, data);
+    gint64 id;
+    gtk_tree_model_get(model, iter, TL_ID, &id, -1);
+    g_object_set(cell,
+                 "text",       "\xe2\xa0\xbf",            /* ⠿ handle glyph */
+                 "foreground", id == 0 ? "#c0c0c0" : "#808080",
+                 NULL);
+}
+
+/* task_drag_set_cursor() — update the cursor on the task view's GdkWindow:
+ * "ns-resize" while over the drag handle column or while dragging, else
+ * reset to the window default.                                                */
+static void
+task_drag_set_cursor(GtkWidget *widget, BtLibrary *lw, gdouble x, gdouble y)
+{
+    GdkWindow  *win = gtk_widget_get_window(widget);
+    if (win == NULL) return;
+    gboolean want_resize = lw->drag_active;
+    if (!want_resize &&
+        bt_app_config_get_bool("task_list_manual_sort", FALSE)) {
+        GtkTreeViewColumn *over = NULL;
+        gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(widget),
+            (gint)x, (gint)y, NULL, &over, NULL, NULL);
+        GtkTreeViewColumn *cdrag =
+            g_object_get_data(G_OBJECT(lw->task_view), "bt-cdrag");
+        want_resize = (over != NULL && over == cdrag);
+    }
+    GdkCursor *cursor = want_resize
+        ? gdk_cursor_new_from_name(gtk_widget_get_display(widget),
+                                   "ns-resize")
+        : NULL;
+    gdk_window_set_cursor(win, cursor);
+    if (cursor) g_object_unref(cursor);
+}
+
+/* on_task_leave_notify() — restore the default cursor when the pointer
+ * leaves the task view (e.g. moving to another widget).                       */
+static gboolean
+on_task_leave_notify(GtkWidget *widget, GdkEventCrossing *ev, gpointer data)
+{
+    (void)ev; (void)data;
+    GdkWindow *win = gtk_widget_get_window(widget);
+    if (win) gdk_window_set_cursor(win, NULL);
+    return FALSE;
+}
+
+/* on_task_drag_motion() — when the pointer enters a different row, swap
+ * that row with the dragged row so the dragged item ends up under the
+ * cursor.  Uses get_path_at_pos (no hysteresis) so the swap fires the
+ * moment the pointer crosses a row boundary.                                  */
+static gboolean
+on_task_drag_motion(GtkWidget *widget, GdkEventMotion *ev, gpointer data)
+{
+    BtLibrary *lw = data;
+    task_drag_set_cursor(widget, lw, ev->x, ev->y);
+    if (!lw->drag_active || lw->drag_row_ref == NULL)
+        return FALSE;
+
+    GtkTreePath *at_path = NULL;
+    gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(widget),
+        1, (gint)ev->y, &at_path, NULL, NULL, NULL);
+    if (at_path == NULL)
+        return FALSE;
+
+    GtkTreePath *drag_path =
+        gtk_tree_row_reference_get_path(lw->drag_row_ref);
+    if (drag_path == NULL) { gtk_tree_path_free(at_path); return FALSE; }
+
+    if (gtk_tree_path_compare(at_path, drag_path) != 0) {
+        GtkTreeIter  at_it, drag_it;
+        GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
+        if (gtk_tree_model_get_iter(model, &at_it,   at_path) &&
+            gtk_tree_model_get_iter(model, &drag_it, drag_path)) {
+            gint64 at_id;
+            gtk_tree_model_get(model, &at_it, TL_ID, &at_id, -1);
+            if (at_id != 0) {
+                gint drag_idx = gtk_tree_path_get_indices(drag_path)[0];
+                gint at_idx   = gtk_tree_path_get_indices(at_path)[0];
+                if (at_idx < drag_idx)
+                    gtk_list_store_move_before(lw->task_store,
+                                              &drag_it, &at_it);
+                else
+                    gtk_list_store_move_after(lw->task_store,
+                                             &drag_it, &at_it);
+            }
+        }
+    }
+
+    gtk_tree_path_free(at_path);
+    gtk_tree_path_free(drag_path);
+    return FALSE;
+}
+
+/* on_task_drag_release() — button released: end the drag and persist the
+ * new row order.                                                              */
+static gboolean
+on_task_drag_release(GtkWidget *widget, GdkEventButton *ev, gpointer data)
+{
+    (void)widget; (void)ev;
+    BtLibrary *lw = data;
+    if (!lw->drag_active) return FALSE;
+    lw->drag_active = FALSE;
+    if (lw->drag_row_ref != NULL) {
+        gtk_tree_row_reference_free(lw->drag_row_ref);
+        lw->drag_row_ref = NULL;
+    }
+    task_view_save_manual_order(lw);
+    GdkWindow *win = gtk_widget_get_window(widget);
+    if (win) gdk_window_set_cursor(win, NULL);
+    return FALSE;
+}
+
+/* task_manual_sort_apply() — sync the task view to the current
+ * task_list_manual_sort config: show/hide drag handle, enable/disable
+ * column-header click-to-sort, and clear any active sort indicator.          */
+static void
+task_manual_sort_apply(BtLibrary *lw)
+{
+    gboolean manual =
+        bt_app_config_get_bool("task_list_manual_sort", FALSE);
+    GtkTreeViewColumn *cdrag =
+        g_object_get_data(G_OBJECT(lw->task_view), "bt-cdrag");
+    GtkTreeViewColumn *cdone =
+        g_object_get_data(G_OBJECT(lw->task_view), "bt-cdone");
+    GtkTreeViewColumn *cdesc =
+        g_object_get_data(G_OBJECT(lw->task_view), "bt-cdesc");
+    GtkTreeViewColumn *cdue  =
+        g_object_get_data(G_OBJECT(lw->task_view), "bt-cdue");
+    if (cdrag) gtk_tree_view_column_set_visible(cdrag, manual);
+    if (cdone) gtk_tree_view_column_set_clickable(cdone, !manual);
+    if (cdesc) gtk_tree_view_column_set_clickable(cdesc, !manual);
+    if (cdue)  gtk_tree_view_column_set_clickable(cdue,  !manual);
+    if (manual)
+        gtk_tree_sortable_set_sort_column_id(
+            GTK_TREE_SORTABLE(lw->task_store),
+            GTK_TREE_SORTABLE_UNSORTED_SORT_COLUMN_ID,
+            GTK_SORT_ASCENDING);
+}
+
+/* on_manual_sort_toggled() — "Manually Sorted" check item was activated:
+ * persist the mode and refresh the pane.                                      */
+static void
+on_manual_sort_toggled(GtkCheckMenuItem *item, gpointer data)
+{
+    (void)data;
+    BtLibrary *lw = g_object_get_data(G_OBJECT(item), "bt-lw");
+    if (!lw) return;
+    gboolean manual = gtk_check_menu_item_get_active(item);
+    bt_app_config_set("task_list_manual_sort", manual ? "1" : "0");
+    task_manual_sort_apply(lw);
+    refresh_tasks(lw);
 }
 
 /* on_column_toggled() — a column visibility check item was clicked: update
@@ -2572,6 +2874,19 @@ on_column_header_press(GtkWidget *btn, GdkEventButton *ev, gpointer data)
     if (ev->button != 3) return FALSE;
     BtLibrary *lw = data;
     GtkWidget *menu = gtk_menu_new();
+
+    /* "Manually Sorted" toggle at the top of the menu. */
+    GtkWidget *manual_item =
+        gtk_check_menu_item_new_with_label("Manually Sorted");
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(manual_item),
+        bt_app_config_get_bool("task_list_manual_sort", FALSE));
+    g_object_set_data(G_OBJECT(manual_item), "bt-lw", lw);
+    g_signal_connect(manual_item, "toggled",
+                     G_CALLBACK(on_manual_sort_toggled), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), manual_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu),
+                          gtk_separator_menu_item_new());
+
     GList *cols = gtk_tree_view_get_columns(GTK_TREE_VIEW(lw->task_view));
     for (GList *l = cols; l; l = l->next) {
         GtkTreeViewColumn *col   = l->data;
@@ -2846,6 +3161,20 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     g_signal_connect(lw->task_view, "button-press-event",
                      G_CALLBACK(on_task_button_press), lw);
 
+    /* Drag handle column — shown only in manual sort mode; the handle glyph
+     * is set by drag_handle_func rather than a model binding.                */
+    GtkCellRenderer   *drag_cell = gtk_cell_renderer_text_new();
+    g_object_set(drag_cell, "ypad", 8, "xpad", 4, NULL);
+    GtkTreeViewColumn *cdrag     = gtk_tree_view_column_new();
+    gtk_tree_view_column_set_title(cdrag, "");
+    gtk_tree_view_column_pack_start(cdrag, drag_cell, FALSE);
+    gtk_tree_view_column_set_cell_data_func(cdrag, drag_cell,
+                                            drag_handle_func, NULL, NULL);
+    gtk_tree_view_column_set_clickable(cdrag, FALSE);
+    gtk_tree_view_column_set_sizing(cdrag, GTK_TREE_VIEW_COLUMN_FIXED);
+    gtk_tree_view_column_set_fixed_width(cdrag, 26);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cdrag);
+
     /* Done checkbox column.  Every column's renderer also runs the
      * stripe data func — the alternating background must span the row.     */
     GtkCellRenderer *done_cell = gtk_cell_renderer_toggle_new();
@@ -2896,6 +3225,7 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
      * hidable (Task always shows); bt-colkey/bt-collabel drive the menu.
      * Store column refs on the view for task_columns_apply and the
      * realize-time header-button connection.                               */
+    g_object_set_data(G_OBJECT(lw->task_view), "bt-cdrag", cdrag);
     g_object_set_data(G_OBJECT(lw->task_view), "bt-cdone", cdone);
     g_object_set_data(G_OBJECT(lw->task_view), "bt-cdesc", cdesc);
     g_object_set_data(G_OBJECT(lw->task_view), "bt-cdue",  cdue);
@@ -2903,7 +3233,7 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     g_object_set_data(G_OBJECT(cdone), "bt-collabel", (gpointer)"Completed");
     g_object_set_data(G_OBJECT(cdue),  "bt-colkey",   (gpointer)"due");
     g_object_set_data(G_OBJECT(cdue),  "bt-collabel", (gpointer)"Due Date");
-    GtkTreeViewColumn *header_cols[] = { cdone, cdesc, cdue };
+    GtkTreeViewColumn *header_cols[] = { cdrag, cdone, cdesc, cdue };
     for (gsize i = 0; i < G_N_ELEMENTS(header_cols); i++) {
         GtkWidget *hbtn = gtk_tree_view_column_get_button(header_cols[i]);
         if (hbtn)
@@ -2911,6 +3241,17 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
                              G_CALLBACK(on_column_header_press), lw);
     }
     task_columns_apply(lw);
+    task_manual_sort_apply(lw);   /* show/hide cdrag per persisted setting  */
+
+    /* Motion, release, and leave events for live-drag reorder + cursor. */
+    gtk_widget_add_events(lw->task_view,
+                          GDK_POINTER_MOTION_MASK | GDK_LEAVE_NOTIFY_MASK);
+    g_signal_connect(lw->task_view, "motion-notify-event",
+                     G_CALLBACK(on_task_drag_motion), lw);
+    g_signal_connect(lw->task_view, "button-release-event",
+                     G_CALLBACK(on_task_drag_release), lw);
+    g_signal_connect(lw->task_view, "leave-notify-event",
+                     G_CALLBACK(on_task_leave_notify), lw);
 
     lw->task_scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(lw->task_scroll),
