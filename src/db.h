@@ -1,10 +1,13 @@
 /* ===========================================================================
  * db.h — SQLite storage for Hacienda
  *
- * Schema (PRAGMA user_version = 4; v2 added lists.emoji, v3 the five
- * Google-mirror task columns, v4 tasks.priority):
+ * Schema (PRAGMA user_version = 5; v2 added lists.emoji, v3 the five
+ * Google-mirror task columns, v4 tasks.priority, v5 list_groups +
+ * lists.group_id):
  *
- *   lists        id, name, emoji, position, gtasks_id, updated_at, deleted
+ *   list_groups  id, name, position              (local-only; never synced)
+ *   lists        id, name, emoji, position, gtasks_id, updated_at, deleted,
+ *                group_id (FK → list_groups.id; NULL = ungrouped)
  *   tasks        id, list_id, parent_id (NULL = top-level; ONE level of
  *                nesting only — a subtask can never be a parent),
  *                title, notes, due (unix local midnight; 0 = none), done,
@@ -50,8 +53,16 @@ typedef struct {
     gchar    *gtasks_id;             /* Google tasklist id, or NULL         */
     gint64    updated_at;
     gint      position;
+    gint64    group_id;              /* 0 = ungrouped                       */
     gboolean  deleted;
 } BtList;
+
+/* One list group (local-only; never synced to Google).  Strings owned.     */
+typedef struct {
+    gint64  id;
+    gchar  *name;
+    gint    position;
+} BtGroup;
 
 /* One task or subtask.  Strings are owned by the struct.  The last five
  * fields mirror read-only (or Google-managed) Task resource data pulled
@@ -289,5 +300,26 @@ void bt_db_task_purge(BtDatabase *db, gint64 id);   /* + its subtasks       */
 void bt_ptr_array_free_lists(GPtrArray *a);
 void bt_ptr_array_free_tasks(GPtrArray *a);
 void bt_ptr_array_free_attachments(GPtrArray *a);
+
+/* --------------------------------- groups -------------------------------- */
+
+void      bt_group_free(BtGroup *g);
+void      bt_ptr_array_free_groups(GPtrArray *a);
+
+/* All groups, ordered by position then name.                                */
+GPtrArray *bt_db_groups(BtDatabase *db);
+
+/* Create a group.  Returns the new id, or 0 on failure.                     */
+gint64    bt_db_group_create(BtDatabase *db, const gchar *name);
+
+/* Delete a group: un-groups all its lists (sets group_id = NULL).           */
+void      bt_db_group_delete(BtDatabase *db, gint64 id);
+
+/* Rename a group.                                                           */
+void      bt_db_group_rename(BtDatabase *db, gint64 id, const gchar *name);
+
+/* Move a list into a group (group_id 0 = ungrouped → sets NULL).           */
+void      bt_db_list_set_group(BtDatabase *db, gint64 list_id,
+                               gint64 group_id);
 
 #endif /* BT_DB_H */

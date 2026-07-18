@@ -135,6 +135,24 @@ bt_ptr_array_free_lists(GPtrArray *a)
     g_ptr_array_free(a, TRUE);
 }
 
+/* bt_group_free() / bt_ptr_array_free_groups() — free a BtGroup.            */
+void
+bt_group_free(BtGroup *g)
+{
+    if (g == NULL) return;
+    g_free(g->name);
+    g_free(g);
+}
+
+void
+bt_ptr_array_free_groups(GPtrArray *a)
+{
+    if (a == NULL) return;
+    for (guint i = 0; i < a->len; i++)
+        bt_group_free(g_ptr_array_index(a, i));
+    g_ptr_array_free(a, TRUE);
+}
+
 /* bt_ptr_array_free_tasks() — free an array of BtTask*.  NULL-safe.         */
 void
 bt_ptr_array_free_tasks(GPtrArray *a)
@@ -239,6 +257,11 @@ bt_db_open(const gchar *path, GError **err)
     exec(db,
         "CREATE TABLE IF NOT EXISTS bn_priority ("
         "  ref TEXT PRIMARY KEY)");   /* high-priority Blue Notes items   */
+    exec(db,
+        "CREATE TABLE IF NOT EXISTS list_groups ("
+        "  id       INTEGER PRIMARY KEY,"
+        "  name     TEXT    NOT NULL DEFAULT '',"
+        "  position INTEGER NOT NULL DEFAULT 0)");
     exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_list "
              "ON tasks(list_id, parent_id, position)");
 
@@ -269,7 +292,11 @@ bt_db_open(const gchar *path, GError **err)
     if (uv < 4)
         sqlite3_exec(sq, "ALTER TABLE tasks ADD COLUMN priority "
                      "INTEGER NOT NULL DEFAULT 0", NULL, NULL, NULL);
-    exec(db, "PRAGMA user_version = 4");
+    if (uv < 5)
+        sqlite3_exec(sq,
+            "ALTER TABLE lists ADD COLUMN group_id INTEGER "
+            "REFERENCES list_groups(id)", NULL, NULL, NULL);
+    exec(db, "PRAGMA user_version = 5");
     return db;
 }
 
@@ -298,6 +325,7 @@ read_list(sqlite3_stmt *st)
     l->updated_at = sqlite3_column_int64(st, 4);
     l->deleted    = sqlite3_column_int(st, 5) != 0;
     l->emoji      = column_text_dup(st, 6);
+    l->group_id   = sqlite3_column_int64(st, 7);
     if (l->name == NULL)
         l->name = g_strdup("");
     if (l->emoji == NULL)
@@ -307,7 +335,7 @@ read_list(sqlite3_stmt *st)
 
 /* The shared column list for read_list().                                   */
 #define LIST_COLS "id, name, position, gtasks_id, updated_at, deleted, " \
-                  "emoji"
+                  "emoji, COALESCE(group_id, 0)"
 
 /* ---------------------------------------------------------------------------
  * bt_db_lists() — all (visible) lists (see db.h).  Alphabetical until
@@ -451,6 +479,95 @@ bt_db_list_restore(BtDatabase *db, gint64 id)
         "  WHERE list_id = %lld AND deleted = 1;"
         "UPDATE lists SET deleted = 0, updated_at = %lld WHERE id = %lld;",
         (long long)now(), (long long)id, (long long)now(), (long long)id);
+    exec_txn(db, sql);
+    sqlite3_free(sql);
+}
+
+/* ---------------------------------------------------------------------------
+ * Group CRUD.
+ * ------------------------------------------------------------------------- */
+
+/* bt_db_groups() — all groups, ordered by position then name.               */
+GPtrArray *
+bt_db_groups(BtDatabase *db)
+{
+    GPtrArray *out = g_ptr_array_new();
+    const gchar *sql =
+        "SELECT id, name, position FROM list_groups "
+        "ORDER BY position, lower(name)";
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK)
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            BtGroup *g = g_new0(BtGroup, 1);
+            g->id       = sqlite3_column_int64(st, 0);
+            g->name     = column_text_dup(st, 1);
+            if (g->name == NULL) g->name = g_strdup("");
+            g->position = sqlite3_column_int(st, 2);
+            g_ptr_array_add(out, g);
+        }
+    sqlite3_finalize(st);
+    return out;
+}
+
+/* bt_db_group_create() — insert a new group; returns rowid or 0.            */
+gint64
+bt_db_group_create(BtDatabase *db, const gchar *name)
+{
+    sqlite3_stmt *st = NULL;
+    gint64 id = 0;
+    if (sqlite3_prepare_v2(db->sq,
+            "INSERT INTO list_groups(name) VALUES(?)", -1, &st, NULL)
+            == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
+        if (step_done(db, st, "group create"))
+            id = sqlite3_last_insert_rowid(db->sq);
+    } else {
+        step_done(db, NULL, "group create");
+    }
+    sqlite3_finalize(st);
+    return id;
+}
+
+/* bt_db_group_delete() — remove the group; un-groups all its lists.         */
+void
+bt_db_group_delete(BtDatabase *db, gint64 id)
+{
+    gchar *sql = sqlite3_mprintf(
+        "UPDATE lists SET group_id = NULL WHERE group_id = %lld;"
+        "DELETE FROM list_groups WHERE id = %lld;",
+        (long long)id, (long long)id);
+    exec_txn(db, sql);
+    sqlite3_free(sql);
+}
+
+/* bt_db_group_rename() — update the group's name.                           */
+void
+bt_db_group_rename(BtDatabase *db, gint64 id, const gchar *name)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db->sq,
+            "UPDATE list_groups SET name = ? WHERE id = ?", -1, &st, NULL)
+            == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 2, id);
+        step_done(db, st, "group rename");
+    } else {
+        step_done(db, NULL, "group rename");
+    }
+    sqlite3_finalize(st);
+}
+
+/* bt_db_list_set_group() — assign a list to a group (0 = ungrouped).       */
+void
+bt_db_list_set_group(BtDatabase *db, gint64 list_id, gint64 group_id)
+{
+    gchar *sql = group_id == 0
+        ? sqlite3_mprintf(
+              "UPDATE lists SET group_id = NULL WHERE id = %lld;",
+              (long long)list_id)
+        : sqlite3_mprintf(
+              "UPDATE lists SET group_id = %lld WHERE id = %lld;",
+              (long long)group_id, (long long)list_id);
     exec_txn(db, sql);
     sqlite3_free(sql);
 }
