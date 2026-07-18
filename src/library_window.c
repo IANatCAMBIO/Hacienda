@@ -1998,9 +1998,13 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
                 GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
                 GtkTreeIter it;
                 gint64 id = 0;
+                gchar *ref = NULL;
                 if (gtk_tree_model_get_iter(model, &it, path))
-                    gtk_tree_model_get(model, &it, TL_ID, &id, -1);
-                if (id != 0) {
+                    gtk_tree_model_get(model, &it,
+                                       TL_ID, &id, TL_REF, &ref, -1);
+                gboolean is_bn = (ref != NULL);
+                g_free(ref);
+                if (id != 0 || is_bn) {
                     lw->drag_active = TRUE;
                     if (lw->drag_row_ref != NULL)
                         gtk_tree_row_reference_free(lw->drag_row_ref);
@@ -2648,14 +2652,17 @@ view_order_key(BtLibrary *lw)
         return g_strdup("manual_order_pinned");
     case SB_KIND_TODAY:
         return g_strdup("manual_order_today");
+    case SB_KIND_BN_ACTIONS:
+        return g_strdup("manual_order_bn_actions");
     default:
         return NULL;
     }
 }
 
 /* task_view_save_manual_order() — serialize the task pane's current row
- * order (real tasks only; id=0 Blue Notes rows are skipped) to config as
- * a comma-separated id list.                                                  */
+ * order to config as a comma-separated list.  Real task rows are encoded as
+ * their numeric id; BN rows as their "NOTEID:ORD" ref (which contains a
+ * colon, making the two forms unambiguous on reload).                         */
 static void
 task_view_save_manual_order(BtLibrary *lw)
 {
@@ -2670,9 +2677,12 @@ task_view_save_manual_order(BtLibrary *lw)
             gchar *ref;
             gtk_tree_model_get(model, &iter,
                                TL_ID, &id, TL_REF, &ref, -1);
-            if (id != 0 && ref == NULL) {
+            if (id != 0) {
                 if (s->len > 0) g_string_append_c(s, ',');
                 g_string_append_printf(s, "%" G_GINT64_FORMAT, id);
+            } else if (ref != NULL) {
+                if (s->len > 0) g_string_append_c(s, ',');
+                g_string_append(s, ref);
             }
             g_free(ref);
         } while (gtk_tree_model_iter_next(model, &iter));
@@ -2697,29 +2707,45 @@ task_view_apply_manual_order(BtLibrary *lw)
     gint n = gtk_tree_model_iter_n_children(model, NULL);
     if (n <= 1) { g_free(saved); return; }
 
-    /* Snapshot current row IDs (in display order). */
-    gint64      *ids      = g_new(gint64, n);
+    /* Snapshot current row IDs and BN refs (in display order). */
+    gint64  *ids  = g_new(gint64, n);
+    gchar  **refs = g_new0(gchar *, n);
     GtkTreeIter  iter;
     gtk_tree_model_get_iter_first(model, &iter);
     for (gint i = 0; i < n; i++) {
-        gtk_tree_model_get(model, &iter, TL_ID, &ids[i], -1);
+        gtk_tree_model_get(model, &iter,
+                           TL_ID, &ids[i], TL_REF, &refs[i], -1);
         gtk_tree_model_iter_next(model, &iter);
     }
 
-    /* Build new_order: saved ids first (in saved sequence), remainder
-     * (new tasks not yet in saved list, plus BN rows) appended at tail.      */
+    /* Build new_order: saved entries first (in saved sequence), remainder
+     * (new rows not yet in saved list) appended at tail.  Tokens containing
+     * a colon are BN refs (NOTEID:ORD); pure-digit tokens are task ids.      */
     gint     *new_order = g_new(gint, n);
     gboolean *placed    = g_new0(gboolean, n);
     gint      fill      = 0;
     gchar   **parts     = g_strsplit(saved, ",", -1);
     g_free(saved);
     for (gint i = 0; parts[i] != NULL; i++) {
-        gint64 id = g_ascii_strtoll(parts[i], NULL, 10);
-        for (gint j = 0; j < n; j++) {
-            if (ids[j] == id && !placed[j]) {
-                new_order[fill++] = j;
-                placed[j]         = TRUE;
-                break;
+        if (strchr(parts[i], ':') != NULL) {
+            /* BN ref token — match by ref string. */
+            for (gint j = 0; j < n; j++) {
+                if (!placed[j] && refs[j] != NULL &&
+                    strcmp(refs[j], parts[i]) == 0) {
+                    new_order[fill++] = j;
+                    placed[j]         = TRUE;
+                    break;
+                }
+            }
+        } else {
+            /* Integer task id token. */
+            gint64 id = g_ascii_strtoll(parts[i], NULL, 10);
+            for (gint j = 0; j < n; j++) {
+                if (ids[j] == id && !placed[j]) {
+                    new_order[fill++] = j;
+                    placed[j]         = TRUE;
+                    break;
+                }
             }
         }
     }
@@ -2731,20 +2757,21 @@ task_view_apply_manual_order(BtLibrary *lw)
     g_free(new_order);
     g_free(placed);
     g_free(ids);
+    for (gint i = 0; i < n; i++) g_free(refs[i]);
+    g_free(refs);
 }
 
 /* drag_handle_func() — cell data func for the drag handle column: applies
- * the row stripe and draws the handle glyph, dimmed on id=0 rows.            */
+ * the row stripe and draws the handle glyph, dimmed on rows that can't be
+ * moved (currently none — both real tasks and BN items are draggable).       */
 static void
 drag_handle_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
                  GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
 {
     task_row_bg_func(col, cell, model, iter, data);
-    gint64 id;
-    gtk_tree_model_get(model, iter, TL_ID, &id, -1);
     g_object_set(cell,
                  "text",       "\xe2\xa0\xbf",            /* ⠿ handle glyph */
-                 "foreground", id == 0 ? "#c0c0c0" : "#808080",
+                 "foreground", "#808080",
                  NULL);
 }
 
@@ -2830,13 +2857,20 @@ on_task_drag_motion(GtkWidget *widget, GdkEventMotion *ev, gpointer data)
             if (gtk_tree_model_get_iter(model, &at_it,   at_path) &&
                 gtk_tree_model_get_iter(model, &drag_it, drag_path)) {
                 gint64 at_id;
-                gtk_tree_model_get(model, &at_it, TL_ID, &at_id, -1);
+                gchar *at_ref = NULL;
+                gtk_tree_model_get(model, &at_it,
+                                   TL_ID, &at_id, TL_REF, &at_ref, -1);
+                gboolean at_is_bn = (at_ref != NULL);
+                g_free(at_ref);
 
-                /* BN rows (id=0) can't be drag targets.  When the cursor
-                 * is over a BN row, skip the entire contiguous BN section
-                 * and find the nearest real task row in the travel
-                 * direction so the drag row can move past them.             */
-                if (at_id == 0) {
+                gint64 drag_id;
+                gtk_tree_model_get(model, &drag_it, TL_ID, &drag_id, -1);
+
+                /* When a real task is dragged over a BN row, skip past the
+                 * entire contiguous BN section to the nearest real task so
+                 * real tasks move past them in one step.  When a BN item is
+                 * dragged, every row (real or BN) is a valid swap target.   */
+                if (at_is_bn && drag_id != 0) {
                     gint drag_idx0 = gtk_tree_path_get_indices(drag_path)[0];
                     gint at_idx0   = gtk_tree_path_get_indices(at_path)[0];
                     gboolean going_dn = at_idx0 > drag_idx0;
@@ -2847,6 +2881,7 @@ on_task_drag_motion(GtkWidget *widget, GdkEventMotion *ev, gpointer data)
                         gtk_tree_model_get(model, &scan, TL_ID, &sid, -1);
                         if (sid != 0) {
                             at_id = sid;
+                            at_is_bn = FALSE;
                             at_it = scan;
                             gtk_tree_path_free(at_path);
                             at_path = gtk_tree_model_get_path(model, &at_it);
@@ -2855,7 +2890,7 @@ on_task_drag_motion(GtkWidget *widget, GdkEventMotion *ev, gpointer data)
                     }
                 }
 
-                if (at_id != 0) {
+                if (at_id != 0 || at_is_bn) {
                     gint drag_idx = gtk_tree_path_get_indices(drag_path)[0];
                     gint at_idx   = gtk_tree_path_get_indices(at_path)[0];
                     /* Lock the target BEFORE the move; the row ref will
