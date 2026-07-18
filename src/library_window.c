@@ -79,6 +79,7 @@ typedef struct {
     GtkWidget    *status_right;      /* latest event message label          */
     GtkWidget    *sync_item;         /* the Lists-menu Sync item            */
     GtkWidget    *hide_done_item;    /* completed-visibility toggle button  */
+    GtkWidget    *manual_sort_item;  /* manual-sort mode toggle button      */
     gint          sel_kind;
     gint64        sel_id;
     gboolean      populating;
@@ -281,8 +282,10 @@ scroll_keep_queue(GtkWidget *view)
  * refresh_sidebar() — rebuild the sidebar and restore the selection.
  * ------------------------------------------------------------------------- */
 
-static gint64 bn_embed_list(BtLibrary *lw);
-static void   task_view_apply_manual_order(BtLibrary *lw);
+static gint64   bn_embed_list(BtLibrary *lw);
+static void     task_view_apply_manual_order(BtLibrary *lw);
+static void     task_manual_sort_apply(BtLibrary *lw);
+static gboolean on_column_header_press(GtkWidget *, GdkEventButton *, gpointer);
 
 /* sidebar_show_pinned() — whether the Pinned Tasks meta row should
  * exist: any pinned task, or (while the integration is on) any pinned
@@ -925,6 +928,39 @@ on_toggle_done_visible(GtkWidget *w, gpointer data)
     gboolean show = !bt_app_config_get_bool("show_completed", TRUE);
     bt_app_config_set("show_completed", show ? "1" : "0");
     hide_done_icon_refresh(lw);
+    refresh_tasks(lw);
+}
+
+/* manual_sort_icon_refresh() — swap the sort-mode button's icon and tooltip
+ * to reflect the current state: menu.png in manual mode (action = switch to
+ * column sort), slide.png in column-sort mode (action = switch to manual).  */
+static void
+manual_sort_icon_refresh(BtLibrary *lw)
+{
+    gboolean manual = bt_app_config_get_bool("task_list_manual_sort", FALSE);
+    GtkWidget *icon = bt_app_icon_image_sized(lw->app,
+        manual ? "menu" : "slide", 24);
+    if (icon) {
+        gtk_widget_show(icon);
+        gtk_tool_button_set_icon_widget(
+            GTK_TOOL_BUTTON(lw->manual_sort_item), icon);
+    }
+    gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->manual_sort_item),
+        manual ? "Switch to column sorting"
+               : "Switch to manual drag sorting");
+}
+
+/* on_toggle_manual_sort() — toolbar button that flips task_list_manual_sort
+ * and refreshes the pane.                                                   */
+static void
+on_toggle_manual_sort(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    BtLibrary *lw = data;
+    gboolean manual = !bt_app_config_get_bool("task_list_manual_sort", FALSE);
+    bt_app_config_set("task_list_manual_sort", manual ? "1" : "0");
+    task_manual_sort_apply(lw);
+    manual_sort_icon_refresh(lw);
     refresh_tasks(lw);
 }
 
@@ -1979,6 +2015,13 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
         }
     }
 
+    /* Right-click in the header area: event->window is the header GdkWindow,
+     * not the bin_window, regardless of column clickability.  Detect this
+     * by window identity and route to the column/sort menu.                 */
+    if (event->button == 3 &&
+        event->window != gtk_tree_view_get_bin_window(GTK_TREE_VIEW(view)))
+        return on_column_header_press(view, event, lw);
+
     if (event->button != 3 || lw->sel_kind == SB_KIND_BN_ACTIONS)
         return FALSE;
 
@@ -2888,20 +2931,6 @@ task_manual_sort_apply(BtLibrary *lw)
             GTK_SORT_ASCENDING);
 }
 
-/* on_manual_sort_toggled() — "Manually Sorted" check item was activated:
- * persist the mode and refresh the pane.                                      */
-static void
-on_manual_sort_toggled(GtkCheckMenuItem *item, gpointer data)
-{
-    (void)data;
-    BtLibrary *lw = g_object_get_data(G_OBJECT(item), "bt-lw");
-    if (!lw) return;
-    gboolean manual = gtk_check_menu_item_get_active(item);
-    bt_app_config_set("task_list_manual_sort", manual ? "1" : "0");
-    task_manual_sort_apply(lw);
-    refresh_tasks(lw);
-}
-
 /* on_column_toggled() — a column visibility check item was clicked: update
  * the column visibility and persist in config.                              */
 static void
@@ -2947,18 +2976,6 @@ on_column_header_press(GtkWidget *btn, GdkEventButton *ev, gpointer data)
     if (ev->button != 3) return FALSE;
     BtLibrary *lw = data;
     GtkWidget *menu = gtk_menu_new();
-
-    /* "Manually Sorted" toggle at the top of the menu. */
-    GtkWidget *manual_item =
-        gtk_check_menu_item_new_with_label("Manually Sorted");
-    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(manual_item),
-        bt_app_config_get_bool("task_list_manual_sort", FALSE));
-    g_object_set_data(G_OBJECT(manual_item), "bt-lw", lw);
-    g_signal_connect(manual_item, "toggled",
-                     G_CALLBACK(on_manual_sort_toggled), NULL);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), manual_item);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu),
-                          gtk_separator_menu_item_new());
 
     GList *cols = gtk_tree_view_get_columns(GTK_TREE_VIEW(lw->task_view));
     for (GList *l = cols; l; l = l->next) {
@@ -3061,6 +3078,10 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
         "hidden", "\xf0\x9f\x91\x81", "Completed",
         "Hide completed tasks", G_CALLBACK(on_toggle_done_visible)));
     hide_done_icon_refresh(lw);      /* the persisted state's icon          */
+    lw->manual_sort_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
+        "menu", "\xe2\x89\x8b", "Sort Mode",
+        "Switch to manual drag sorting", G_CALLBACK(on_toggle_manual_sort)));
+    manual_sort_icon_refresh(lw);    /* the persisted state's tooltip       */
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                        gtk_separator_tool_item_new(), -1);
 
