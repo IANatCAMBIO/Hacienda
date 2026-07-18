@@ -1858,6 +1858,53 @@ on_ctx_move(GtkWidget *item, gpointer data)
     }
 }
 
+/* on_ctx_bn_set_pinned() / on_ctx_bn_set_priority() — pin/priority actions
+ * for embedded Blue Notes rows; the ref rides on the item as "bt-ref",
+ * the boolean as "bt-flag".                                                  */
+static void
+on_ctx_bn_set_done(GtkWidget *item, gpointer data)
+{
+    BtLibrary *lw = data;
+    const gchar *ref = g_object_get_data(G_OBJECT(item), "bt-ref");
+    gboolean done = GPOINTER_TO_INT(
+        g_object_get_data(G_OBJECT(item), "bt-flag"));
+    gchar *err = NULL;
+    if (bt_bnotes_action_set_done(ref, done, &err)) {
+        bt_app_status(lw->app, "Updated in Blue Notes");
+        full_refresh(lw);
+    } else {
+        bt_app_status(lw->app, "%s",
+                      err != NULL ? err : "update failed");
+    }
+    g_free(err);
+}
+
+static void
+on_ctx_bn_set_pinned(GtkWidget *item, gpointer data)
+{
+    BtLibrary *lw = data;
+    const gchar *ref = g_object_get_data(G_OBJECT(item), "bt-ref");
+    gboolean pinned = GPOINTER_TO_INT(
+        g_object_get_data(G_OBJECT(item), "bt-flag"));
+    bt_db_bn_pin_set(lw->app->db, ref, pinned);
+    full_refresh(lw);
+    bt_app_status(lw->app, "%s action item",
+                  pinned ? "Pinned" : "Unpinned");
+}
+
+static void
+on_ctx_bn_set_priority(GtkWidget *item, gpointer data)
+{
+    BtLibrary *lw = data;
+    const gchar *ref = g_object_get_data(G_OBJECT(item), "bt-ref");
+    gboolean priority = GPOINTER_TO_INT(
+        g_object_get_data(G_OBJECT(item), "bt-flag"));
+    bt_db_bn_priority_set(lw->app->db, ref, priority);
+    full_refresh(lw);
+    bt_app_status(lw->app, "%s high priority on action item",
+                  priority ? "Set" : "Cleared");
+}
+
 /* ---------------------------------------------------------------------------
  * on_task_button_press() — right-click on a task row: keep an existing
  * multi-selection when clicked inside it (else select just that row)
@@ -1887,7 +1934,63 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
     GArray *ids = selected_task_ids(lw);
     if (ids->len == 0) {
         g_array_unref(ids);
-        return FALSE;
+        /* The row may be an embedded Blue Notes item (TL_REF set, id 0).
+         * Those are excluded from selected_task_ids; show a limited menu
+         * with just Pin/Unpin and High Priority (both local-only).          */
+        GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
+        GtkTreeSelection *sel2 =
+            gtk_tree_view_get_selection(GTK_TREE_VIEW(view));
+        GList *rows = gtk_tree_selection_get_selected_rows(sel2, &model);
+        if (rows == NULL)
+            return FALSE;
+        GtkTreeIter iter;
+        gchar *ref = NULL;
+        gboolean row_done = FALSE;
+        if (gtk_tree_model_get_iter(model, &iter, rows->data))
+            gtk_tree_model_get(model, &iter,
+                               TL_REF, &ref, TL_DONE, &row_done, -1);
+        g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
+        if (ref == NULL)
+            return FALSE;
+        gboolean pinned   = bt_db_bn_pin_get(lw->app->db, ref);
+        gboolean priority = bt_db_bn_priority_get(lw->app->db, ref);
+        GtkWidget *bn_menu = gtk_menu_new();
+        gtk_menu_attach_to_widget(GTK_MENU(bn_menu), view, NULL);
+        g_signal_connect(bn_menu, "selection-done",
+                         G_CALLBACK(gtk_widget_destroy), NULL);
+        GtkWidget *done_item = gtk_menu_item_new_with_label(
+            row_done ? "Mark Incomplete" : "Mark Complete");
+        g_object_set_data_full(G_OBJECT(done_item), "bt-ref",
+                               g_strdup(ref), g_free);
+        g_object_set_data(G_OBJECT(done_item), "bt-flag",
+                          GINT_TO_POINTER(!row_done));
+        g_signal_connect(done_item, "activate",
+                         G_CALLBACK(on_ctx_bn_set_done), lw);
+        gtk_menu_shell_append(GTK_MENU_SHELL(bn_menu), done_item);
+        gtk_menu_shell_append(GTK_MENU_SHELL(bn_menu),
+                              gtk_separator_menu_item_new());
+        GtkWidget *pin_item = gtk_menu_item_new_with_label(
+            pinned ? "Unpin Task" : "Pin Task");
+        g_object_set_data_full(G_OBJECT(pin_item), "bt-ref",
+                               g_strdup(ref), g_free);
+        g_object_set_data(G_OBJECT(pin_item), "bt-flag",
+                          GINT_TO_POINTER(!pinned));
+        g_signal_connect(pin_item, "activate",
+                         G_CALLBACK(on_ctx_bn_set_pinned), lw);
+        gtk_menu_shell_append(GTK_MENU_SHELL(bn_menu), pin_item);
+        GtkWidget *pri_item = gtk_menu_item_new_with_label(
+            priority ? "Clear High Priority" : "Set High Priority");
+        g_object_set_data_full(G_OBJECT(pri_item), "bt-ref",
+                               g_strdup(ref), g_free);
+        g_object_set_data(G_OBJECT(pri_item), "bt-flag",
+                          GINT_TO_POINTER(!priority));
+        g_signal_connect(pri_item, "activate",
+                         G_CALLBACK(on_ctx_bn_set_priority), lw);
+        gtk_menu_shell_append(GTK_MENU_SHELL(bn_menu), pri_item);
+        gtk_widget_show_all(bn_menu);
+        gtk_menu_popup_at_pointer(GTK_MENU(bn_menu), (GdkEvent *)event);
+        g_free(ref);
+        return TRUE;
     }
     gboolean single = ids->len == 1;
     BtTask *t = single
@@ -1899,9 +2002,14 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
     g_signal_connect(menu, "selection-done",
                      G_CALLBACK(gtk_widget_destroy), NULL);
 
-    /* Mark Complete / Mark Incomplete — the bulk staples.                   */
-    ctx_done_item(lw, menu, ids, single, TRUE);
-    ctx_done_item(lw, menu, ids, single, FALSE);
+    /* Mark Complete / Mark Incomplete — single row: only the applicable
+     * direction; multi: both (selection may be mixed).                      */
+    if (single && t != NULL)
+        ctx_done_item(lw, menu, ids, TRUE, !t->done);
+    else {
+        ctx_done_item(lw, menu, ids, FALSE, TRUE);
+        ctx_done_item(lw, menu, ids, FALSE, FALSE);
+    }
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu),
                           gtk_separator_menu_item_new());
