@@ -211,6 +211,17 @@ on_forecast_toggled(GtkWidget *w, gpointer data)
 /* on_bold_titles_toggled() — Appearance: bold task titles on/off,
  * applied live (the task pane re-renders its markup).                       */
 static void
+on_due_today_overdue_toggled(GtkWidget *w, gpointer data)
+{
+    BtSettings *sw = data;
+    if (sw->loading)
+        return;
+    gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
+    bt_app_config_set("due_today_show_overdue", on ? "1" : "0");
+    bt_app_notify_changed(sw->app);
+}
+
+static void
 on_bold_titles_toggled(GtkWidget *w, gpointer data)
 {
     BtSettings *sw = data;
@@ -459,6 +470,14 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     g_signal_connect(forecast_check, "toggled",
                      G_CALLBACK(on_forecast_toggled), sw);
     gtk_box_pack_start(GTK_BOX(vbox), forecast_check, FALSE, FALSE, 0);
+
+    GtkWidget *overdue_check = gtk_check_button_new_with_label(
+        "Include all past-due tasks in the Due Today view");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(overdue_check),
+        bt_app_config_get_bool("due_today_show_overdue", FALSE));
+    g_signal_connect(overdue_check, "toggled",
+                     G_CALLBACK(on_due_today_overdue_toggled), sw);
+    gtk_box_pack_start(GTK_BOX(vbox), overdue_check, FALSE, FALSE, 0);
 
     /* Toolbar style: icons / text below icons / text only.  Applies live
      * to every registered toolbar; also reachable by right-clicking any
