@@ -1,23 +1,28 @@
 # Hacienda
 
-Hacienda is my take on an Apple Reminders–style task list, coded in
-classic C with GTK3 and SQLite — the companion app to
+hacienda /hä″sē-ĕn′də, ä″sē-/
+noun
+
+    1. A large estate in a Spanish-speaking region.  
+    2. The house of the owner of such an estate.  
+    3. A large estate where work of any kind is done, as agriculture, manufacturing, mining, or raising of animals; a cultivated farm, with a good house, in distinction from a farming establishment with rude huts for herdsmen, etc.; -- a word used in Spanish-American regions. 
+
+Like a traditional hacienda, this app is desinged to help you get things done. 
+
+Make lists of things. If your things are tasks, you can give them a due date. If the task is too big, break it down into subtasks.
+
+Hacienda is written in classic C with GTK3 and SQLite. It is a companion app to
 [Blue Notes](https://github.com/IANatCAMBIO/blue_notes), built the same way and **with the help
-of Claude Code for edits, testing, and code organization**. No
-Electron or interpreted code. Low resource usage, and runs the same on
-macOS and Linux.
+of Claude Code for edits, testing, and code organization**. 
+No Electron or interpreted code. 
+Low resource usage, and runs on macOS and Linux.
 
 ![Hacienda](Screenshot.png)
 
-TLDR; your tasks live in a single SQLite file you can take anywhere.
-You organize them in a Library window — lists in the sidebar (plus
-rolled-up views for pinned, due-today and due-tomorrow tasks across
-every list), tasks as tall rows that show the notes preview, subtasks
-and a color-coded due date at a glance — and each task opens in its
-own editor window: notes, one level of subtasks, file attachments, a
-due date typed or picked from a calendar. It syncs both ways with
-Google Tasks, and if you keep meeting notes in Blue Notes, its `!` action items can appear
-right in the sidebar, checkable from here.
+TLDR; Your tasks live in a single SQLite file you can take anywhere.
+You organize them in a Library window — lists in the sidebar, tasks in a listview. 
+Add subtasks and a color-coded due date to each item. Hacienda, also syncs both ways with
+Google Tasks and Blue Notes action items. 
 
 Want more detail?
 
@@ -29,46 +34,19 @@ Want more detail?
 
 ## Syncing with Google Tasks
 
-Press **Sync** and sign in once: the app opens your browser for
-Google's consent page and receives its tokens over a localhost
-redirect (RFC 8252 + PKCE). After that, syncs run silently — a
-refresh token scoped to Google Tasks only is kept in `hacienda.ini`,
-and the browser never reappears unless you Sign Out or revoke the
-grant at myaccount.google.com/permissions.
+Open the Settings window to enable Google Tasks sync and login. Once authenticated,
+Hacienda will automatically sync on the interval specified in settings. 
 
-Building it yourself? You also need to give your build an OAuth
-client — it identifies the app to Google and grants nothing by
-itself. The recommended route is baking it in via
-`client_credentials.mk` (one-time setup, then every build just
-works):
+## Syncing with Blue Notes
 
-1. In the [Google Cloud console](https://console.cloud.google.com/),
-   create a project (any name) and enable the **Google Tasks API**
-   (*APIs & Services → Library*).
-2. Configure the OAuth consent screen (*APIs & Services → OAuth
-   consent screen*) — the app name you enter there is what the
-   browser's consent page will show.
-3. Create the client (*APIs & Services → Credentials → Create
-   Credentials → OAuth client ID*, application type **Desktop app**)
-   and note the client id and secret.
-4. In the source directory:
-   `cp client_credentials.mk.example client_credentials.mk`, fill in
-   the two values, then `make clean && make`.
+You can also enable sync with Blue Notes in the Settings window. Just specify the path to 
+your Blue Notes binary, and tell Hacienda where to put the Action Items. 
 
-`client_credentials.mk` is gitignored, so your credentials never end
-up in a commit — and Desktop-app client secrets are, per Google's own
-docs, not confidential, so shipping them inside a binary you
-distribute is the standard pattern. (Alternatively, the app also
-accepts the console's downloaded `client_secret….json` placed next to
-the binary at runtime — also gitignored — and that file takes
-precedence over the baked-in client if both exist.) The
-[User Guide](User_Guide.md) covers what syncs, what stays local, and
-how conflicts resolve.
 
 ## Building
 
 You'll need a C compiler, the GTK3, SQLite3 and libcurl development
-files, and pkg-config. That's it.
+files, and pkg-config.
 
 macOS (MacPorts):
 
@@ -95,8 +73,31 @@ it. On macOS, `make app` wraps the binary into
 libraries, so the bundle runs on the machine that built it).
 
 One more step if you want Google sync: set up `client_credentials.mk`
-before you build, as described in
-[Syncing with Google Tasks](#syncing-with-google-tasks) above. It is
-optional — without it the build still succeeds and everything except
+before you build, as described below. It is optional — without it the build still succeeds and everything except
 the Sync sign-in works; add the file and rebuild whenever you're
 ready (the Makefile tracks it, so a plain `make` picks up changes).
+
+### Setting up client_credentials.mk
+
+1. In the [Google Cloud console](https://console.cloud.google.com/),
+   create a project (any name) and enable the **Google Tasks API**
+   (*APIs & Services → Library*).
+2. Configure the OAuth consent screen (*APIs & Services → OAuth
+   consent screen*) — the app name you enter there is what the
+   browser's consent page will show.
+3. Create the client (*APIs & Services → Credentials → Create
+   Credentials → OAuth client ID*, application type **Desktop app**)
+   and note the client id and secret.
+4. In the source directory:
+   `cp client_credentials.mk.example client_credentials.mk`, fill in
+   the two values, then `make clean && make`.
+
+`client_credentials.mk` is gitignored, so your credentials never end
+up in a commit — and Desktop-app client secrets are, per Google's own
+docs, not confidential, so shipping them inside a binary you
+distribute is the standard pattern. (Alternatively, the app also
+accepts the console's downloaded `client_secret….json` placed next to
+the binary at runtime — also gitignored — and that file takes
+precedence over the baked-in client if both exist.) The
+[User Guide](User_Guide.md) covers what syncs, what stays local, and
+how conflicts resolve.
