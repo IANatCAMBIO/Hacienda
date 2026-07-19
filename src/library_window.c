@@ -1581,40 +1581,72 @@ on_sb_ctx_delete_group(GtkWidget *item, gpointer data)
     }
 }
 
-/* on_sb_button_press() — right-click on the sidebar: group management menu
- * on SB_KIND_LIST (Move to Group / Remove from Group) and on SB_KIND_GROUP
- * (Rename Group / Remove Group).  Right-clicking inside an existing
- * multi-selection operates on all selected lists; outside collapses to
- * the clicked row first.                                                     */
+static void on_new_list(GtkWidget *, gpointer);
+static void on_new_group(GtkWidget *, gpointer);
+static void on_edit_list(GtkWidget *, gpointer);
+static void on_delete_list(GtkWidget *, gpointer);
+
+/* on_sb_button_press() — right-click on the sidebar: always offers New List
+ * and New Group; adds Edit/Delete for SB_KIND_LIST, Rename/Remove for
+ * SB_KIND_GROUP, and group-assignment items when groups exist.  Right-clicking
+ * inside an existing multi-selection keeps it; outside collapses to the
+ * clicked row first.                                                         */
 static gboolean
 on_sb_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
 {
     if (event->button != 3) return FALSE;
     BtLibrary *lw = data;
-    GtkTreePath *path = NULL;
-    if (!gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(widget),
-                                       (gint)event->x, (gint)event->y,
-                                       &path, NULL, NULL, NULL))
-        return FALSE;
 
-    GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(widget));
-    GtkTreeModel *model   = GTK_TREE_MODEL(lw->sb_store);
-    GtkTreeIter   it;
+    GtkTreePath *path = NULL;
+    gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(widget),
+                                  (gint)event->x, (gint)event->y,
+                                  &path, NULL, NULL, NULL);
     gint   kind = -1;
     gint64 id   = 0;
-    if (gtk_tree_model_get_iter(model, &it, path))
-        gtk_tree_model_get(model, &it, SB_KIND, &kind, SB_ID, &id, -1);
-
-    /* Outside existing selection → collapse to this row. */
-    if (!gtk_tree_selection_path_is_selected(sel, path)) {
-        gtk_tree_selection_unselect_all(sel);
-        gtk_tree_selection_select_path(sel, path);
-        gtk_tree_view_set_cursor(GTK_TREE_VIEW(widget), path, NULL, FALSE);
+    if (path) {
+        GtkTreeSelection *sel =
+            gtk_tree_view_get_selection(GTK_TREE_VIEW(widget));
+        GtkTreeModel *model = GTK_TREE_MODEL(lw->sb_store);
+        GtkTreeIter it;
+        if (gtk_tree_model_get_iter(model, &it, path))
+            gtk_tree_model_get(model, &it, SB_KIND, &kind, SB_ID, &id, -1);
+        if (!gtk_tree_selection_path_is_selected(sel, path)) {
+            gtk_tree_selection_unselect_all(sel);
+            gtk_tree_selection_select_path(sel, path);
+            gtk_tree_view_set_cursor(GTK_TREE_VIEW(widget), path, NULL, FALSE);
+        }
+        gtk_tree_path_free(path);
     }
-    gtk_tree_path_free(path);
+
+    GtkWidget *menu = gtk_menu_new();
+    g_signal_connect(menu, "selection-done",
+                     G_CALLBACK(gtk_widget_destroy), NULL);
+
+    /* New List and New Group are always available. */
+    GtkWidget *new_list = gtk_menu_item_new_with_label("New List");
+    g_signal_connect(new_list, "activate", G_CALLBACK(on_new_list), lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), new_list);
+
+    GtkWidget *new_grp = gtk_menu_item_new_with_label("New Group");
+    g_signal_connect(new_grp, "activate", G_CALLBACK(on_new_group), lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), new_grp);
 
     if (kind == SB_KIND_LIST) {
-        /* Collect all selected list ids and their group membership. */
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu),
+                              gtk_separator_menu_item_new());
+
+        GtkWidget *edit = gtk_menu_item_new_with_label("Edit List");
+        g_signal_connect(edit, "activate", G_CALLBACK(on_edit_list), lw);
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), edit);
+
+        GtkWidget *del = gtk_menu_item_new_with_label("Delete List");
+        g_signal_connect(del, "activate", G_CALLBACK(on_delete_list), lw);
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), del);
+
+        /* Collect selected list ids and group membership for move items. */
+        GtkTreeSelection *sel =
+            gtk_tree_view_get_selection(GTK_TREE_VIEW(widget));
+        GtkTreeModel *model = GTK_TREE_MODEL(lw->sb_store);
         GList *rows = gtk_tree_selection_get_selected_rows(sel, &model);
         GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
         gboolean any_grouped = FALSE;
@@ -1634,78 +1666,63 @@ on_sb_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
         g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
 
         GPtrArray *groups = bt_db_groups(lw->app->db);
-        if (groups->len == 0 && !any_grouped) {
-            bt_ptr_array_free_groups(groups);
-            g_array_unref(ids);
-            return FALSE;             /* no groups exist — nothing to show   */
-        }
-
-        GtkWidget *menu = gtk_menu_new();
-        g_signal_connect(menu, "selection-done",
-                         G_CALLBACK(gtk_widget_destroy), NULL);
-
-        /* "Move to Group" submenu — every group the selection isn't
-         * exclusively in (show all groups when selection is mixed).          */
-        if (groups->len > 0) {
-            GtkWidget *move_item =
-                gtk_menu_item_new_with_label("Move to Group");
-            GtkWidget *sub = gtk_menu_new();
-            for (guint i = 0; i < groups->len; i++) {
-                BtGroup *g = g_ptr_array_index(groups, i);
-                GtkWidget *gi = gtk_menu_item_new_with_label(g->name);
-                /* ids array is shared across all items via ref */
-                g_object_set_data_full(G_OBJECT(gi), "bt-ids",
+        if (groups->len > 0 || any_grouped) {
+            gtk_menu_shell_append(GTK_MENU_SHELL(menu),
+                                  gtk_separator_menu_item_new());
+            if (groups->len > 0) {
+                GtkWidget *move = gtk_menu_item_new_with_label("Move to Group");
+                GtkWidget *sub  = gtk_menu_new();
+                for (guint i = 0; i < groups->len; i++) {
+                    BtGroup *g = g_ptr_array_index(groups, i);
+                    GtkWidget *gi = gtk_menu_item_new_with_label(g->name);
+                    g_object_set_data_full(G_OBJECT(gi), "bt-ids",
+                                           g_array_ref(ids),
+                                           (GDestroyNotify)g_array_unref);
+                    g_object_set_data(G_OBJECT(gi), "bt-group-id",
+                                      (gpointer)(gintptr)g->id);
+                    g_signal_connect(gi, "activate",
+                                     G_CALLBACK(on_sb_ctx_move_to_group), lw);
+                    gtk_menu_shell_append(GTK_MENU_SHELL(sub), gi);
+                }
+                gtk_menu_item_set_submenu(GTK_MENU_ITEM(move), sub);
+                gtk_menu_shell_append(GTK_MENU_SHELL(menu), move);
+            }
+            if (any_grouped) {
+                GtkWidget *rem =
+                    gtk_menu_item_new_with_label("Remove from Group");
+                g_object_set_data_full(G_OBJECT(rem), "bt-ids",
                                        g_array_ref(ids),
                                        (GDestroyNotify)g_array_unref);
-                g_object_set_data(G_OBJECT(gi), "bt-group-id",
-                                  (gpointer)(gintptr)g->id);
-                g_signal_connect(gi, "activate",
-                                 G_CALLBACK(on_sb_ctx_move_to_group), lw);
-                gtk_menu_shell_append(GTK_MENU_SHELL(sub), gi);
+                g_signal_connect(rem, "activate",
+                                 G_CALLBACK(on_sb_ctx_remove_from_group), lw);
+                gtk_menu_shell_append(GTK_MENU_SHELL(menu), rem);
             }
-            gtk_menu_item_set_submenu(GTK_MENU_ITEM(move_item), sub);
-            gtk_menu_shell_append(GTK_MENU_SHELL(menu), move_item);
         }
         bt_ptr_array_free_groups(groups);
-
-        if (any_grouped) {
-            GtkWidget *rem =
-                gtk_menu_item_new_with_label("Remove from Group");
-            g_object_set_data_full(G_OBJECT(rem), "bt-ids",
-                                   g_array_ref(ids),
-                                   (GDestroyNotify)g_array_unref);
-            g_signal_connect(rem, "activate",
-                             G_CALLBACK(on_sb_ctx_remove_from_group), lw);
-            gtk_menu_shell_append(GTK_MENU_SHELL(menu), rem);
-        }
         g_array_unref(ids);
 
-        gtk_widget_show_all(menu);
-        gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
-        return TRUE;
-
     } else if (kind == SB_KIND_GROUP) {
-        GtkWidget *menu = gtk_menu_new();
-        g_signal_connect(menu, "selection-done",
-                         G_CALLBACK(gtk_widget_destroy), NULL);
-        GtkWidget *rename_item =
-            gtk_menu_item_new_with_label("Rename Group");
-        g_object_set_data(G_OBJECT(rename_item), "bt-group-id",
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu),
+                              gtk_separator_menu_item_new());
+
+        GtkWidget *rename = gtk_menu_item_new_with_label("Rename Group");
+        g_object_set_data(G_OBJECT(rename), "bt-group-id",
                           (gpointer)(gintptr)id);
-        g_signal_connect(rename_item, "activate",
+        g_signal_connect(rename, "activate",
                          G_CALLBACK(on_sb_ctx_rename_group), lw);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), rename_item);
-        GtkWidget *del_item = gtk_menu_item_new_with_label("Remove Group");
-        g_object_set_data(G_OBJECT(del_item), "bt-group-id",
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), rename);
+
+        GtkWidget *del = gtk_menu_item_new_with_label("Remove Group");
+        g_object_set_data(G_OBJECT(del), "bt-group-id",
                           (gpointer)(gintptr)id);
-        g_signal_connect(del_item, "activate",
+        g_signal_connect(del, "activate",
                          G_CALLBACK(on_sb_ctx_delete_group), lw);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), del_item);
-        gtk_widget_show_all(menu);
-        gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
-        return TRUE;
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), del);
     }
-    return FALSE;
+
+    gtk_widget_show_all(menu);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
+    return TRUE;
 }
 
 /* on_new_group() — prompt for a name and create a new list group.           */
@@ -3381,54 +3398,8 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(sb_scroll), lw->sb_view);
 
-    /* Mini action bar under the tree: compact create (+), edit (pencil)
-     * and delete (minus) list buttons, right-aligned, blending into the
-     * sidebar grey.                                                         */
-    GtkWidget *sb_actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    bt_app_widget_add_css(sb_actions,
-        "box { background-color: rgb(230,230,230); }");
-    GtkWidget *sb_add = gtk_button_new_with_label("+");
-    gtk_widget_set_tooltip_text(sb_add, "Create a new task list");
-    g_signal_connect(sb_add, "clicked", G_CALLBACK(on_new_list), lw);
-    /* ▶ = \xe2\x96\xb6 — create a new list group */
-    GtkWidget *sb_grp = gtk_button_new_with_label(
-        "\xe2\x96\xb6");
-    gtk_widget_set_tooltip_text(sb_grp, "Create a new list group");
-    g_signal_connect(sb_grp, "clicked", G_CALLBACK(on_new_group), lw);
-    GtkWidget *sb_edit = gtk_button_new_with_label("\xe2\x9c\x8e");
-    gtk_widget_set_tooltip_text(sb_edit,
-        "Edit the selected list's name or emoji");
-    g_signal_connect(sb_edit, "clicked", G_CALLBACK(on_edit_list), lw);
-    GtkWidget *sb_del = gtk_button_new_with_label("\xe2\x88\x92");
-    gtk_widget_set_tooltip_text(sb_del,
-        "Delete the selected list or group");
-    g_signal_connect(sb_del, "clicked", G_CALLBACK(on_delete_list), lw);
-    const gchar *mini_css =
-        "button { padding: 0 10px; min-height: 22px; "
-        "border-radius: 0; }";
-    bt_app_widget_add_css(sb_add, mini_css);
-    bt_app_widget_add_css(sb_grp, mini_css);
-    bt_app_widget_add_css(sb_edit, mini_css);
-    bt_app_widget_add_css(sb_del, mini_css);
-    gtk_button_set_relief(GTK_BUTTON(sb_add), GTK_RELIEF_NONE);
-    gtk_button_set_relief(GTK_BUTTON(sb_grp), GTK_RELIEF_NONE);
-    gtk_button_set_relief(GTK_BUTTON(sb_edit), GTK_RELIEF_NONE);
-    gtk_button_set_relief(GTK_BUTTON(sb_del), GTK_RELIEF_NONE);
-    gtk_box_pack_end(GTK_BOX(sb_actions), sb_del, FALSE, FALSE, 0);
-    gtk_box_pack_end(GTK_BOX(sb_actions), sb_edit, FALSE, FALSE, 0);
-    gtk_box_pack_end(GTK_BOX(sb_actions), sb_add, FALSE, FALSE, 0);
-    gtk_box_pack_end(GTK_BOX(sb_actions), sb_grp, FALSE, FALSE, 0);
-
-    /* A thin rule between the tree and the mini action bar — the same
-     * unstyled theme separator as the one under the toolbar.                */
-    GtkWidget *sb_rule = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
-
-    GtkWidget *sb_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_box_pack_start(GTK_BOX(sb_box), sb_scroll, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(sb_box), sb_rule, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(sb_box), sb_actions, FALSE, FALSE, 0);
-    gtk_paned_pack1(GTK_PANED(paned), sb_box, FALSE, FALSE);
-    lw->sidebar_box = sb_box;        /* for the toolbar show/hide toggle    */
+    gtk_paned_pack1(GTK_PANED(paned), sb_scroll, FALSE, FALSE);
+    lw->sidebar_box = sb_scroll;     /* for the toolbar show/hide toggle    */
 
     /* Task pane.                                                            */
     lw->task_store = gtk_list_store_new(TL_N_COLS, G_TYPE_INT64,
