@@ -1964,6 +1964,18 @@ on_delete_task(GtkWidget *w, gpointer data)
 
 static GtkWidget *menu_item(GtkWidget *menu, const gchar *label,
                             GCallback cb, gpointer data);
+static GArray    *item_ids(GtkWidget *item);
+
+/* on_ctx_info() — open the task editor (same as double-clicking the row).   */
+static void
+on_ctx_info(GtkWidget *item, gpointer data)
+{
+    BtLibrary *lw = data;
+    GArray *ids = item_ids(item);
+    if (ids == NULL || ids->len == 0)
+        return;
+    bt_editor_open(lw->app, g_array_index(ids, gint64, 0));
+}
 
 /* on_ctx_open_google() — open the row's webViewLink in the browser.         */
 static void
@@ -2289,6 +2301,19 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
     gtk_menu_attach_to_widget(GTK_MENU(menu), view, NULL);
     g_signal_connect(menu, "selection-done",
                      G_CALLBACK(gtk_widget_destroy), NULL);
+
+    /* Info… — single row only; opens the editor (same as double-click).     */
+    if (single) {
+        GtkWidget *info_item = gtk_menu_item_new_with_label("Info\xe2\x80\xa6");
+        g_object_set_data_full(G_OBJECT(info_item), "bt-ids",
+                               g_array_ref(ids),
+                               (GDestroyNotify)g_array_unref);
+        g_signal_connect(info_item, "activate",
+                         G_CALLBACK(on_ctx_info), lw);
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), info_item);
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu),
+                              gtk_separator_menu_item_new());
+    }
 
     /* Mark Complete / Mark Incomplete — single row: only the applicable
      * direction; multi: both (selection may be mixed).                      */

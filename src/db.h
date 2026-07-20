@@ -213,6 +213,12 @@ void bt_db_task_set_priority(BtDatabase *db, gint64 id, gboolean priority);
 /* Tombstone the task and its subtasks.                                      */
 void bt_db_task_delete(BtDatabase *db, gint64 id);
 
+/* Swap the display position of subtask `id` with its neighbor in the
+ * current sorted order (direction = -1 up, +1 down).  No-op at the
+ * edges or for top-level tasks.  Position is LOCAL-ONLY for ordering —
+ * updated_at is not stamped.                                                */
+void bt_db_subtask_move(BtDatabase *db, gint64 id, gint direction);
+
 /* Move a top-level task (and its subtasks) to another list, appended at
  * the end; stamps updated_at.                                               */
 void bt_db_task_move_list(BtDatabase *db, gint64 id, gint64 dest_list);

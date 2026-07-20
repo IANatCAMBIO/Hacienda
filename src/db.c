@@ -875,6 +875,54 @@ bt_db_task_set_priority(BtDatabase *db, gint64 id, gboolean priority)
 }
 
 /* ---------------------------------------------------------------------------
+ * bt_db_subtask_move() — swap the display position of subtask `id` with
+ * its neighbor (see db.h).
+ * ------------------------------------------------------------------------- */
+void
+bt_db_subtask_move(BtDatabase *db, gint64 id, gint direction)
+{
+    BtTask *t = bt_db_task_get(db, id);
+    if (t == NULL || t->parent_id == 0) {
+        bt_task_free(t);
+        return;
+    }
+    gint64 parent_id = t->parent_id;
+    bt_task_free(t);
+
+    GPtrArray *subs = bt_db_subtasks(db, parent_id);
+    gint idx = -1;
+    for (guint i = 0; i < subs->len; i++) {
+        if (((BtTask *)g_ptr_array_index(subs, i))->id == id) {
+            idx = (gint)i;
+            break;
+        }
+    }
+    gint target = idx + direction;
+    if (idx < 0 || target < 0 || target >= (gint)subs->len) {
+        bt_ptr_array_free_tasks(subs);
+        return;
+    }
+
+    /* Swap the two entries, then write new positions 0…n in the new order.
+     * updated_at is intentionally not stamped — position is local-only.    */
+    gpointer tmp = g_ptr_array_index(subs, idx);
+    g_ptr_array_index(subs, idx)    = g_ptr_array_index(subs, target);
+    g_ptr_array_index(subs, target) = tmp;
+
+    for (guint i = 0; i < subs->len; i++) {
+        gint64 sid = ((BtTask *)g_ptr_array_index(subs, i))->id;
+        sqlite3_stmt *st = NULL;
+        sqlite3_prepare_v2(db->sq,
+            "UPDATE tasks SET position = ? WHERE id = ?", -1, &st, NULL);
+        sqlite3_bind_int(st, 1, (int)i);
+        sqlite3_bind_int64(st, 2, sid);
+        step_done(db, st, "subtask_move");
+        sqlite3_finalize(st);
+    }
+    bt_ptr_array_free_tasks(subs);
+}
+
+/* ---------------------------------------------------------------------------
  * bt_db_task_delete() — tombstone the task and its subtasks.
  * ------------------------------------------------------------------------- */
 void

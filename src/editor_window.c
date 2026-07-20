@@ -347,6 +347,37 @@ on_sub_remove(GtkWidget *w, gpointer data)
     editor_notify(ed);
 }
 
+/* on_sub_move() — move the selected subtask up (-1) or down (+1).           */
+static void
+on_sub_move(GtkWidget *w, gpointer data)
+{
+    BtEditor *ed = data;
+    gint direction = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(w),
+                                                       "bt-direction"));
+    gint64 id = sub_selected_id(ed);
+    if (id == 0)
+        return;
+    bt_db_subtask_move(ed->app->db, id, direction);
+    sub_refresh(ed);
+    editor_notify(ed);
+
+    /* Restore selection to the moved row. */
+    GtkTreeModel *model = GTK_TREE_MODEL(ed->sub_store);
+    GtkTreeIter iter;
+    gboolean valid = gtk_tree_model_get_iter_first(model, &iter);
+    while (valid) {
+        gint64 rid;
+        gtk_tree_model_get(model, &iter, SUB_ID, &rid, -1);
+        if (rid == id) {
+            GtkTreeSelection *sel =
+                gtk_tree_view_get_selection(GTK_TREE_VIEW(ed->sub_view));
+            gtk_tree_selection_select_iter(sel, &iter);
+            break;
+        }
+        valid = gtk_tree_model_iter_next(model, &iter);
+    }
+}
+
 /* on_sub_toggled() — the subtask done checkbox in the list.                 */
 static void
 on_sub_toggled(GtkCellRendererToggle *cell, gchar *path_str, gpointer data)
@@ -910,6 +941,18 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
         gtk_box_pack_start(GTK_BOX(btns),
             small_button("Remove", G_CALLBACK(on_sub_remove), ed),
             FALSE, FALSE, 0);
+        GtkWidget *move_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+        GtkWidget *up_btn   = gtk_button_new_with_label("\xe2\x96\xb2");
+        GtkWidget *down_btn = gtk_button_new_with_label("\xe2\x96\xbc");
+        g_object_set_data(G_OBJECT(up_btn),   "bt-direction",
+                          GINT_TO_POINTER(-1));
+        g_object_set_data(G_OBJECT(down_btn),  "bt-direction",
+                          GINT_TO_POINTER(1));
+        g_signal_connect(up_btn,   "clicked", G_CALLBACK(on_sub_move), ed);
+        g_signal_connect(down_btn, "clicked", G_CALLBACK(on_sub_move), ed);
+        gtk_box_pack_start(GTK_BOX(move_box), up_btn,   TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(move_box), down_btn, TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(btns), move_box, FALSE, FALSE, 0);
         GtkWidget *sub_section =
             make_list_section("Subtasks", ed->sub_view, btns);
         if (bn)
