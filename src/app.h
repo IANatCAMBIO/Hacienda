@@ -140,6 +140,14 @@ void bt_app_status(BtApp *app, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
 void bt_app_notify_changed(BtApp *app);
 
 /* ---------------------------------------------------------------------------
+ * bt_app_restore_database() — replace the active database with a backup
+ * file: closes app->db, copies `backup_path` over the active path (keeping
+ * a .pre-restore safety copy), reopens and fires notify_changed.
+ * Returns TRUE on success; on failure the previous database is still open.
+ * ------------------------------------------------------------------------- */
+gboolean bt_app_restore_database(BtApp *app, const gchar *backup_path);
+
+/* ---------------------------------------------------------------------------
  * bt_app_notice() — run a modal OK message dialog and destroy it.
  * ------------------------------------------------------------------------- */
 void bt_app_notice(GtkWindow *parent, GtkMessageType type,
@@ -159,7 +167,8 @@ gboolean bt_app_confirm(GtkWindow *parent, const gchar *title,
  * every change.  Keys used (see hacienda.ini.defaults): sync —
  * google_sync_enabled, google_client_id, google_client_secret,
  * gtasks_refresh_token, sync_interval_min; Blue Notes — blue_notes_sync,
- * blue_notes_cli, blue_notes_embed_list; UI — toolbar_style,
+ * blue_notes_cli, blue_notes_embed_list; Database — db_path (custom
+ * database file path; absent = default location); UI — toolbar_style,
  * bold_task_titles, native_menubar,
  * show_completed, sidebar_visible, weekly_forecast, win_w, win_h.
  * ------------------------------------------------------------------------- */

@@ -3,6 +3,7 @@
  * =========================================================================== */
 
 #include "app.h"
+#include "db.h"
 #include <glib/gstdio.h>
 #include <stdio.h>
 #include <string.h>
@@ -94,6 +95,61 @@ bt_app_widget_add_css(GtkWidget *widget, const gchar *css_text)
         GTK_STYLE_PROVIDER(provider),
         GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     g_object_unref(provider);
+}
+
+/* ---------------------------------------------------------------------------
+ * copy_file() — overwrite-copy src to dest via GIO.
+ * ------------------------------------------------------------------------- */
+static gboolean
+copy_file(const gchar *src, const gchar *dest)
+{
+    GFile    *fsrc  = g_file_new_for_path(src);
+    GFile    *fdest = g_file_new_for_path(dest);
+    gboolean  ok    = g_file_copy(fsrc, fdest,
+                                  G_FILE_COPY_OVERWRITE,
+                                  NULL, NULL, NULL, NULL);
+    g_object_unref(fsrc);
+    g_object_unref(fdest);
+    return ok;
+}
+
+/* ---------------------------------------------------------------------------
+ * bt_app_restore_database() — replace the active db with a backup (see app.h).
+ * ------------------------------------------------------------------------- */
+gboolean
+bt_app_restore_database(BtApp *app, const gchar *backup_path)
+{
+    gchar *db_path = g_strdup(app->db->path); /* active file path            */
+    bt_db_close(app->db);
+    app->db = NULL;
+
+    /* Keep the current db as a safety net.                                  */
+    gchar *safety = g_strdup_printf("%s.pre-restore", db_path);
+    if (g_file_test(db_path, G_FILE_TEST_EXISTS))
+        copy_file(db_path, safety);
+
+    gboolean  ok    = copy_file(backup_path, db_path);
+    GError   *gerr  = NULL;
+    if (ok) {
+        app->db = bt_db_open(db_path, &gerr);
+        if (app->db == NULL) {         /* backup wasn't a valid database     */
+            ok = FALSE;
+            g_clear_error(&gerr);
+            copy_file(safety, db_path);
+            app->db = bt_db_open(db_path, &gerr);
+            g_clear_error(&gerr);
+        }
+    } else {
+        app->db = bt_db_open(db_path, &gerr);
+        g_clear_error(&gerr);
+    }
+
+    g_free(safety);
+    g_free(db_path);
+
+    if (ok && app->db != NULL)
+        bt_app_notify_changed(app);
+    return ok && app->db != NULL;
 }
 
 /* ===========================================================================

@@ -3,6 +3,7 @@
  * =========================================================================== */
 
 #include "settings_window.h"
+#include "db.h"
 #include "oauth.h"
 #include "gtasks.h"
 #include "library_window.h"
@@ -24,6 +25,7 @@ typedef struct {
     GtkWidget *bn_cli_entry;         /* blue_notes command path             */
     GtkWidget *bn_embed_combo;       /* where action items appear           */
     GArray    *bn_embed_ids;         /* combo index → list id (0 = own)     */
+    GtkWidget *db_path_entry;        /* custom database location            */
     gboolean   loading;              /* suppress write-through on load      */
 } BtSettings;
 
@@ -263,6 +265,58 @@ on_native_menubar_toggled(GtkToggleButton *check, gpointer data)
 }
 #endif /* HAVE_GTKOSX */
 
+/* on_db_path_changed() — the custom db location entry: persist immediately. */
+static void
+on_db_path_changed(GtkWidget *w, gpointer data)
+{
+    (void)data;
+    const gchar *v = gtk_entry_get_text(GTK_ENTRY(w));
+    bt_app_config_set("db_path", (*v != '\0') ? v : NULL);
+}
+
+/* on_db_path_browse() — Browse button: pick a .db file and put its path
+ * into the custom location entry (which then triggers on_db_path_changed). */
+static void
+on_db_path_browse(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    BtSettings *sw = data;
+
+    GtkWidget *chooser = gtk_file_chooser_dialog_new(
+        "Choose Database Location",
+        GTK_WINDOW(sw->window),
+        GTK_FILE_CHOOSER_ACTION_SAVE,
+        "_Cancel", GTK_RESPONSE_CANCEL,
+        "_Select", GTK_RESPONSE_ACCEPT,
+        NULL);
+    gtk_file_chooser_set_do_overwrite_confirmation(
+        GTK_FILE_CHOOSER(chooser), FALSE);
+    GtkFileFilter *ff = gtk_file_filter_new();
+    gtk_file_filter_set_name(ff, "SQLite Database (*.db)");
+    gtk_file_filter_add_pattern(ff, "*.db");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(chooser), ff);
+
+    /* Pre-navigate to the current entry path or the active db's directory. */
+    const gchar *cur = gtk_entry_get_text(GTK_ENTRY(sw->db_path_entry));
+    if (cur != NULL && *cur != '\0') {
+        gtk_file_chooser_set_filename(GTK_FILE_CHOOSER(chooser), cur);
+    } else if (sw->db_path != NULL) {
+        gchar *dir = g_path_get_dirname(sw->db_path);
+        gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), dir);
+        g_free(dir);
+        gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(chooser),
+                                          BT_DB_FILENAME);
+    }
+
+    if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT) {
+        gchar *path = gtk_file_chooser_get_filename(
+            GTK_FILE_CHOOSER(chooser));
+        gtk_entry_set_text(GTK_ENTRY(sw->db_path_entry), path);
+        g_free(path);
+    }
+    gtk_widget_destroy(chooser);
+}
+
 /* on_settings_destroy() — clear the singleton.                              */
 static void
 on_settings_destroy(GtkWidget *w, gpointer data)
@@ -326,50 +380,118 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 14);
     gtk_container_add(GTK_CONTAINER(sw->window), vbox);
 
-    /* --- Google Tasks ------------------------------------------------------ */
-    gtk_box_pack_start(GTK_BOX(vbox), section_label("Google Tasks"),
+    /* --- Appearance --------------------------------------------------------- */
+    gtk_box_pack_start(GTK_BOX(vbox), section_label("Appearance"),
                        FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), wrapped_label(
-        "Two-way non-destructive sync with Google Tasks.  Sign in will "
-        "open a browser window for authentication; Sign out will remove "
-        "the local stored token."), FALSE, FALSE, 0);
 
-    sw->sync_check = gtk_check_button_new_with_label(
-        "Enable Google Tasks sync");
-    g_signal_connect(sw->sync_check, "toggled",
-                     G_CALLBACK(on_sync_enabled_toggled), sw);
-    gtk_box_pack_start(GTK_BOX(vbox), sw->sync_check, FALSE, FALSE, 0);
+    GtkWidget *bold_check = gtk_check_button_new_with_label(
+        "Show task titles in bold");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(bold_check),
+        bt_app_config_get_bool("bold_task_titles", FALSE));
+    g_signal_connect(bold_check, "toggled",
+                     G_CALLBACK(on_bold_titles_toggled), sw);
+    gtk_box_pack_start(GTK_BOX(vbox), bold_check, FALSE, FALSE, 0);
 
-    GtkWidget *btn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    sw->signin_btn = gtk_button_new_with_label(
-        "Sign In to Google\xe2\x80\xa6");
-    g_signal_connect(sw->signin_btn, "clicked",
-                     G_CALLBACK(on_signin), sw);
-    gtk_box_pack_start(GTK_BOX(btn_row), sw->signin_btn, FALSE, FALSE, 0);
-    sw->signout_btn = gtk_button_new_with_label("Sign Out");
-    g_signal_connect(sw->signout_btn, "clicked",
-                     G_CALLBACK(on_signout), sw);
-    gtk_box_pack_start(GTK_BOX(btn_row), sw->signout_btn,
-                       FALSE, FALSE, 0);
-    sw->state_label = gtk_label_new("");
-    gtk_box_pack_end(GTK_BOX(btn_row), sw->state_label, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), btn_row, FALSE, FALSE, 0);
+    GtkWidget *forecast_check = gtk_check_button_new_with_label(
+        "Show the Weekly Forecast view (this week, day by day)");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(forecast_check),
+        bt_app_config_get_bool("weekly_forecast", TRUE));
+    g_signal_connect(forecast_check, "toggled",
+                     G_CALLBACK(on_forecast_toggled), sw);
+    gtk_box_pack_start(GTK_BOX(vbox), forecast_check, FALSE, FALSE, 0);
 
-    GtkWidget *interval_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_box_pack_start(GTK_BOX(interval_row),
-                       gtk_label_new("Auto-sync every"), FALSE, FALSE, 0);
-    sw->interval_spin = gtk_spin_button_new_with_range(0, 720, 1);
-    gtk_widget_set_tooltip_text(sw->interval_spin,
-        "Minutes between automatic syncs while signed in; 0 disables "
-        "the timer (the Sync button always works)");
-    g_signal_connect(sw->interval_spin, "value-changed",
-                     G_CALLBACK(on_interval_changed), sw);
-    gtk_box_pack_start(GTK_BOX(interval_row), sw->interval_spin,
+    GtkWidget *overdue_check = gtk_check_button_new_with_label(
+        "Include all past-due tasks in the Due Today view");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(overdue_check),
+        bt_app_config_get_bool("due_today_show_overdue", FALSE));
+    g_signal_connect(overdue_check, "toggled",
+                     G_CALLBACK(on_due_today_overdue_toggled), sw);
+    gtk_box_pack_start(GTK_BOX(vbox), overdue_check, FALSE, FALSE, 0);
+
+    /* Toolbar style: icons / text below icons / text only.  Applies live
+     * to every registered toolbar; also reachable by right-clicking any
+     * toolbar (like Blue Notes).                                            */
+    GtkWidget *style_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_pack_start(GTK_BOX(style_row),
+                       gtk_label_new("Toolbar style:"), FALSE, FALSE, 0);
+    GtkWidget *style_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(style_combo),
+                                   "Icons");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(style_combo),
+                                   "Text below icons");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(style_combo),
+                                   "Text only");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(style_combo),
+        app->toolbar_style == GTK_TOOLBAR_BOTH ? 1
+        : app->toolbar_style == GTK_TOOLBAR_TEXT ? 2 : 0);
+    g_signal_connect(style_combo, "changed",
+                     G_CALLBACK(on_toolbar_style_changed), sw);
+    gtk_box_pack_start(GTK_BOX(style_row), style_combo, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), style_row, FALSE, FALSE, 0);
+
+#ifdef __APPLE__
+    GtkWidget *mac_check = gtk_check_button_new_with_label(
+        "Use the native macOS menu bar (hide the in-window menu)");
+#ifdef HAVE_GTKOSX
+    gtk_toggle_button_set_active(
+        GTK_TOGGLE_BUTTON(mac_check),
+        bt_app_config_get_bool("native_menubar", FALSE));
+    g_signal_connect(mac_check, "toggled",
+                     G_CALLBACK(on_native_menubar_toggled), sw);
+#else
+    gtk_widget_set_sensitive(mac_check, FALSE);
+    gtk_widget_set_tooltip_text(mac_check,
+        "Requires the gtk-mac-integration library:\n"
+        "sudo port install gtk-osx-application-gtk3, then rebuild "
+        "(make clean && make)");
+#endif
+    gtk_box_pack_start(GTK_BOX(vbox), mac_check, FALSE, FALSE, 0);
+#endif /* __APPLE__ */
+    gtk_box_pack_start(GTK_BOX(vbox),
+                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
+                       FALSE, FALSE, 2);
+
+    /* --- Database ---------------------------------------------------------- */
+    gtk_box_pack_start(GTK_BOX(vbox), section_label("Database"),
                        FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(interval_row),
-                       gtk_label_new("minutes (0 = off)"),
+
+    /* Read-only label showing the currently active database path.           */
+    GtkWidget *db_cur_label = gtk_label_new("Current database:");
+    gtk_widget_set_halign(db_cur_label, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(vbox), db_cur_label, FALSE, FALSE, 0);
+    GtkWidget *db_path_label = gtk_label_new(db_path);
+    gtk_label_set_ellipsize(GTK_LABEL(db_path_label), PANGO_ELLIPSIZE_MIDDLE);
+    gtk_label_set_selectable(GTK_LABEL(db_path_label), TRUE);
+    gtk_widget_set_halign(db_path_label, GTK_ALIGN_START);
+    bt_app_widget_add_css(db_path_label,
+                          "label { font-size: 85%; color: #555555; }");
+    gtk_box_pack_start(GTK_BOX(vbox), db_path_label, FALSE, FALSE, 0);
+
+    /* Editable entry for a custom default location (takes effect on next
+     * launch; use File → Open Database to switch the running session).      */
+    gtk_box_pack_start(GTK_BOX(vbox),
+                       gtk_label_new(
+                           "Custom location (leave blank for default,"
+                           " takes effect on next launch):"),
                        FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), interval_row, FALSE, FALSE, 0);
+    GtkWidget *db_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    sw->db_path_entry = gtk_entry_new();
+    gchar *def_path   = bt_db_default_path();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(sw->db_path_entry), def_path);
+    g_free(def_path);
+    gtk_widget_set_hexpand(sw->db_path_entry, TRUE);
+    gtk_widget_set_tooltip_text(sw->db_path_entry,
+        "Custom database file path.  Blank = default location.\n"
+        "Takes effect on next launch.  Use File \xe2\x86\x92 Open Database "
+        "to switch immediately in the current session.");
+    g_signal_connect(sw->db_path_entry, "changed",
+                     G_CALLBACK(on_db_path_changed), sw);
+    gtk_box_pack_start(GTK_BOX(db_row), sw->db_path_entry, TRUE, TRUE, 0);
+    GtkWidget *browse_btn = gtk_button_new_with_label("Browse\xe2\x80\xa6");
+    g_signal_connect(browse_btn, "clicked",
+                     G_CALLBACK(on_db_path_browse), sw);
+    gtk_box_pack_start(GTK_BOX(db_row), browse_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), db_row, FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(vbox),
                        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
@@ -451,89 +573,55 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
                        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
                        FALSE, FALSE, 2);
 
-    /* --- Appearance --------------------------------------------------------- */
-    gtk_box_pack_start(GTK_BOX(vbox), section_label("Appearance"),
+    /* --- Google Tasks ------------------------------------------------------ */
+    gtk_box_pack_start(GTK_BOX(vbox), section_label("Google Tasks"),
                        FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), wrapped_label(
+        "Two-way non-destructive sync with Google Tasks.  Sign in will "
+        "open a browser window for authentication; Sign out will remove "
+        "the local stored token."), FALSE, FALSE, 0);
 
-    GtkWidget *bold_check = gtk_check_button_new_with_label(
-        "Show task titles in bold");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(bold_check),
-        bt_app_config_get_bool("bold_task_titles", FALSE));
-    g_signal_connect(bold_check, "toggled",
-                     G_CALLBACK(on_bold_titles_toggled), sw);
-    gtk_box_pack_start(GTK_BOX(vbox), bold_check, FALSE, FALSE, 0);
+    sw->sync_check = gtk_check_button_new_with_label(
+        "Enable Google Tasks sync");
+    g_signal_connect(sw->sync_check, "toggled",
+                     G_CALLBACK(on_sync_enabled_toggled), sw);
+    gtk_box_pack_start(GTK_BOX(vbox), sw->sync_check, FALSE, FALSE, 0);
 
-    GtkWidget *forecast_check = gtk_check_button_new_with_label(
-        "Show the Weekly Forecast view (this week, day by day)");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(forecast_check),
-        bt_app_config_get_bool("weekly_forecast", TRUE));
-    g_signal_connect(forecast_check, "toggled",
-                     G_CALLBACK(on_forecast_toggled), sw);
-    gtk_box_pack_start(GTK_BOX(vbox), forecast_check, FALSE, FALSE, 0);
-
-    GtkWidget *overdue_check = gtk_check_button_new_with_label(
-        "Include all past-due tasks in the Due Today view");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(overdue_check),
-        bt_app_config_get_bool("due_today_show_overdue", FALSE));
-    g_signal_connect(overdue_check, "toggled",
-                     G_CALLBACK(on_due_today_overdue_toggled), sw);
-    gtk_box_pack_start(GTK_BOX(vbox), overdue_check, FALSE, FALSE, 0);
-
-    /* Toolbar style: icons / text below icons / text only.  Applies live
-     * to every registered toolbar; also reachable by right-clicking any
-     * toolbar (like Blue Notes).                                            */
-    GtkWidget *style_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_box_pack_start(GTK_BOX(style_row),
-                       gtk_label_new("Toolbar style:"), FALSE, FALSE, 0);
-    GtkWidget *style_combo = gtk_combo_box_text_new();
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(style_combo),
-                                   "Icons");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(style_combo),
-                                   "Text below icons");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(style_combo),
-                                   "Text only");
-    gtk_combo_box_set_active(GTK_COMBO_BOX(style_combo),
-        app->toolbar_style == GTK_TOOLBAR_BOTH ? 1
-        : app->toolbar_style == GTK_TOOLBAR_TEXT ? 2 : 0);
-    g_signal_connect(style_combo, "changed",
-                     G_CALLBACK(on_toolbar_style_changed), sw);
-    gtk_box_pack_start(GTK_BOX(style_row), style_combo, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), style_row, FALSE, FALSE, 0);
-
-#ifdef __APPLE__
-    GtkWidget *mac_check = gtk_check_button_new_with_label(
-        "Use the native macOS menu bar (hide the in-window menu)");
-#ifdef HAVE_GTKOSX
-    gtk_toggle_button_set_active(
-        GTK_TOGGLE_BUTTON(mac_check),
-        bt_app_config_get_bool("native_menubar", FALSE));
-    g_signal_connect(mac_check, "toggled",
-                     G_CALLBACK(on_native_menubar_toggled), sw);
-#else
-    gtk_widget_set_sensitive(mac_check, FALSE);
-    gtk_widget_set_tooltip_text(mac_check,
-        "Requires the gtk-mac-integration library:\n"
-        "sudo port install gtk-osx-application-gtk3, then rebuild "
-        "(make clean && make)");
-#endif
-    gtk_box_pack_start(GTK_BOX(vbox), mac_check, FALSE, FALSE, 0);
-#endif /* __APPLE__ */
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 2);
-
-    /* --- Database ---------------------------------------------------------- */
-    gtk_box_pack_start(GTK_BOX(vbox), section_label("Database"),
+    GtkWidget *btn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    sw->signin_btn = gtk_button_new_with_label(
+        "Sign In to Google\xe2\x80\xa6");
+    g_signal_connect(sw->signin_btn, "clicked",
+                     G_CALLBACK(on_signin), sw);
+    gtk_box_pack_start(GTK_BOX(btn_row), sw->signin_btn, FALSE, FALSE, 0);
+    sw->signout_btn = gtk_button_new_with_label("Sign Out");
+    g_signal_connect(sw->signout_btn, "clicked",
+                     G_CALLBACK(on_signout), sw);
+    gtk_box_pack_start(GTK_BOX(btn_row), sw->signout_btn,
                        FALSE, FALSE, 0);
-    GtkWidget *db_label = gtk_label_new(db_path);
-    gtk_label_set_ellipsize(GTK_LABEL(db_label), PANGO_ELLIPSIZE_MIDDLE);
-    gtk_label_set_selectable(GTK_LABEL(db_label), TRUE);
-    gtk_widget_set_halign(db_label, GTK_ALIGN_START);
-    gtk_box_pack_start(GTK_BOX(vbox), db_label, FALSE, FALSE, 0);
+    sw->state_label = gtk_label_new("");
+    gtk_box_pack_end(GTK_BOX(btn_row), sw->state_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), btn_row, FALSE, FALSE, 0);
+
+    GtkWidget *interval_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_pack_start(GTK_BOX(interval_row),
+                       gtk_label_new("Auto-sync every"), FALSE, FALSE, 0);
+    sw->interval_spin = gtk_spin_button_new_with_range(0, 720, 1);
+    gtk_widget_set_tooltip_text(sw->interval_spin,
+        "Minutes between automatic syncs while signed in; 0 disables "
+        "the timer (the Sync button always works)");
+    g_signal_connect(sw->interval_spin, "value-changed",
+                     G_CALLBACK(on_interval_changed), sw);
+    gtk_box_pack_start(GTK_BOX(interval_row), sw->interval_spin,
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(interval_row),
+                       gtk_label_new("minutes (0 = off)"),
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), interval_row, FALSE, FALSE, 0);
 
     /* --- Load current values ------------------------------------------------ */
     gchar *iv  = bt_app_config_get("sync_interval_min");
     gchar *bnc = bt_app_config_get("blue_notes_cli");
+    gchar *dbp = bt_app_config_get("db_path");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->sync_check),
         bt_app_config_get_bool("google_sync_enabled", TRUE));
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->interval_spin),
@@ -542,8 +630,11 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
         bt_app_config_get_bool("blue_notes_sync", FALSE));
     if (bnc != NULL)
         gtk_entry_set_text(GTK_ENTRY(sw->bn_cli_entry), bnc);
+    if (dbp != NULL)
+        gtk_entry_set_text(GTK_ENTRY(sw->db_path_entry), dbp);
     g_free(iv);
     g_free(bnc);
+    g_free(dbp);
     sw->loading = FALSE;
 
     state_refresh(sw);

@@ -2525,6 +2525,179 @@ find_gtk_image(GtkWidget *widget)
     return hit;
 }
 
+/* ---------------------------------------------------------------------------
+ * on_backup_db() — File → Back Up Database…: save a snapshot via the
+ * SQLite online-backup API; suggests a dated filename.
+ * ------------------------------------------------------------------------- */
+static void
+on_backup_db(GtkWidget *widget, gpointer user_data)
+{
+    (void)widget;
+    BtLibrary *lw = user_data;
+
+    GtkWidget *chooser = gtk_file_chooser_dialog_new(
+        "Back Up Database", GTK_WINDOW(lw->window),
+        GTK_FILE_CHOOSER_ACTION_SAVE,
+        "_Cancel", GTK_RESPONSE_CANCEL,
+        "_Back Up", GTK_RESPONSE_ACCEPT,
+        NULL);
+    gtk_file_chooser_set_do_overwrite_confirmation(
+        GTK_FILE_CHOOSER(chooser), TRUE);
+
+    GDateTime *now = g_date_time_new_now_local();
+    gchar *suggestion = g_date_time_format(now, "hacienda-backup-%Y%m%d.db");
+    g_date_time_unref(now);
+    gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(chooser), suggestion);
+    g_free(suggestion);
+
+    if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT) {
+        gchar *path = gtk_file_chooser_get_filename(
+            GTK_FILE_CHOOSER(chooser));
+        gtk_widget_destroy(chooser);
+        gboolean ok = bt_db_backup_to(lw->app->db, path);
+        bt_app_status(lw->app, ok ? "Database backed up" : "Backup failed");
+        bt_app_notice(GTK_WINDOW(lw->window),
+                      ok ? GTK_MESSAGE_INFO : GTK_MESSAGE_ERROR, NULL,
+                      ok ? "Database backed up to\n%s"
+                         : "Backup to %s failed", path);
+        g_free(path);
+    } else {
+        gtk_widget_destroy(chooser);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * on_open_db() — File → Open Database…: pick a .db file and open it as
+ * the new default or for this session only.
+ * ------------------------------------------------------------------------- */
+static void
+on_open_db(GtkWidget *widget, gpointer user_data)
+{
+    (void)widget;
+    BtLibrary *lw  = user_data;
+    BtApp     *app = lw->app;
+
+    GtkWidget *chooser = gtk_file_chooser_dialog_new(
+        "Open Database", GTK_WINDOW(lw->window),
+        GTK_FILE_CHOOSER_ACTION_OPEN,
+        "_Cancel", GTK_RESPONSE_CANCEL,
+        "_Open",   GTK_RESPONSE_ACCEPT,
+        NULL);
+    GtkFileFilter *ff = gtk_file_filter_new();
+    gtk_file_filter_set_name(ff, "SQLite Database (*.db)");
+    gtk_file_filter_add_pattern(ff, "*.db");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(chooser), ff);
+
+    gchar *file_path = NULL;
+    if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT)
+        file_path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
+    gtk_widget_destroy(chooser);
+    if (file_path == NULL)
+        return;
+
+    if (g_strcmp0(file_path, app->db->path) == 0) { /* already open         */
+        g_free(file_path);
+        return;
+    }
+
+    /* Ask: permanent default or this session only? */
+    gchar *display = g_path_get_basename(file_path);
+    GtkWidget *dlg = gtk_message_dialog_new(
+        GTK_WINDOW(lw->window), GTK_DIALOG_MODAL,
+        GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE,
+        "Open \xe2\x80\x9c%s\xe2\x80\x9d as your new default database, "
+        "or for this session only?", display);
+    g_free(display);
+    gtk_window_set_title(GTK_WINDOW(dlg), "Hacienda - Open Database");
+    gtk_dialog_add_buttons(GTK_DIALOG(dlg),
+        "_Cancel",         GTK_RESPONSE_CANCEL,
+        "_Session Only",   1,
+        "Set as _Default", 2,
+        NULL);
+    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+
+    if (resp == GTK_RESPONSE_CANCEL || resp == GTK_RESPONSE_DELETE_EVENT) {
+        g_free(file_path);
+        return;
+    }
+    gboolean set_default = (resp == 2);
+
+    bt_editor_close_all(app);
+    gchar *old_path = g_strdup(app->db->path);
+    bt_db_close(app->db);
+    GError *gerr = NULL;
+    app->db = bt_db_open(file_path, &gerr);
+
+    if (app->db == NULL) {
+        bt_app_notice(GTK_WINDOW(lw->window), GTK_MESSAGE_ERROR,
+                      "Hacienda - Database Error",
+                      "Could not open:\n%s\n\n%s",
+                      file_path,
+                      gerr != NULL ? gerr->message : "Unknown error");
+        g_clear_error(&gerr);
+        app->db = bt_db_open(old_path, &gerr); /* revert                   */
+        g_clear_error(&gerr);
+        g_free(old_path);
+        g_free(file_path);
+        return;
+    }
+
+    g_free(lw->db_path);
+    lw->db_path = g_strdup(file_path);
+
+    if (set_default)
+        bt_app_config_set("db_path", file_path);
+
+    g_free(old_path);
+    g_free(file_path);
+
+    bt_sync_auto_start(app, lw->db_path);
+    bt_app_notify_changed(app);
+    bt_app_status(app, "Opened %s", app->db->path);
+}
+
+/* ---------------------------------------------------------------------------
+ * on_restore_db() — File → Restore Database…: replace the current db with
+ * a backup file after confirmation.
+ * ------------------------------------------------------------------------- */
+static void
+on_restore_db(GtkWidget *widget, gpointer user_data)
+{
+    (void)widget;
+    BtLibrary *lw = user_data;
+
+    GtkWidget *chooser = gtk_file_chooser_dialog_new(
+        "Restore Database", GTK_WINDOW(lw->window),
+        GTK_FILE_CHOOSER_ACTION_OPEN,
+        "_Cancel", GTK_RESPONSE_CANCEL,
+        "_Restore", GTK_RESPONSE_ACCEPT,
+        NULL);
+    GtkFileFilter *ff = gtk_file_filter_new();
+    gtk_file_filter_set_name(ff, "Database files (*.db)");
+    gtk_file_filter_add_pattern(ff, "*.db");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(chooser), ff);
+
+    gchar *path = NULL;
+    if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT)
+        path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
+    gtk_widget_destroy(chooser);
+    if (path == NULL)
+        return;
+
+    if (bt_app_confirm(GTK_WINDOW(lw->window), NULL,
+            "Replace ALL current tasks with this backup?\n\n"
+            "The current database will be kept as hacienda.db.pre-restore.")) {
+        gboolean ok = bt_app_restore_database(lw->app, path);
+        bt_app_notice(GTK_WINDOW(lw->window),
+                      ok ? GTK_MESSAGE_INFO : GTK_MESSAGE_ERROR, NULL,
+                      "%s", ok ? "Database restored."
+                               : "Restore failed \xe2\x80\x94 the previous "
+                                 "database is still in use.");
+    }
+    g_free(path);
+}
+
 /* on_menu_about() — Help → About and the toolbar About button: the
  * standard about dialog with the app logo, version, database vitals and
  * a link to the BSD license (the Blue Notes About, retinted).               */
@@ -3281,6 +3454,16 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
               G_CALLBACK(on_menu_clear_completed), lw);
     menu_item(file_menu, "Settings\xe2\x80\xa6",
               G_CALLBACK(on_menu_settings), lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
+                          gtk_separator_menu_item_new());
+    menu_item(file_menu, "Open Database\xe2\x80\xa6",
+              G_CALLBACK(on_open_db), lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
+                          gtk_separator_menu_item_new());
+    menu_item(file_menu, "Back Up Database\xe2\x80\xa6",
+              G_CALLBACK(on_backup_db), lw);
+    menu_item(file_menu, "Restore Database\xe2\x80\xa6",
+              G_CALLBACK(on_restore_db), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
                           gtk_separator_menu_item_new());
     menu_item(file_menu, "Quit", G_CALLBACK(on_menu_quit), lw);

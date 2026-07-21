@@ -43,6 +43,7 @@
  * ------------------------------------------------------------------------- */
 typedef struct {
     sqlite3 *sq;
+    gchar   *path;                   /* absolute file path (owned)          */
 } BtDatabase;
 
 /* One task list.  Strings are owned by the struct.                          */
@@ -110,6 +111,10 @@ BtDatabase *bt_db_open(const gchar *path, GError **err);
 
 /* bt_db_close() — close the connection and free the handle.  NULL-safe.     */
 void bt_db_close(BtDatabase *db);
+
+/* bt_db_backup_to() — write a consistent online backup of `db` to
+ * `dest_path` using the SQLite backup API.  Returns TRUE on success.        */
+gboolean bt_db_backup_to(BtDatabase *db, const gchar *dest_path);
 
 /* bt_db_default_path() — "<user data dir>/hacienda/hacienda.db",
  * creating the directory.  Returns a new string (g_free it).                */

@@ -74,7 +74,11 @@ main(int argc, char **argv)
      * possibly concurrently.  Initialize once before any thread exists.     */
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
-    gchar *db_path = bt_db_default_path();
+    gchar *db_path = bt_app_config_get("db_path");
+    if (db_path == NULL || *db_path == '\0') {
+        g_free(db_path);
+        db_path = bt_db_default_path();
+    }
     GError *gerr = NULL;
     BtDatabase *db = bt_db_open(db_path, &gerr);
     if (db == NULL) {
