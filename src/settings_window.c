@@ -63,7 +63,7 @@ on_sync_enabled_toggled(GtkWidget *w, gpointer data)
     gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
     bt_app_config_set("google_sync_enabled", on ? "1" : "0");
     state_refresh(sw);
-    bt_sync_auto_start(sw->app, sw->db_path);
+    bt_sync_auto_start(sw->app, sw->app->db->path);
     /* Full notify: the library hides/shows its Sync button with this.       */
     bt_app_notify_changed(sw->app);
     bt_app_status(sw->app, on ? "Google Tasks sync enabled"
@@ -83,7 +83,7 @@ on_interval_changed(GtkWidget *w, gpointer data)
     gchar *v = g_strdup_printf("%d", minutes);
     bt_app_config_set("sync_interval_min", v);
     g_free(v);
-    bt_sync_auto_start(sw->app, sw->db_path);
+    bt_sync_auto_start(sw->app, sw->app->db->path);
 }
 
 /* signin_done() — completion of the browser flow started here.              */

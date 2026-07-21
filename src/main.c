@@ -84,6 +84,7 @@ main(int argc, char **argv)
         g_printerr("hacienda: %s\n",
                    gerr != NULL ? gerr->message : "cannot open database");
         g_clear_error(&gerr);
+        g_free(db_dir);
         g_free(db_path);
         return 1;
     }

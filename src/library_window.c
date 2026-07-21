@@ -2657,6 +2657,9 @@ on_open_db(GtkWidget *widget, gpointer user_data)
                       gerr != NULL ? gerr->message : "Unknown error");
         g_clear_error(&gerr);
         app->db = bt_db_open(old_path, &gerr); /* revert                   */
+        if (app->db == NULL)
+            g_critical("on_open_db: cannot revert to %s: %s", old_path,
+                       gerr != NULL ? gerr->message : "?");
         g_clear_error(&gerr);
         g_free(old_path);
         g_free(file_path);
@@ -3321,7 +3324,7 @@ on_task_drag_motion(GtkWidget *widget, GdkEventMotion *ev, gpointer data)
                     }
                 }
 
-                if (at_id != 0 || at_is_bn) {
+                if (at_id != 0 || (at_is_bn && drag_id == 0)) {
                     gint drag_idx = gtk_tree_path_get_indices(drag_path)[0];
                     gint at_idx   = gtk_tree_path_get_indices(at_path)[0];
                     /* Lock the target BEFORE the move; the row ref will

@@ -376,9 +376,21 @@ GPtrArray *
 bt_db_lists(BtDatabase *db, gboolean include_deleted)
 {
     GPtrArray *out = g_ptr_array_new();
+    /* Check once whether the user has ever drag-reordered the sidebar;
+     * if so, use stored positions (name-tiebroken), otherwise alphabetical. */
+    gboolean custom = FALSE;
+    {
+        sqlite3_stmt *cs = NULL;
+        if (sqlite3_prepare_v2(db->sq,
+                "SELECT 1 FROM sync_state WHERE key='lists_custom_order'",
+                -1, &cs, NULL) == SQLITE_OK)
+            custom = (sqlite3_step(cs) == SQLITE_ROW);
+        sqlite3_finalize(cs);
+    }
     gchar *sql = g_strdup_printf(
-        "SELECT " LIST_COLS " FROM lists%s ORDER BY lower(name)",
-        include_deleted ? "" : " WHERE deleted = 0");
+        "SELECT " LIST_COLS " FROM lists%s ORDER BY %s",
+        include_deleted ? "" : " WHERE deleted = 0",
+        custom ? "position, lower(name)" : "lower(name)");
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK)
         while (sqlite3_step(st) == SQLITE_ROW)
@@ -942,8 +954,12 @@ bt_db_subtask_move(BtDatabase *db, gint64 id, gint direction)
     for (guint i = 0; i < subs->len; i++) {
         gint64 sid = ((BtTask *)g_ptr_array_index(subs, i))->id;
         sqlite3_stmt *st = NULL;
-        sqlite3_prepare_v2(db->sq,
-            "UPDATE tasks SET position = ? WHERE id = ?", -1, &st, NULL);
+        if (sqlite3_prepare_v2(db->sq,
+                "UPDATE tasks SET position = ? WHERE id = ?",
+                -1, &st, NULL) != SQLITE_OK) {
+            step_done(db, NULL, "subtask_move prepare");
+            continue;
+        }
         sqlite3_bind_int(st, 1, (int)i);
         sqlite3_bind_int64(st, 2, sid);
         step_done(db, st, "subtask_move");

@@ -187,6 +187,9 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
                       "Could not open a database at that location.\n"
                       "The previous database is still in use.");
         app->db = bt_db_open(old_path, &gerr);
+        if (app->db == NULL)
+            g_critical("switch_database: cannot revert to %s: %s", old_path,
+                       gerr != NULL ? gerr->message : "?");
         g_clear_error(&gerr);
     } else {
         if (did_copy) {
@@ -232,10 +235,16 @@ bt_app_restore_database(BtApp *app, const gchar *backup_path)
             g_clear_error(&gerr);
             copy_file(safety, db_path);
             app->db = bt_db_open(db_path, &gerr);
+            if (app->db == NULL)
+                g_critical("restore_database: cannot revert to %s: %s",
+                           db_path, gerr != NULL ? gerr->message : "?");
             g_clear_error(&gerr);
         }
     } else {
         app->db = bt_db_open(db_path, &gerr);
+        if (app->db == NULL)
+            g_critical("restore_database: cannot reopen %s: %s",
+                       db_path, gerr != NULL ? gerr->message : "?");
         g_clear_error(&gerr);
     }
 

@@ -529,6 +529,7 @@ redirect_read_done(GObject *src, GAsyncResult *res, gpointer data)
     gchar *error = redirect_param(buf, "error");
     gchar *state = redirect_param(buf, "state");
     if (code == NULL && error == NULL) {
+        g_free(state);
         g_io_stream_close(G_IO_STREAM(conn), NULL, NULL);
         g_object_unref(conn);
         return;
