@@ -74,11 +74,10 @@ main(int argc, char **argv)
      * possibly concurrently.  Initialize once before any thread exists.     */
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
-    gchar *db_path = bt_app_config_get("db_path");
-    if (db_path == NULL || *db_path == '\0') {
-        g_free(db_path);
-        db_path = bt_db_default_path();
-    }
+    gchar *db_dir  = bt_app_config_get("db_dir");
+    gchar *db_path = (db_dir != NULL && *db_dir != '\0')
+                     ? g_build_filename(db_dir, BT_DB_FILENAME, NULL)
+                     : bt_db_default_path();
     GError *gerr = NULL;
     BtDatabase *db = bt_db_open(db_path, &gerr);
     if (db == NULL) {
@@ -92,7 +91,9 @@ main(int argc, char **argv)
     bt_oauth_init();                 /* snapshot Google credentials         */
 
     BtApp *app = g_new0(BtApp, 1);
-    app->db = db;
+    app->db     = db;
+    app->db_dir = (db_dir != NULL && *db_dir != '\0')
+                  ? g_strdup(db_dir) : NULL;
     app->editors = g_hash_table_new_full(g_int64_hash, g_int64_equal,
                                          g_free, NULL);
     app->bn_editors = g_hash_table_new_full(g_str_hash, g_str_equal,
@@ -114,7 +115,9 @@ main(int argc, char **argv)
     g_hash_table_destroy(app->bn_editors);
     g_ptr_array_free(app->toolbars, TRUE);
     bt_db_close(app->db);
+    g_free(app->db_dir);
     g_free(app);
+    g_free(db_dir);
     g_free(db_path);
     curl_global_cleanup();
     return status;

@@ -25,7 +25,6 @@ typedef struct {
     GtkWidget *bn_cli_entry;         /* blue_notes command path             */
     GtkWidget *bn_embed_combo;       /* where action items appear           */
     GArray    *bn_embed_ids;         /* combo index → list id (0 = own)     */
-    GtkWidget *db_path_entry;        /* custom database location            */
     gboolean   loading;              /* suppress write-through on load      */
 } BtSettings;
 
@@ -265,56 +264,97 @@ on_native_menubar_toggled(GtkToggleButton *check, gpointer data)
 }
 #endif /* HAVE_GTKOSX */
 
-/* on_db_path_changed() — the custom db location entry: persist immediately. */
+/* ---------------------------------------------------------------------------
+ * DbSection — widgets of the Database settings block, kept alive so
+ * handlers can update them after a location switch.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    BtApp     *app;
+    GtkWidget *check;                /* "custom folder" checkbox             */
+    GtkWidget *choose_btn;           /* "Choose Folder…" (sensitive = custom)*/
+    GtkWidget *path_label;           /* shows the active db file path        */
+} DbSection;
+
+/* db_section_refresh() — sync the widgets with the current app state.       */
 static void
-on_db_path_changed(GtkWidget *w, gpointer data)
+db_section_refresh(DbSection *s)
 {
-    (void)data;
-    const gchar *v = gtk_entry_get_text(GTK_ENTRY(w));
-    bt_app_config_set("db_path", (*v != '\0') ? v : NULL);
+    gchar *markup = g_markup_printf_escaped(
+        "<small>Current database: %s</small>", s->app->db->path);
+    gtk_label_set_markup(GTK_LABEL(s->path_label), markup);
+    g_free(markup);
+    gtk_widget_set_sensitive(s->choose_btn, s->app->db_dir != NULL);
 }
 
-/* on_db_path_browse() — Browse button: pick a .db file and put its path
- * into the custom location entry (which then triggers on_db_path_changed). */
-static void
-on_db_path_browse(GtkWidget *w, gpointer data)
-{
-    (void)w;
-    BtSettings *sw = data;
+static void on_db_custom_toggled(GtkToggleButton *check, gpointer user_data);
 
+/* db_switch_report() — run the switch and re-sync widgets with whatever
+ * actually happened (a cancelled or failed switch leaves the old db active).*/
+static void
+db_switch_report(DbSection *s, const gchar *new_dir)
+{
+    bt_app_switch_database(s->app, new_dir);
+    g_signal_handlers_block_by_func(s->check, on_db_custom_toggled, s);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(s->check),
+                                 s->app->db_dir != NULL);
+    g_signal_handlers_unblock_by_func(s->check, on_db_custom_toggled, s);
+    db_section_refresh(s);
+}
+
+/* db_pick_folder() — run a folder-chooser dialog; returns new path or NULL. */
+static gchar *
+db_pick_folder(DbSection *s)
+{
     GtkWidget *chooser = gtk_file_chooser_dialog_new(
-        "Choose Database Location",
-        GTK_WINDOW(sw->window),
-        GTK_FILE_CHOOSER_ACTION_SAVE,
+        "Choose Database Folder",
+        GTK_WINDOW(gtk_widget_get_toplevel(s->check)),
+        GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
         "_Cancel", GTK_RESPONSE_CANCEL,
         "_Select", GTK_RESPONSE_ACCEPT,
         NULL);
-    gtk_file_chooser_set_do_overwrite_confirmation(
-        GTK_FILE_CHOOSER(chooser), FALSE);
-    GtkFileFilter *ff = gtk_file_filter_new();
-    gtk_file_filter_set_name(ff, "SQLite Database (*.db)");
-    gtk_file_filter_add_pattern(ff, "*.db");
-    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(chooser), ff);
-
-    /* Pre-navigate to the current entry path or the active db's directory. */
-    const gchar *cur = gtk_entry_get_text(GTK_ENTRY(sw->db_path_entry));
-    if (cur != NULL && *cur != '\0') {
-        gtk_file_chooser_set_filename(GTK_FILE_CHOOSER(chooser), cur);
-    } else if (sw->db_path != NULL) {
-        gchar *dir = g_path_get_dirname(sw->db_path);
-        gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), dir);
-        g_free(dir);
-        gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(chooser),
-                                          BT_DB_FILENAME);
-    }
-
-    if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT) {
-        gchar *path = gtk_file_chooser_get_filename(
-            GTK_FILE_CHOOSER(chooser));
-        gtk_entry_set_text(GTK_ENTRY(sw->db_path_entry), path);
-        g_free(path);
-    }
+    if (s->app->db_dir != NULL)
+        gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser),
+                                            s->app->db_dir);
+    gchar *dir = NULL;
+    if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT)
+        dir = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
     gtk_widget_destroy(chooser);
+    return dir;
+}
+
+/* on_db_custom_toggled() — checkbox toggled: switch to custom or default.   */
+static void
+on_db_custom_toggled(GtkToggleButton *check, gpointer user_data)
+{
+    DbSection *s = user_data;
+    gboolean want_custom = gtk_toggle_button_get_active(check);
+
+    if (want_custom && s->app->db_dir == NULL) {
+        gchar *dir = db_pick_folder(s);
+        if (dir == NULL) {
+            g_signal_handlers_block_by_func(check, on_db_custom_toggled, s);
+            gtk_toggle_button_set_active(check, FALSE);
+            g_signal_handlers_unblock_by_func(check, on_db_custom_toggled, s);
+            return;
+        }
+        db_switch_report(s, dir);
+        g_free(dir);
+    } else if (!want_custom && s->app->db_dir != NULL) {
+        db_switch_report(s, NULL);   /* back to the default location         */
+    }
+}
+
+/* on_db_choose_clicked() — "Choose Folder…" button: re-pick the folder.    */
+static void
+on_db_choose_clicked(GtkButton *btn, gpointer user_data)
+{
+    (void)btn;
+    DbSection *s = user_data;
+    gchar *dir = db_pick_folder(s);
+    if (dir != NULL) {
+        db_switch_report(s, dir);
+        g_free(dir);
+    }
 }
 
 /* on_settings_destroy() — clear the singleton.                              */
@@ -455,43 +495,37 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     gtk_box_pack_start(GTK_BOX(vbox), section_label("Database"),
                        FALSE, FALSE, 0);
 
-    /* Read-only label showing the currently active database path.           */
-    GtkWidget *db_cur_label = gtk_label_new("Current database:");
-    gtk_widget_set_halign(db_cur_label, GTK_ALIGN_START);
-    gtk_box_pack_start(GTK_BOX(vbox), db_cur_label, FALSE, FALSE, 0);
-    GtkWidget *db_path_label = gtk_label_new(db_path);
-    gtk_label_set_ellipsize(GTK_LABEL(db_path_label), PANGO_ELLIPSIZE_MIDDLE);
-    gtk_label_set_selectable(GTK_LABEL(db_path_label), TRUE);
-    gtk_widget_set_halign(db_path_label, GTK_ALIGN_START);
-    bt_app_widget_add_css(db_path_label,
-                          "label { font-size: 85%; color: #555555; }");
-    gtk_box_pack_start(GTK_BOX(vbox), db_path_label, FALSE, FALSE, 0);
+    DbSection *dbs = g_new0(DbSection, 1);
+    dbs->app = app;
+    g_object_set_data_full(G_OBJECT(sw->window), "bt-db-section",
+                           dbs, g_free);
 
-    /* Editable entry for a custom default location (takes effect on next
-     * launch; use File → Open Database to switch the running session).      */
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       gtk_label_new(
-                           "Custom location (leave blank for default,"
-                           " takes effect on next launch):"),
-                       FALSE, FALSE, 0);
+    dbs->check = gtk_check_button_new_with_label(
+        "Store the database in a custom folder (e.g. a shared drive)");
+    gtk_widget_set_margin_start(dbs->check, 12);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dbs->check),
+                                 app->db_dir != NULL);
+    gtk_box_pack_start(GTK_BOX(vbox), dbs->check, FALSE, FALSE, 0);
+
     GtkWidget *db_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    sw->db_path_entry = gtk_entry_new();
-    gchar *def_path   = bt_db_default_path();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(sw->db_path_entry), def_path);
-    g_free(def_path);
-    gtk_widget_set_hexpand(sw->db_path_entry, TRUE);
-    gtk_widget_set_tooltip_text(sw->db_path_entry,
-        "Custom database file path.  Blank = default location.\n"
-        "Takes effect on next launch.  Use File \xe2\x86\x92 Open Database "
-        "to switch immediately in the current session.");
-    g_signal_connect(sw->db_path_entry, "changed",
-                     G_CALLBACK(on_db_path_changed), sw);
-    gtk_box_pack_start(GTK_BOX(db_row), sw->db_path_entry, TRUE, TRUE, 0);
-    GtkWidget *browse_btn = gtk_button_new_with_label("Browse\xe2\x80\xa6");
-    g_signal_connect(browse_btn, "clicked",
-                     G_CALLBACK(on_db_path_browse), sw);
-    gtk_box_pack_start(GTK_BOX(db_row), browse_btn, FALSE, FALSE, 0);
+    gtk_widget_set_margin_start(db_row, 12);
+    dbs->choose_btn = gtk_button_new_with_label(
+        "Choose Folder\xe2\x80\xa6");
+    gtk_box_pack_start(GTK_BOX(db_row), dbs->choose_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), db_row, FALSE, FALSE, 0);
+
+    dbs->path_label = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(dbs->path_label), 0.0);
+    gtk_label_set_line_wrap(GTK_LABEL(dbs->path_label), TRUE);
+    gtk_label_set_max_width_chars(GTK_LABEL(dbs->path_label), 40);
+    gtk_widget_set_margin_start(dbs->path_label, 12);
+    gtk_box_pack_start(GTK_BOX(vbox), dbs->path_label, FALSE, FALSE, 0);
+
+    db_section_refresh(dbs);
+    g_signal_connect(dbs->check, "toggled",
+                     G_CALLBACK(on_db_custom_toggled), dbs);
+    g_signal_connect(dbs->choose_btn, "clicked",
+                     G_CALLBACK(on_db_choose_clicked), dbs);
 
     gtk_box_pack_start(GTK_BOX(vbox),
                        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
@@ -621,7 +655,6 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     /* --- Load current values ------------------------------------------------ */
     gchar *iv  = bt_app_config_get("sync_interval_min");
     gchar *bnc = bt_app_config_get("blue_notes_cli");
-    gchar *dbp = bt_app_config_get("db_path");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->sync_check),
         bt_app_config_get_bool("google_sync_enabled", TRUE));
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->interval_spin),
@@ -630,11 +663,8 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
         bt_app_config_get_bool("blue_notes_sync", FALSE));
     if (bnc != NULL)
         gtk_entry_set_text(GTK_ENTRY(sw->bn_cli_entry), bnc);
-    if (dbp != NULL)
-        gtk_entry_set_text(GTK_ENTRY(sw->db_path_entry), dbp);
     g_free(iv);
     g_free(bnc);
-    g_free(dbp);
     sw->loading = FALSE;
 
     state_refresh(sw);

@@ -4,6 +4,7 @@
 
 #include "app.h"
 #include "db.h"
+#include "editor_window.h"
 #include <glib/gstdio.h>
 #include <stdio.h>
 #include <string.h>
@@ -110,6 +111,100 @@ copy_file(const gchar *src, const gchar *dest)
                                   NULL, NULL, NULL, NULL);
     g_object_unref(fsrc);
     g_object_unref(fdest);
+    return ok;
+}
+
+/* ---------------------------------------------------------------------------
+ * bt_app_switch_database() — move hacienda.db to a new directory (see app.h).
+ * ------------------------------------------------------------------------- */
+gboolean
+bt_app_switch_database(BtApp *app, const gchar *new_dir)
+{
+    /* Resolve the target file path.                                          */
+    gchar *target;
+    if (new_dir != NULL) {
+        g_mkdir_with_parents(new_dir, 0755);
+        target = g_build_filename(new_dir, BT_DB_FILENAME, NULL);
+    } else {
+        target = bt_db_default_path();
+    }
+    if (g_strcmp0(target, app->db->path) == 0) {
+        g_free(target);
+        return TRUE;                   /* already there: nothing to do        */
+    }
+
+    /* If a database already exists at the target, ask before touching it.   */
+    gboolean overwrite = FALSE;
+    if (g_file_test(target, G_FILE_TEST_EXISTS)) {
+        GtkWindow *parent = app->library_window != NULL
+                            ? GTK_WINDOW(app->library_window) : NULL;
+        GtkWidget *dialog = gtk_message_dialog_new(
+            parent, GTK_DIALOG_MODAL,
+            GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE,
+            "That folder already contains a tasks database.\n\n"
+            "Use the tasks stored there, or overwrite it with a copy "
+            "of your current database?\n"
+            "(Overwriting permanently replaces the file at %s.)", target);
+        gtk_window_set_title(GTK_WINDOW(dialog),
+                             "Hacienda - Existing Database");
+        gtk_dialog_add_buttons(GTK_DIALOG(dialog),
+            "_Cancel",                GTK_RESPONSE_CANCEL,
+            "_Use Existing Database", 1,
+            "_Overwrite It",          2,
+            NULL);
+        gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+        gtk_widget_destroy(dialog);
+        if (response != 1 && response != 2) {
+            g_free(target);
+            return FALSE;              /* cancelled: nothing touched          */
+        }
+        overwrite = (response == 2);
+    }
+
+    bt_editor_close_all(app);
+
+    gchar *old_path = g_strdup(app->db->path);
+    bt_db_close(app->db);
+    app->db = NULL;
+
+    gboolean did_copy = FALSE;
+    if (g_file_test(old_path, G_FILE_TEST_EXISTS)) {
+        if (overwrite || !g_file_test(target, G_FILE_TEST_EXISTS))
+            did_copy = copy_file(old_path, target);
+    }
+
+    GError *gerr = NULL;
+    app->db = bt_db_open(target, &gerr);
+    gboolean ok = (app->db != NULL);
+
+    if (!ok) {
+        g_warning("switch_database: cannot open %s: %s", target,
+                  gerr != NULL ? gerr->message : "?");
+        g_clear_error(&gerr);
+        bt_app_notice(app->library_window != NULL
+                          ? GTK_WINDOW(app->library_window) : NULL,
+                      GTK_MESSAGE_ERROR, NULL,
+                      "Could not open a database at that location.\n"
+                      "The previous database is still in use.");
+        app->db = bt_db_open(old_path, &gerr);
+        g_clear_error(&gerr);
+    } else {
+        if (did_copy) {
+            GFile *fold = g_file_new_for_path(old_path);
+            if (!g_file_delete(fold, NULL, NULL))
+                g_warning("switch_database: could not remove %s", old_path);
+            g_object_unref(fold);
+        }
+        g_free(app->db_dir);
+        app->db_dir = g_strdup(new_dir);
+        bt_app_config_set("db_dir", new_dir);  /* NULL clears the key        */
+    }
+
+    g_free(target);
+    g_free(old_path);
+
+    if (ok)
+        bt_app_notify_changed(app);
     return ok;
 }
 

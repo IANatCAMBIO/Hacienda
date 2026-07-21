@@ -55,6 +55,9 @@
  *                    remove themselves on destroy.
  *   icons_dir      — absolute path of the local icons/ folder the
  *                    toolbar button PNGs are loaded from (owned string).
+ *   db_dir         — custom directory holding hacienda.db (owned string),
+ *                    or NULL for the default location.  Persisted in the
+ *                    ini as "db_dir"; not stored in the database itself.
  * ------------------------------------------------------------------------- */
 typedef struct BtApp {
     GtkApplication  *gtk_app;
@@ -70,6 +73,7 @@ typedef struct BtApp {
     GtkToolbarStyle  toolbar_style;
     GPtrArray       *toolbars;
     gchar           *icons_dir;
+    gchar           *db_dir;
 } BtApp;
 
 /* ---------------------------------------------------------------------------
@@ -140,6 +144,15 @@ void bt_app_status(BtApp *app, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
 void bt_app_notify_changed(BtApp *app);
 
 /* ---------------------------------------------------------------------------
+ * bt_app_switch_database() — move hacienda.db to `new_dir` (or back to
+ * the default location when `new_dir` is NULL): closes all editors, copies
+ * the database to the new home (offering to keep an existing file there),
+ * reopens, updates app->db_dir + config, and fires notify_changed.
+ * Returns TRUE on success; on failure the previous database is still open.
+ * ------------------------------------------------------------------------- */
+gboolean bt_app_switch_database(BtApp *app, const gchar *new_dir);
+
+/* ---------------------------------------------------------------------------
  * bt_app_restore_database() — replace the active database with a backup
  * file: closes app->db, copies `backup_path` over the active path (keeping
  * a .pre-restore safety copy), reopens and fires notify_changed.
@@ -167,9 +180,9 @@ gboolean bt_app_confirm(GtkWindow *parent, const gchar *title,
  * every change.  Keys used (see hacienda.ini.defaults): sync —
  * google_sync_enabled, google_client_id, google_client_secret,
  * gtasks_refresh_token, sync_interval_min; Blue Notes — blue_notes_sync,
- * blue_notes_cli, blue_notes_embed_list; Database — db_path (custom
- * database file path; absent = default location); UI — toolbar_style,
- * bold_task_titles, native_menubar,
+ * blue_notes_cli, blue_notes_embed_list; Database — db_dir (custom
+ * directory for hacienda.db; absent = default location); UI —
+ * toolbar_style, bold_task_titles, native_menubar,
  * show_completed, sidebar_visible, weekly_forecast, win_w, win_h.
  * ------------------------------------------------------------------------- */
 void      bt_app_config_init(const gchar *argv0);

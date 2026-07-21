@@ -81,6 +81,8 @@ typedef struct {
     GtkWidget    *sync_item;         /* the Lists-menu Sync item            */
     GtkWidget    *hide_done_item;    /* completed-visibility toggle button  */
     GtkWidget    *manual_sort_item;  /* manual-sort mode toggle button      */
+    GtkWidget    *view_show_done_item;  /* View menu: Show Completed check  */
+    GtkWidget    *view_manual_sort_item;/* View menu: Manual Sort check     */
     gint          sel_kind;
     gint64        sel_id;
     gboolean      populating;
@@ -288,6 +290,8 @@ static gint64   bn_embed_list(BtLibrary *lw);
 static void     task_view_apply_manual_order(BtLibrary *lw);
 static void     task_manual_sort_apply(BtLibrary *lw);
 static gboolean on_column_header_press(GtkWidget *, GdkEventButton *, gpointer);
+static void     on_menu_toggle_done_visible(GtkWidget *, gpointer);
+static void     on_menu_toggle_manual_sort(GtkWidget *, gpointer);
 
 /* sidebar_show_pinned() — whether the Pinned Tasks meta row should
  * exist: any pinned task, or (while the integration is on) any pinned
@@ -998,6 +1002,14 @@ hide_done_icon_refresh(BtLibrary *lw)
     }
     gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->hide_done_item),
         show ? "Hide completed tasks" : "Show completed tasks");
+    if (lw->view_show_done_item) {
+        g_signal_handlers_block_by_func(lw->view_show_done_item,
+                                        on_menu_toggle_done_visible, lw);
+        gtk_check_menu_item_set_active(
+            GTK_CHECK_MENU_ITEM(lw->view_show_done_item), show);
+        g_signal_handlers_unblock_by_func(lw->view_show_done_item,
+                                          on_menu_toggle_done_visible, lw);
+    }
 }
 
 /* on_toggle_done_visible() — the toolbar toggle behind it: flip the
@@ -1030,6 +1042,14 @@ manual_sort_icon_refresh(BtLibrary *lw)
     gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->manual_sort_item),
         manual ? "Switch to column sorting"
                : "Switch to manual drag sorting");
+    if (lw->view_manual_sort_item) {
+        g_signal_handlers_block_by_func(lw->view_manual_sort_item,
+                                        on_menu_toggle_manual_sort, lw);
+        gtk_check_menu_item_set_active(
+            GTK_CHECK_MENU_ITEM(lw->view_manual_sort_item), manual);
+        g_signal_handlers_unblock_by_func(lw->view_manual_sort_item,
+                                          on_menu_toggle_manual_sort, lw);
+    }
 }
 
 /* on_toggle_manual_sort() — toolbar button that flips task_list_manual_sort
@@ -2646,8 +2666,13 @@ on_open_db(GtkWidget *widget, gpointer user_data)
     g_free(lw->db_path);
     lw->db_path = g_strdup(file_path);
 
-    if (set_default)
-        bt_app_config_set("db_path", file_path);
+    if (set_default) {
+        gchar *dir = g_path_get_dirname(file_path);
+        g_free(app->db_dir);
+        app->db_dir = g_strdup(dir);
+        bt_app_config_set("db_dir", dir);
+        g_free(dir);
+    }
 
     g_free(old_path);
     g_free(file_path);
@@ -2696,6 +2721,35 @@ on_restore_db(GtkWidget *widget, gpointer user_data)
                                  "database is still in use.");
     }
     g_free(path);
+}
+
+/* on_menu_toggle_done_visible() — View → Show Completed: read the new check
+ * state (class handler has already toggled it), sync config + toolbar.
+ * Connected via "toggled" so the handler runs after priv->active is settled;
+ * hide_done_icon_refresh blocks this handler when it calls set_active so the
+ * toolbar → menu sync path does not recurse.                                 */
+static void
+on_menu_toggle_done_visible(GtkWidget *w, gpointer data)
+{
+    BtLibrary *lw = data;
+    gboolean show = gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(w));
+    bt_app_config_set("show_completed", show ? "1" : "0");
+    hide_done_icon_refresh(lw);
+    refresh_tasks(lw);
+}
+
+/* on_menu_toggle_manual_sort() — View → Manual Sort: mirror of the above
+ * for the task_list_manual_sort config key.  Same block/unblock protocol
+ * with manual_sort_icon_refresh.                                             */
+static void
+on_menu_toggle_manual_sort(GtkWidget *w, gpointer data)
+{
+    BtLibrary *lw = data;
+    gboolean manual = gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(w));
+    bt_app_config_set("task_list_manual_sort", manual ? "1" : "0");
+    task_manual_sort_apply(lw);
+    manual_sort_icon_refresh(lw);
+    refresh_tasks(lw);
 }
 
 /* on_menu_about() — Help → About and the toolbar About button: the
@@ -3449,11 +3503,13 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
     GtkWidget *file_menu = gtk_menu_new();
     GtkWidget *file_item = gtk_menu_item_new_with_label("File");
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(file_item), file_menu);
+    menu_item(file_menu, "New Task", G_CALLBACK(on_new_task), lw);
+    menu_item(file_menu, "New List\xe2\x80\xa6", G_CALLBACK(on_new_list), lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
+                          gtk_separator_menu_item_new());
     menu_item(file_menu, "Sync Now", G_CALLBACK(on_sync), lw);
     menu_item(file_menu, "Clear Completed Tasks",
               G_CALLBACK(on_menu_clear_completed), lw);
-    menu_item(file_menu, "Settings\xe2\x80\xa6",
-              G_CALLBACK(on_menu_settings), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
                           gtk_separator_menu_item_new());
     menu_item(file_menu, "Open Database\xe2\x80\xa6",
@@ -3466,15 +3522,39 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
               G_CALLBACK(on_restore_db), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
                           gtk_separator_menu_item_new());
+    menu_item(file_menu, "Settings\xe2\x80\xa6",
+              G_CALLBACK(on_menu_settings), lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
+                          gtk_separator_menu_item_new());
+    menu_item(file_menu, "About", G_CALLBACK(on_menu_about), lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
+                          gtk_separator_menu_item_new());
     menu_item(file_menu, "Quit", G_CALLBACK(on_menu_quit), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), file_item);
 
-    GtkWidget *help_menu = gtk_menu_new();
-    GtkWidget *help_item = gtk_menu_item_new_with_label("Help");
-    gtk_menu_item_set_submenu(GTK_MENU_ITEM(help_item), help_menu);
-    menu_item(help_menu, "About Hacienda",
-              G_CALLBACK(on_menu_about), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), help_item);
+    GtkWidget *view_menu = gtk_menu_new();
+    GtkWidget *view_item = gtk_menu_item_new_with_label("View");
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(view_item), view_menu);
+    lw->view_show_done_item =
+        gtk_check_menu_item_new_with_label("Show Completed");
+    gtk_check_menu_item_set_active(
+        GTK_CHECK_MENU_ITEM(lw->view_show_done_item),
+        bt_app_config_get_bool("show_completed", TRUE));
+    g_signal_connect(lw->view_show_done_item, "toggled",
+                     G_CALLBACK(on_menu_toggle_done_visible), lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
+                          lw->view_show_done_item);
+    lw->view_manual_sort_item =
+        gtk_check_menu_item_new_with_label("Manual Sort");
+    gtk_check_menu_item_set_active(
+        GTK_CHECK_MENU_ITEM(lw->view_manual_sort_item),
+        bt_app_config_get_bool("task_list_manual_sort", FALSE));
+    g_signal_connect(lw->view_manual_sort_item, "toggled",
+                     G_CALLBACK(on_menu_toggle_manual_sort), lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
+                          lw->view_manual_sort_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), view_item);
+
     /* Remembered so the menu can be moved into the native macOS menu
      * bar (see bt_library_apply_native_menubar).                            */
     g_object_set_data(G_OBJECT(lw->window), "bt-menubar", menubar);
