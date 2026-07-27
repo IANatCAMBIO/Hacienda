@@ -32,8 +32,8 @@ the user).  A logic test harness lives in the session scratchpad
 |---|---|
 | `src/main.c` | GtkApplication entry; config → curl_global_init → db → oauth snapshot → window → auto-sync; icon-theme path for HiDPI expanders |
 | `src/app.[ch]` | Shared `BtApp` context; ini config; dialogs; toolbar style system (icons/both/text + right-click menu); HiDPI icon loader; CSS helper; date helpers |
-| `src/db.[ch]` | SQLite schema (user_version 4) + CRUD; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
-| `src/library_window.[ch]` | Sidebar (virtual lists + collapsible Lists section), tall task rows, toolbar, mini +/✎/− bar, multi-select context menu, status bar |
+| `src/db.[ch]` | SQLite schema (user_version 5) + CRUD; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
+| `src/library_window.[ch]` | Sidebar (virtual lists + collapsible Lists section with list groups), tall task rows, toolbar, multi-select context menu, status bar |
 | `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); reduced Blue Notes variant; read-only "From Google" section |
 | `src/settings_window.[ch]` | Singleton settings: sync master switch, sign in/out, auto-sync interval, Blue Notes integration, toolbar style, native menubar |
 | `src/oauth.[ch]` | OAuth 2.0 installed-app flow: PKCE + loopback listener; refresh token in ini; access tokens in memory |
@@ -83,13 +83,19 @@ the user).  A logic test harness lives in the session scratchpad
   fallback); registered with `bt_app_register_toolbar` so the
   icons/both/text style applies live (Settings combo + right-click
   radio menu).  Layout (all left-packed): the Sidebar toggle, a drawn
-  divider, Sync, the completed-visibility toggle, a second divider,
-  then New Task and Delete Task.  The completed-visibility toggle
-  (`show_completed`, default 1) shows
+  divider, Sync, the completed-visibility toggle, the Manual Sort
+  toggle, a second divider, then New Task and Delete Task.
+  The completed-visibility toggle (`show_completed`, default 1) shows
   hidden.png while completed tasks are visible and visible.png while
   hidden (the icon names the ACTION), swapped live via
   `hide_done_icon_refresh`; the filter applies to every task-pane view
-  including Blue Notes rows.  Far right (after an expanding blank
+  including Blue Notes rows.  The Manual Sort toggle
+  (`task_list_manual_sort`, default 0) enables drag-reorder of the task
+  pane: a ⠿ drag-handle column (26 px wide, `cdrag`) appears; order is
+  persisted per view in config keys `manual_order_list_<id>`,
+  `manual_order_all`, `manual_order_pinned`, `manual_order_today`,
+  `manual_order_bn_actions`.  A drag-lock (`drag_lock_ref`) prevents
+  rapid row flicker at boundaries.  Far right (after an expanding blank
   separator): the About button — eco-home.png logo in every style
   except text-only, which swaps in an "About" label
   (`about_button_fit_style` on "style-changed"); it opens the Blue
@@ -106,9 +112,14 @@ the user).  A logic test harness lives in the session scratchpad
   func).  Dimmed markup uses Pango `alpha`, NEVER a fixed gray —
   hardcoded grays are unreadable on the blue selection.  Due tint:
   overdue #c01c28, today #d19a00, ahead #26a269, computed at draw time.
+  Right-clicking any column header shows a hide/show menu for the Done
+  and Due Date columns; visibility persists in `col_done_visible` /
+  `col_due_visible`.
 - Sidebar: gray backdrop CSS (rgb 230,230,230 / text 65,65,65 /
-  selection rgb 86,131,224 white); meta rows bold (Pinned, All Tasks,
-  Due Today ☀️, Weekly Forecast 🌤️).  Weekly Forecast is its OWN
+  selection rgb 86,131,224 white); meta rows bold (Favorites ⭐️, All
+  Tasks, Due Today ☀️, Weekly Forecast 🌤️).  Due Today optionally
+  includes all past-due tasks via `due_today_show_overdue` (Settings →
+  Appearance; default off).  Weekly Forecast is its OWN
   panel, not rows in the task store: seven full-width day sections
   (Sunday–Saturday) stacked vertically, 6 px apart, each a heading
   label + framed (NOT individually scrolled) two-column (done ✓ +
@@ -128,7 +139,7 @@ the user).  A logic test harness lives in the session scratchpad
   In-list day-section headers and side-by-side day columns were both
   tried and rejected (2026-07-16) — don't reintroduce.
   The row exists only while `weekly_forecast`=1 (Settings →
-  Appearance; default on).  The Pinned Tasks row exists ONLY while
+  Appearance; default on).  The Favorites row exists ONLY while
   something is pinned (`bt_db_has_pinned`, counting bn_pins when the
   Blue Notes integration is on); editor pin flips arrive via
   notify_tasks, so `notify_tasks_hook` rebuilds the sidebar on the
@@ -139,11 +150,17 @@ the user).  A logic test harness lives in the session scratchpad
   pin via their editor only).  Real lists nest under a collapsible bold
   "Lists" header whose expansion is SNAPSHOTTED before every rebuild
   (first population expands; force-open when the selection lives
-  inside).  List labels: `emoji + two spaces + name` when an emoji is
-  set.  Double-clicking a list row opens the Edit List dialog (metas/
-  header/BN row: no-op).  Mini action bar at the bottom: flat compact
-  + ✎ − buttons, right-aligned, under a thin theme separator (same as
-  the toolbar rule — black was tried and rejected as too harsh).  Sidebar starts HIDDEN by default
+  inside).  Lists can be organized into named **list groups**
+  (`SB_KIND_GROUP` rows, stored in `list_groups` table): right-click
+  the Lists header or a group → New Group / Rename Group / Remove Group;
+  right-click a list → Move to Group / Remove from Group.  Group
+  expansion state is snapshotted separately in `lw->group_expanded`
+  (GHashTable of group_id → bool); groups expand by default on first
+  population and force-open when the selected list is inside.  Selecting
+  a group row does NOT refresh the task pane — it just tracks
+  `sel_kind`/`sel_id`.  List labels: `emoji + two spaces + name` when
+  an emoji is set.  Double-clicking a list row opens the Edit List
+  dialog (metas/header/BN row: no-op).  Sidebar starts HIDDEN by default
   (`sidebar_visible`, write-through on toggle).  Lists are ALPHABETICAL
   by default and drag-reorderable: `bt_db_lists` sorts by lower(name)
   until sync_state `lists_custom_order` exists (set by
@@ -156,7 +173,8 @@ the user).  A logic test harness lives in the session scratchpad
   answers gdk_drag_status itself (returning TRUE), only
   on_sb_drag_drop requests the data, and on_sb_drag_received stops the
   default emission and performs the move.  Only SB_KIND_LIST rows may
-  drag or anchor a drop (never the metas, header, or Blue Notes row).
+  drag or anchor a drop (never the metas, header, group, or Blue Notes
+  row).
 - Window size: tracked via configure-event, persisted as `win_w/win_h`
   on clean close, restored at launch (980×640 fallback).
 - Model rebuilds: capture the scrolled window's vadjustment and restore
@@ -217,7 +235,7 @@ the user).  A logic test harness lives in the session scratchpad
   edit.  Replies stamp rows clean (remote updated + fresh etag).
 - LOCAL-ONLY fields (never sent): `pinned`, task `priority` (binary
   high-priority flag; every view query sorts `priority DESC` first so
-  flagged tasks top any list they appear in, red ⚑ in the task cell,
+  flagged tasks top any list they appear in, 🚨 (siren emoji) in the task cell,
   "High Priority" editor checkbox), list `emoji`, attachments.
   The API has NO starring and `due` is DATE-ONLY (time is documented as
   discarded and unreadable) — both confirmed against the docs; don't
@@ -263,7 +281,7 @@ the user).  A logic test harness lives in the session scratchpad
   — no CLI verbs for them).  PINNING and HIGH PRIORITY work: both are
   local-only state (`bn_pins` / `bn_priority` tables) keyed by the
   item's "NOTEID:ORD" ref (Blue Notes knows neither concept); pinned
-  action items also appear in the Pinned Tasks view.  BN rows are
+  action items also appear in the Favorites view.  BN rows are
   fetched ONCE per refresh (`bn_rows_fetch` — the CLI is expensive)
   and appended via `append_bn_items` in a priority-then-rest pass
   pair; in the embedded list the priority pass lands ABOVE the tasks,

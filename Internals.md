@@ -12,7 +12,7 @@ and the sync engine. For everyday use see the
 | `src/main.c`               | GtkApplication entry point; config, database and OAuth init, auto-sync timer |
 | `src/app.[ch]`             | Shared `BtApp` context: ini config, dialogs, toolbar styles, icon loading, date helpers |
 | `src/db.[ch]`              | SQLite layer: lists, tasks, subtasks, attachments; tombstones and `updated_at` for sync |
-| `src/library_window.[ch]`  | Sidebar, tall task rows, toolbar, context menus, status bar |
+| `src/library_window.[ch]`  | Sidebar (with list groups), tall task rows, toolbar, context menus, status bar |
 | `src/editor_window.[ch]`   | Per-task editor (and the reduced Blue Notes variant); debounced write-through saves |
 | `src/settings_window.[ch]` | The Settings window                                |
 | `src/oauth.[ch]`           | OAuth 2.0 installed-app flow: PKCE, loopback redirect |
@@ -28,11 +28,18 @@ Everything lives in one ordinary SQLite file (see *Storage* in the
 [User Guide](User_Guide.md)), so any standard SQLite tool can read it:
 
 ```sql
+CREATE TABLE list_groups (
+  id       INTEGER PRIMARY KEY,
+  name     TEXT    NOT NULL DEFAULT '',
+  position INTEGER NOT NULL DEFAULT 0    -- display order (UI only)
+);
+
 CREATE TABLE lists (
   id         INTEGER PRIMARY KEY,
   name       TEXT    NOT NULL DEFAULT '',
   emoji      TEXT    NOT NULL DEFAULT '',   -- local-only, never synced
   position   INTEGER NOT NULL DEFAULT 0,    -- local-only display order
+  group_id   INTEGER REFERENCES list_groups(id),  -- optional group (v5)
   gtasks_id  TEXT,                          -- bound Google tasklist
   updated_at INTEGER NOT NULL DEFAULT 0,    -- UNIX seconds
   deleted    INTEGER NOT NULL DEFAULT 0     -- tombstone until pushed
@@ -48,6 +55,7 @@ CREATE TABLE tasks (
   due          INTEGER NOT NULL DEFAULT 0,    -- UNIX local midnight; 0 = none
   done         INTEGER NOT NULL DEFAULT 0,
   pinned       INTEGER NOT NULL DEFAULT 0,    -- local-only, never synced
+  priority     INTEGER NOT NULL DEFAULT 0,    -- local-only high-priority flag (v4)
   position     INTEGER NOT NULL DEFAULT 0,
   gtasks_id    TEXT,                          -- bound Google task
   updated_at   INTEGER NOT NULL DEFAULT 0,    -- UNIX seconds
@@ -67,13 +75,17 @@ CREATE TABLE attachments (
 );
 
 CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE bn_pins    (ref TEXT PRIMARY KEY);  -- pinned Blue Notes items
+CREATE TABLE bn_pins     (ref TEXT PRIMARY KEY);  -- pinned Blue Notes items
+CREATE TABLE bn_priority (ref TEXT PRIMARY KEY);  -- high-priority BN items
 
 CREATE INDEX idx_tasks_list ON tasks(list_id, parent_id, position);
 ```
 
-The schema version rides in `PRAGMA user_version` (currently 3);
-older files are migrated in place at open.
+The schema version rides in `PRAGMA user_version` (currently **5**);
+older files are migrated in place at open.  Migration history: v2 adds
+`lists.emoji`; v3 adds five Google-mirror task columns (`completed_at`,
+`etag`, `web_link`, `glinks`, `assigned`); v4 adds `tasks.priority`;
+v5 adds `lists.group_id`.
 
 Semantics worth knowing when querying directly:
 
@@ -94,8 +106,9 @@ Semantics worth knowing when querying directly:
   the last successful pass), `default_list_gid` (Google's undeletable
   default tasklist), `lists_custom_order` (set once the user
   drag-reorders lists).
-- `bn_pins` keys are Blue Notes `NOTEID:ORD` refs — pinning for
-  action items lives entirely on this side.
+- `bn_pins` and `bn_priority` keys are Blue Notes `NOTEID:ORD` refs —
+  pinning and high-priority for action items live entirely on this side
+  (Blue Notes knows neither concept).
 
 Two practical cautions: the app sets a 5-second busy timeout (the GUI
 and the sync worker share the file), so brief external readers coexist

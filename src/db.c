@@ -1050,7 +1050,7 @@ bt_db_attachment_counts(BtDatabase *db)
             -1, &st, NULL) == SQLITE_OK)
         while (sqlite3_step(st) == SQLITE_ROW)
             g_hash_table_insert(map,
-                GINT_TO_POINTER((gint)sqlite3_column_int64(st, 0)),
+                GINT_TO_POINTER(sqlite3_column_int64(st, 0)),
                 GINT_TO_POINTER(sqlite3_column_int(st, 1)));
     sqlite3_finalize(st);
     return map;

@@ -341,7 +341,7 @@ refresh_sidebar(BtLibrary *lw)
                                     GTK_TREE_VIEW(lw->sb_view), gp);
                                 gtk_tree_path_free(gp);
                                 g_hash_table_insert(lw->group_expanded,
-                                    GINT_TO_POINTER((gint)cid),
+                                    GINT_TO_POINTER(cid),
                                     GINT_TO_POINTER(exp ? 1 : 0));
                             }
                         } while (gtk_tree_model_iter_next(model, &child));
@@ -436,7 +436,7 @@ refresh_sidebar(BtLibrary *lw)
         /* Expand the group: default TRUE on first population, then use the
          * snapshot; force open when the selected list lives inside.         */
         gpointer snap = g_hash_table_lookup(lw->group_expanded,
-                                            GINT_TO_POINTER((gint)grp->id));
+                                            GINT_TO_POINTER(grp->id));
         gboolean was_expanded = (snap == NULL) ? TRUE
                                                : GPOINTER_TO_INT(snap) != 0;
         if (was_expanded || grp_has_selected) {
@@ -711,11 +711,11 @@ task_row_ctx_init(BtLibrary *lw, TaskRowCtx *ctx, gboolean virtual_view)
     for (guint i = 0; i < ctx->all_subs->len; i++) {
         BtTask *s = g_ptr_array_index(ctx->all_subs, i);
         GPtrArray *bucket = g_hash_table_lookup(ctx->subs_by_parent,
-            GINT_TO_POINTER((gint)s->parent_id));
+            GINT_TO_POINTER(s->parent_id));
         if (bucket == NULL) {
             bucket = g_ptr_array_new();
             g_hash_table_insert(ctx->subs_by_parent,
-                GINT_TO_POINTER((gint)s->parent_id), bucket);
+                GINT_TO_POINTER(s->parent_id), bucket);
         }
         g_ptr_array_add(bucket, s);
     }
@@ -728,7 +728,7 @@ task_row_ctx_init(BtLibrary *lw, TaskRowCtx *ctx, gboolean virtual_view)
         for (guint i = 0; i < lists->len; i++) {
             BtList *l = g_ptr_array_index(lists, i);
             g_hash_table_insert(ctx->list_names,
-                                GINT_TO_POINTER((gint)l->id),
+                                GINT_TO_POINTER(l->id),
                                 g_strdup(l->name));
         }
         bt_ptr_array_free_lists(lists);
@@ -761,15 +761,15 @@ append_task_rows(GtkListStore *store, GPtrArray *tasks,
             continue;                /* toolbar completed-visibility toggle */
         GPtrArray *subs = t->parent_id == 0
             ? g_hash_table_lookup(ctx->subs_by_parent,
-                                  GINT_TO_POINTER((gint)t->id))
+                                  GINT_TO_POINTER(t->id))
             : NULL;
         const gchar *list_name = ctx->list_names != NULL
             ? g_hash_table_lookup(ctx->list_names,
-                                  GINT_TO_POINTER((gint)t->list_id))
+                                  GINT_TO_POINTER(t->list_id))
             : NULL;
         gint att_count = GPOINTER_TO_INT(
             g_hash_table_lookup(ctx->att_counts,
-                                GINT_TO_POINTER((gint)t->id)));
+                                GINT_TO_POINTER(t->id)));
         gchar *desc = task_desc_markup(t, list_name, att_count, subs,
                                        ctx->bold);
         gchar *due  = bt_due_format(t->due);
