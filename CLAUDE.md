@@ -100,12 +100,14 @@ the user).  A logic test harness lives in the session scratchpad
   except text-only, which swaps in an "About" label
   (`about_button_fit_style` on "style-changed"); it opens the Blue
   Notes-style about dialog (`on_menu_about`: HiDPI logo, compile
-  stamp, `bt_db_totals` vitals), shared with Help → About Hacienda.
+  stamp, `bt_db_totals` vitals), shared with File → About Hacienda.
   eco-home.png is also the .app bundle icon (Makefile `app` target).
 - Thin `gtk_separator_new` rules under the toolbar and above the status
   bar.  Status bar: margins 8/8/3/3 (NOT border_width) and
   `label { font-size: 85%; }` on both labels — measured pixel-identical
-  to Blue Notes.
+  to Blue Notes.  Event messages posted via `bt_app_status()` hold for
+  3 s then fade out over 1 s (20 × 50 ms alpha steps via Pango markup);
+  a new message resets the timer.
 - Task list: alternating white/`ROW_TINT` (#e8f2fb) stripes via a
   cell-background data func on EVERY column's renderer (the Due column's
   func does stripe + urgency tint in one, since a renderer gets one data
@@ -326,6 +328,12 @@ the user).  A logic test harness lives in the session scratchpad
     GTK_TREE_MODEL_ROW.  Harmless (that flavor is skipped, the row
     flavor still resolves); documented in User_Guide.md.  Don't
     suppress with a log filter.
+14. `bt_app_switch_database` always **removes the old database file**
+    after a successful switch — it is a move, not a copy.  This holds
+    even when the user picks "Use Existing Database" (no copy was made,
+    but the old file is still removed so no orphan is left behind).
+    Do not add logic that skips the delete based on whether a copy was
+    performed; that was the bug that caused orphaned files.
 13. Google's DEFAULT tasklist cannot be deleted — `tasklists.delete`
     returns 400 "Invalid Value" from any client, and an unhandled
     failure there aborts the whole sync pass (blocking every later

@@ -167,10 +167,9 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
     bt_db_close(app->db);
     app->db = NULL;
 
-    gboolean did_copy = FALSE;
     if (g_file_test(old_path, G_FILE_TEST_EXISTS)) {
         if (overwrite || !g_file_test(target, G_FILE_TEST_EXISTS))
-            did_copy = copy_file(old_path, target);
+            copy_file(old_path, target);
     }
 
     GError *gerr = NULL;
@@ -192,7 +191,7 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
                        gerr != NULL ? gerr->message : "?");
         g_clear_error(&gerr);
     } else {
-        if (did_copy) {
+        if (g_file_test(old_path, G_FILE_TEST_EXISTS)) {
             GFile *fold = g_file_new_for_path(old_path);
             if (!g_file_delete(fold, NULL, NULL))
                 g_warning("switch_database: could not remove %s", old_path);
@@ -209,51 +208,6 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
     if (ok)
         bt_app_notify_changed(app);
     return ok;
-}
-
-/* ---------------------------------------------------------------------------
- * bt_app_restore_database() — replace the active db with a backup (see app.h).
- * ------------------------------------------------------------------------- */
-gboolean
-bt_app_restore_database(BtApp *app, const gchar *backup_path)
-{
-    gchar *db_path = g_strdup(app->db->path); /* active file path            */
-    bt_db_close(app->db);
-    app->db = NULL;
-
-    /* Keep the current db as a safety net.                                  */
-    gchar *safety = g_strdup_printf("%s.pre-restore", db_path);
-    if (g_file_test(db_path, G_FILE_TEST_EXISTS))
-        copy_file(db_path, safety);
-
-    gboolean  ok    = copy_file(backup_path, db_path);
-    GError   *gerr  = NULL;
-    if (ok) {
-        app->db = bt_db_open(db_path, &gerr);
-        if (app->db == NULL) {         /* backup wasn't a valid database     */
-            ok = FALSE;
-            g_clear_error(&gerr);
-            copy_file(safety, db_path);
-            app->db = bt_db_open(db_path, &gerr);
-            if (app->db == NULL)
-                g_critical("restore_database: cannot revert to %s: %s",
-                           db_path, gerr != NULL ? gerr->message : "?");
-            g_clear_error(&gerr);
-        }
-    } else {
-        app->db = bt_db_open(db_path, &gerr);
-        if (app->db == NULL)
-            g_critical("restore_database: cannot reopen %s: %s",
-                       db_path, gerr != NULL ? gerr->message : "?");
-        g_clear_error(&gerr);
-    }
-
-    g_free(safety);
-    g_free(db_path);
-
-    if (ok && app->db != NULL)
-        bt_app_notify_changed(app);
-    return ok && app->db != NULL;
 }
 
 /* ===========================================================================

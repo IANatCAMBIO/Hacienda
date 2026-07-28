@@ -146,19 +146,13 @@ void bt_app_notify_changed(BtApp *app);
 /* ---------------------------------------------------------------------------
  * bt_app_switch_database() — move hacienda.db to `new_dir` (or back to
  * the default location when `new_dir` is NULL): closes all editors, copies
- * the database to the new home (offering to keep an existing file there),
- * reopens, updates app->db_dir + config, and fires notify_changed.
+ * the database to the new home (if target folder has no existing db),
+ * reopens, removes the old file, updates app->db_dir + config, and fires
+ * notify_changed.  If target already has a db the user chooses whether to
+ * use it or overwrite it; either way the old file is removed on success.
  * Returns TRUE on success; on failure the previous database is still open.
  * ------------------------------------------------------------------------- */
 gboolean bt_app_switch_database(BtApp *app, const gchar *new_dir);
-
-/* ---------------------------------------------------------------------------
- * bt_app_restore_database() — replace the active database with a backup
- * file: closes app->db, copies `backup_path` over the active path (keeping
- * a .pre-restore safety copy), reopens and fires notify_changed.
- * Returns TRUE on success; on failure the previous database is still open.
- * ------------------------------------------------------------------------- */
-gboolean bt_app_restore_database(BtApp *app, const gchar *backup_path);
 
 /* ---------------------------------------------------------------------------
  * bt_app_notice() — run a modal OK message dialog and destroy it.

@@ -48,7 +48,7 @@ on_activate(GtkApplication *gtk_app, gpointer data)
                                        theme_dir);
     g_free(theme_dir);
 
-    bt_library_window_new(boot->app, boot->db_path);
+    bt_library_window_new(boot->app);
     bt_sync_auto_start(boot->app, boot->db_path);
 
 #ifdef HAVE_GTKOSX

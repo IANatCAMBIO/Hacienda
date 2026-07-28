@@ -34,10 +34,9 @@
 /* ---------------------------------------------------------------------------
  * bt_library_window_new() — build and show the library window; installs
  * app->notify_changed / notify_tasks / notify_status and stores itself
- * in app->library_window.  `db_path` is kept for the sync worker (which
- * opens its own connection on it).
+ * in app->library_window.
  * ------------------------------------------------------------------------- */
-GtkWidget *bt_library_window_new(BtApp *app, const gchar *db_path);
+GtkWidget *bt_library_window_new(BtApp *app);
 
 /* ---------------------------------------------------------------------------
  * bt_library_apply_native_menubar() — move the library menu into (or out

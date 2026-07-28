@@ -313,34 +313,6 @@ bt_db_close(BtDatabase *db)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_db_backup_to() — online backup to dest_path (see db.h).
- * ------------------------------------------------------------------------- */
-gboolean
-bt_db_backup_to(BtDatabase *db, const gchar *dest_path)
-{
-    sqlite3 *dest = NULL;
-    if (sqlite3_open(dest_path, &dest) != SQLITE_OK) {
-        g_warning("db: backup: cannot open %s: %s",
-                  dest_path, sqlite3_errmsg(dest));
-        sqlite3_close(dest);
-        return FALSE;
-    }
-    sqlite3_backup *backup =
-        sqlite3_backup_init(dest, "main", db->sq, "main");
-    gboolean ok = FALSE;
-    if (backup != NULL) {
-        sqlite3_backup_step(backup, -1);
-        sqlite3_backup_finish(backup);
-        ok = sqlite3_errcode(dest) == SQLITE_OK;
-    }
-    if (!ok)
-        g_warning("db: backup to %s failed: %s",
-                  dest_path, sqlite3_errmsg(dest));
-    sqlite3_close(dest);
-    return ok;
-}
-
-/* ---------------------------------------------------------------------------
  * read_list() — build a BtList from the standard lists SELECT
  * (LIST_COLS: id, name, position, gtasks_id, updated_at, deleted, emoji).
  * ------------------------------------------------------------------------- */

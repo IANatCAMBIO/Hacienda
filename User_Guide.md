@@ -53,9 +53,9 @@ the database schema and the sync engine see [Internals](Internals.md).
   direction that applies. **Open in Google Tasks** opens a single
   selected task in the browser (for tasks that have synced).
 - **Double-click a task** to open its editor window.
-- Menus: *File → Settings…*, *Clear Completed Tasks*, *Sync Now* and
-  *Quit*; *Help → About Hacienda*. With gtk-mac-integration built in,
-  Settings can move the menu into the native macOS menu bar.
+- Menus: *File → Sync Now*, *Clear Completed Tasks*, *Open Database
+  File…*, *Settings…*, *About*, and *Quit*. With gtk-mac-integration
+  built in, the menu moves into the native macOS menu bar.
 
 ## Editor windows
 
@@ -81,14 +81,21 @@ window per task: opening it again focuses the one you already have.
 
 ## Settings (*File → Settings…*)
 
-- **Sync** — the Google sync master switch, Sign In / Sign Out, and
-  the auto-sync interval in minutes (default 5, 0 turns the timer
-  off; the toolbar Sync button always works).
 - **Appearance** — toolbar button style (icons / icons + text /
-  text), bold task titles in the list, and — when built with
-  gtk-mac-integration — a native macOS menu bar option.
-- **Blue Notes** — enable the Action Items list and point the app at
-  the `blue_notes` command (a path or a name on PATH).
+  text), bold task titles in the list, show/hide the Weekly Forecast
+  sidebar row, and — when built with gtk-mac-integration — a native
+  macOS menu bar option.
+- **Database** — shows the current database file path and lets you
+  move it to a different folder. Switching always removes the old
+  file: if the target folder is empty the current database is copied
+  there; if it already contains a database you choose whether to use
+  the existing one or overwrite it with your current data.
+- **Blue Notes** — enable the Action Items list, point the app at
+  the `blue_notes` command (a path or a name on PATH), and choose
+  where the items appear (their own section or embedded in a list).
+- **Google Tasks** — the sync master switch, Sign In / Sign Out, and
+  the auto-sync interval in minutes (default 5; 0 turns the timer
+  off while the toolbar Sync button always works).
 
 All changes apply live and persist (in `hacienda.ini` next to the
 binary). Toolbar icons are PNGs bundled in `icons/` — replaceable by

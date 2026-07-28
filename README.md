@@ -7,7 +7,7 @@ noun
     2. The house of the owner of such an estate.  
     3. A large estate where work of any kind is done, as agriculture, manufacturing, mining, or raising of animals; a cultivated farm, with a good house, in distinction from a farming establishment with rude huts for herdsmen, etc.; -- a word used in Spanish-American regions. 
 
-Like a traditional hacienda, this app is desinged to help you get things done. 
+Like a traditional hacienda, this app is designed to help you get things done. 
 
 Make lists of things. If your things are tasks, you can give them a due date. If the task is too big, break it down into subtasks.
 

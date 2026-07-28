@@ -62,7 +62,6 @@ enum {
  * ------------------------------------------------------------------------- */
 typedef struct {
     BtApp        *app;
-    gchar        *db_path;           /* for the sync worker                 */
     GtkWidget    *window;
     GtkTreeStore *sb_store;
     GtkWidget    *sb_view;
@@ -96,7 +95,11 @@ typedef struct {
     GtkTreeRowReference *drag_row_ref;   /* auto-updating ref to drag row  */
     GtkTreeRowReference *drag_lock_ref;  /* row just swapped; locked until
                                           * cursor re-enters drag row      */
-    gint                 pending_fades;  /* active fade-out animations      */
+    gint                 pending_fades;       /* active fade-out animations  */
+    guint                status_fade_source;  /* delay before fade starts    */
+    guint                status_fade_step_source; /* per-step fade timer     */
+    gint                 status_fade_step;    /* current step                */
+    gchar               *status_fade_text;   /* plain text being faded      */
 } BtLibrary;
 
 /* list_label() — a list's display label: the optional emoji prefixes
@@ -1092,12 +1095,79 @@ notify_tasks_hook(BtApp *app)
     refresh_tasks(lw);
 }
 
+/* ---------------------------------------------------------------------------
+ * Status-bar fade: 3 s hold then a 1 s fade-out (20 × 50 ms).
+ * ------------------------------------------------------------------------- */
+#define STATUS_FADE_STEPS    20
+#define STATUS_FADE_INTERVAL 50   /* ms */
+#define STATUS_FADE_HOLD     3000 /* ms before fade starts */
+
+static void
+status_fade_cancel(BtLibrary *lw)
+{
+    if (lw->status_fade_source != 0) {
+        g_source_remove(lw->status_fade_source);
+        lw->status_fade_source = 0;
+    }
+    if (lw->status_fade_step_source != 0) {
+        g_source_remove(lw->status_fade_step_source);
+        lw->status_fade_step_source = 0;
+    }
+    lw->status_fade_step = 0;
+    g_clear_pointer(&lw->status_fade_text, g_free);
+}
+
+static gboolean
+status_fade_step_cb(gpointer data)
+{
+    BtLibrary *lw = lib_of((BtApp *)data);
+    if (lw == NULL || lw->status_fade_text == NULL) {
+        if (lw != NULL)
+            lw->status_fade_step_source = 0;
+        return G_SOURCE_REMOVE;
+    }
+    lw->status_fade_step++;
+    if (lw->status_fade_step >= STATUS_FADE_STEPS) {
+        gtk_label_set_text(GTK_LABEL(lw->status_right), "");
+        lw->status_fade_step_source = 0;
+        g_clear_pointer(&lw->status_fade_text, g_free);
+        return G_SOURCE_REMOVE;
+    }
+    gint alpha = 100 - (lw->status_fade_step * 100 / STATUS_FADE_STEPS);
+    gchar *escaped = g_markup_escape_text(lw->status_fade_text, -1);
+    gchar *markup  = g_strdup_printf("<span alpha=\"%d%%\">%s</span>",
+                                     alpha, escaped);
+    g_free(escaped);
+    gtk_label_set_markup(GTK_LABEL(lw->status_right), markup);
+    g_free(markup);
+    return G_SOURCE_CONTINUE;
+}
+
+static gboolean
+status_fade_start_cb(gpointer data)
+{
+    BtLibrary *lw = lib_of((BtApp *)data);
+    if (lw == NULL)
+        return G_SOURCE_REMOVE;
+    lw->status_fade_source = 0;
+    lw->status_fade_text   = g_strdup(gtk_label_get_text(
+                                          GTK_LABEL(lw->status_right)));
+    lw->status_fade_step   = 0;
+    lw->status_fade_step_source =
+        g_timeout_add(STATUS_FADE_INTERVAL, status_fade_step_cb, data);
+    return G_SOURCE_REMOVE;
+}
+
 static void
 notify_status_hook(BtApp *app, const gchar *message)
 {
     BtLibrary *lw = lib_of(app);
-    if (lw != NULL)
-        gtk_label_set_text(GTK_LABEL(lw->status_right), message);
+    if (lw == NULL)
+        return;
+    status_fade_cancel(lw);
+    gtk_label_set_text(GTK_LABEL(lw->status_right), message);
+    lw->status_fade_source =
+        g_timeout_add(STATUS_FADE_HOLD, status_fade_start_cb, app);
 }
 
 /* ===========================================================================
@@ -2609,7 +2679,7 @@ sync_after_signin(gboolean ok, const gchar *error, gpointer data)
         return;                      /* window closed mid-flow              */
     if (!ok)
         gtk_widget_set_sensitive(lw->sync_item, TRUE);
-    bt_sync_signin_done(app, GTK_WINDOW(lw->window), lw->db_path,
+    bt_sync_signin_done(app, GTK_WINDOW(lw->window), app->db->path,
                         ok, error, sync_done);
 }
 
@@ -2630,12 +2700,12 @@ on_sync(GtkWidget *w, gpointer data)
         bt_app_status(lw->app, "Google sync is not configured \xe2\x80\x94 "
                       "see File \xe2\x86\x92 Settings\xe2\x80\xa6");
         bt_settings_window_open(lw->app, GTK_WINDOW(lw->window),
-                                lw->db_path);
+                                lw->app->db->path);
         return;
     }
     gtk_widget_set_sensitive(lw->sync_item, FALSE);
     if (bt_oauth_authenticated()) {
-        bt_sync_start(lw->app, lw->db_path, sync_done, NULL);
+        bt_sync_start(lw->app, lw->app->db->path, sync_done, NULL);
     } else {
         bt_app_status(lw->app,
                       "Opening browser for Google sign-in\xe2\x80\xa6");
@@ -2654,7 +2724,7 @@ on_menu_settings(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtLibrary *lw = data;
-    bt_settings_window_open(lw->app, GTK_WINDOW(lw->window), lw->db_path);
+    bt_settings_window_open(lw->app, GTK_WINDOW(lw->window), lw->app->db->path);
 }
 
 /* on_menu_clear_completed() — File → Clear Completed Tasks: archive the
@@ -2699,48 +2769,7 @@ find_gtk_image(GtkWidget *widget)
 }
 
 /* ---------------------------------------------------------------------------
- * on_backup_db() — File → Back Up Database…: save a snapshot via the
- * SQLite online-backup API; suggests a dated filename.
- * ------------------------------------------------------------------------- */
-static void
-on_backup_db(GtkWidget *widget, gpointer user_data)
-{
-    (void)widget;
-    BtLibrary *lw = user_data;
-
-    GtkWidget *chooser = gtk_file_chooser_dialog_new(
-        "Back Up Database", GTK_WINDOW(lw->window),
-        GTK_FILE_CHOOSER_ACTION_SAVE,
-        "_Cancel", GTK_RESPONSE_CANCEL,
-        "_Back Up", GTK_RESPONSE_ACCEPT,
-        NULL);
-    gtk_file_chooser_set_do_overwrite_confirmation(
-        GTK_FILE_CHOOSER(chooser), TRUE);
-
-    GDateTime *now = g_date_time_new_now_local();
-    gchar *suggestion = g_date_time_format(now, "hacienda-backup-%Y%m%d.db");
-    g_date_time_unref(now);
-    gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(chooser), suggestion);
-    g_free(suggestion);
-
-    if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT) {
-        gchar *path = gtk_file_chooser_get_filename(
-            GTK_FILE_CHOOSER(chooser));
-        gtk_widget_destroy(chooser);
-        gboolean ok = bt_db_backup_to(lw->app->db, path);
-        bt_app_status(lw->app, ok ? "Database backed up" : "Backup failed");
-        bt_app_notice(GTK_WINDOW(lw->window),
-                      ok ? GTK_MESSAGE_INFO : GTK_MESSAGE_ERROR, NULL,
-                      ok ? "Database backed up to\n%s"
-                         : "Backup to %s failed", path);
-        g_free(path);
-    } else {
-        gtk_widget_destroy(chooser);
-    }
-}
-
-/* ---------------------------------------------------------------------------
- * on_open_db() — File → Open Database…: pick a .db file and open it as
+ * on_open_db() — File → Open Database File…: pick a .db file and open it as
  * the new default or for this session only.
  * ------------------------------------------------------------------------- */
 static void
@@ -2819,9 +2848,6 @@ on_open_db(GtkWidget *widget, gpointer user_data)
         return;
     }
 
-    g_free(lw->db_path);
-    lw->db_path = g_strdup(file_path);
-
     if (set_default) {
         gchar *dir = g_path_get_dirname(file_path);
         g_free(app->db_dir);
@@ -2833,50 +2859,9 @@ on_open_db(GtkWidget *widget, gpointer user_data)
     g_free(old_path);
     g_free(file_path);
 
-    bt_sync_auto_start(app, lw->db_path);
+    bt_sync_auto_start(app, app->db->path);
     bt_app_notify_changed(app);
     bt_app_status(app, "Opened %s", app->db->path);
-}
-
-/* ---------------------------------------------------------------------------
- * on_restore_db() — File → Restore Database…: replace the current db with
- * a backup file after confirmation.
- * ------------------------------------------------------------------------- */
-static void
-on_restore_db(GtkWidget *widget, gpointer user_data)
-{
-    (void)widget;
-    BtLibrary *lw = user_data;
-
-    GtkWidget *chooser = gtk_file_chooser_dialog_new(
-        "Restore Database", GTK_WINDOW(lw->window),
-        GTK_FILE_CHOOSER_ACTION_OPEN,
-        "_Cancel", GTK_RESPONSE_CANCEL,
-        "_Restore", GTK_RESPONSE_ACCEPT,
-        NULL);
-    GtkFileFilter *ff = gtk_file_filter_new();
-    gtk_file_filter_set_name(ff, "Database files (*.db)");
-    gtk_file_filter_add_pattern(ff, "*.db");
-    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(chooser), ff);
-
-    gchar *path = NULL;
-    if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT)
-        path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
-    gtk_widget_destroy(chooser);
-    if (path == NULL)
-        return;
-
-    if (bt_app_confirm(GTK_WINDOW(lw->window), NULL,
-            "Replace ALL current tasks with this backup?\n\n"
-            "The current database will be kept as hacienda.db.pre-restore.")) {
-        gboolean ok = bt_app_restore_database(lw->app, path);
-        bt_app_notice(GTK_WINDOW(lw->window),
-                      ok ? GTK_MESSAGE_INFO : GTK_MESSAGE_ERROR, NULL,
-                      "%s", ok ? "Database restored."
-                               : "Restore failed \xe2\x80\x94 the previous "
-                                 "database is still in use.");
-    }
-    g_free(path);
 }
 
 /* on_menu_toggle_done_visible() — View → Show Completed: read the new check
@@ -2908,7 +2893,7 @@ on_menu_toggle_manual_sort(GtkWidget *w, gpointer data)
     refresh_tasks(lw);
 }
 
-/* on_menu_about() — Help → About and the toolbar About button: the
+/* on_menu_about() — File → About and the toolbar About button: the
  * standard about dialog with the app logo, version, database vitals and
  * a link to the BSD license (the Blue Notes About, retinted).               */
 static void
@@ -2964,7 +2949,8 @@ on_menu_about(GtkWidget *w, gpointer data)
     gint n_tasks, n_lists;           /* totals across the database          */
     bt_db_totals(lw->app->db, &n_tasks, &n_lists);
     GStatBuf st;                     /* for the database file size          */
-    gchar *size_str = (g_stat(lw->db_path, &st) == 0)
+    const gchar *db_path = lw->app->db->path;
+    gchar *size_str = (g_stat(db_path, &st) == 0)
                       ? g_format_size((guint64)st.st_size)
                       : g_strdup("unknown");
 
@@ -2976,7 +2962,7 @@ on_menu_about(GtkWidget *w, gpointer data)
         "Compiled " __DATE__ " " __TIME__ "\n\n"
         "Database: %s\n"
         "%d tasks in %d lists \xe2\x80\x94 %s on disk",
-        lw->db_path, n_tasks, n_lists, size_str);
+        db_path, n_tasks, n_lists, size_str);
     gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dialog), comments);
     g_free(comments);
     g_free(size_str);
@@ -3209,6 +3195,7 @@ on_library_destroy(GtkWidget *w, gpointer data)
     lw->app->notify_tasks   = NULL;
     lw->app->notify_status  = NULL;
     lw->app->library_window = NULL;
+    status_fade_cancel(lw);
     bt_editor_close_all(lw->app);
     if (lw->drag_row_ref  != NULL)
         gtk_tree_row_reference_free(lw->drag_row_ref);
@@ -3216,7 +3203,6 @@ on_library_destroy(GtkWidget *w, gpointer data)
         gtk_tree_row_reference_free(lw->drag_lock_ref);
     if (lw->group_expanded != NULL)
         g_hash_table_destroy(lw->group_expanded);
-    g_free(lw->db_path);
     g_free(lw);
 }
 
@@ -3628,11 +3614,10 @@ on_column_header_press(GtkWidget *btn, GdkEventButton *ev, gpointer data)
  * bt_library_window_new() — build the library window (see header).
  * ------------------------------------------------------------------------- */
 GtkWidget *
-bt_library_window_new(BtApp *app, const gchar *db_path)
+bt_library_window_new(BtApp *app)
 {
     BtLibrary *lw = g_new0(BtLibrary, 1);
     lw->app = app;
-    lw->db_path = g_strdup(db_path);
     lw->sel_kind = SB_KIND_LIST;     /* refresh falls back to first list    */
     lw->group_expanded = g_hash_table_new(g_direct_hash, g_direct_equal);
 
@@ -3668,14 +3653,8 @@ bt_library_window_new(BtApp *app, const gchar *db_path)
               G_CALLBACK(on_menu_clear_completed), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
                           gtk_separator_menu_item_new());
-    menu_item(file_menu, "Open Database\xe2\x80\xa6",
+    menu_item(file_menu, "Open Database File\xe2\x80\xa6",
               G_CALLBACK(on_open_db), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
-                          gtk_separator_menu_item_new());
-    menu_item(file_menu, "Back Up Database\xe2\x80\xa6",
-              G_CALLBACK(on_backup_db), lw);
-    menu_item(file_menu, "Restore Database\xe2\x80\xa6",
-              G_CALLBACK(on_restore_db), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
                           gtk_separator_menu_item_new());
     menu_item(file_menu, "Settings\xe2\x80\xa6",
