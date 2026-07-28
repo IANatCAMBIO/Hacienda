@@ -18,6 +18,73 @@
 #include <gtkosxapplication.h>
 #endif
 
+/* ---------------------------------------------------------------------------
+ * startup_first_run() — no hacienda.db found at the expected location:
+ * ask whether to open an existing file or create a new one there, instead
+ * of silently creating an empty database (a user pointing at a shared
+ * folder usually means to OPEN a file that is already there).
+ *   expected — the path where the db was looked for (shown in dialog text).
+ *   db_dir   — in/out: the configured db directory; replaced (and
+ *              persisted to the ini) when an existing file is opened.
+ *   db_path  — in/out: the path handed to bt_db_open(); replaced when an
+ *              existing file is opened.
+ * Returns TRUE to proceed with bt_db_open(*db_path), FALSE to quit.        */
+static gboolean
+startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
+{
+    /* Loop so cancelling the file chooser returns to the choice dialog.    */
+    for (;;) {
+        GtkWidget *dlg = gtk_message_dialog_new(
+            NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE,
+            "No tasks database was found at\n%s",
+            expected);
+        gtk_window_set_title(GTK_WINDOW(dlg), "Hacienda - Welcome");
+        gtk_dialog_add_buttons(GTK_DIALOG(dlg),
+            "_Open a hacienda.db File",  1,
+            "Create a _New hacienda.db", 2,
+            NULL);
+        gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
+        gtk_widget_destroy(dlg);
+
+        if (resp == 2)
+            return TRUE;             /* bt_db_open() will create it         */
+        if (resp != 1)
+            return FALSE;            /* dialog closed — quit                */
+
+        GtkWidget *chooser = gtk_file_chooser_dialog_new(
+            "Open Tasks Database", NULL,
+            GTK_FILE_CHOOSER_ACTION_OPEN,
+            "_Cancel", GTK_RESPONSE_CANCEL,
+            "_Open",   GTK_RESPONSE_ACCEPT,
+            NULL);
+        gtk_window_set_title(GTK_WINDOW(chooser),
+                             "Hacienda - Open Database");
+        /* Filter to hacienda.db only — the ini stores db_dir, the
+         * filename is always the fixed constant.                           */
+        GtkFileFilter *ff = gtk_file_filter_new();
+        gtk_file_filter_add_pattern(ff, BT_DB_FILENAME);
+        gtk_file_filter_set_name(ff,
+            "Tasks Database (" BT_DB_FILENAME ")");
+        gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(chooser), ff);
+
+        gchar *file_path = NULL;
+        if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT)
+            file_path = gtk_file_chooser_get_filename(
+                GTK_FILE_CHOOSER(chooser));
+        gtk_widget_destroy(chooser);
+        if (file_path == NULL)
+            continue;                /* cancelled — back to the choice      */
+
+        gchar *dir = g_path_get_dirname(file_path);
+        g_free(file_path);
+        bt_app_config_set("db_dir", dir);
+        g_free(*db_dir);   *db_dir  = dir;
+        g_free(*db_path);  *db_path = g_build_filename(dir, BT_DB_FILENAME,
+                                                       NULL);
+        return TRUE;
+    }
+}
+
 /* The single application context, shared with the activate handler.         */
 typedef struct {
     BtApp  *app;
@@ -78,6 +145,24 @@ main(int argc, char **argv)
     gchar *db_path = (db_dir != NULL && *db_dir != '\0')
                      ? g_build_filename(db_dir, BT_DB_FILENAME, NULL)
                      : bt_db_default_path();
+
+    /* First-run: if the database file does not yet exist, ask the user
+     * whether to open an existing file or create a fresh one — silently
+     * creating an empty database when the user meant to point at an
+     * existing shared file is a common foot-gun.  Needs GTK up early for
+     * the dialog; skipped without a display (headless / non-interactive). */
+    if (!g_file_test(db_path, G_FILE_TEST_EXISTS)) {
+        gchar *expected = g_strdup(db_path);
+        if (gtk_init_check(&argc, &argv) &&
+            !startup_first_run(expected, &db_dir, &db_path)) {
+            g_free(expected);
+            g_free(db_dir);
+            g_free(db_path);
+            return 0;                /* user closed the welcome dialog      */
+        }
+        g_free(expected);
+    }
+
     GError *gerr = NULL;
     BtDatabase *db = bt_db_open(db_path, &gerr);
     if (db == NULL) {
