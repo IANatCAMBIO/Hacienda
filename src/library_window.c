@@ -96,6 +96,7 @@ typedef struct {
     GtkTreeRowReference *drag_row_ref;   /* auto-updating ref to drag row  */
     GtkTreeRowReference *drag_lock_ref;  /* row just swapped; locked until
                                           * cursor re-enters drag row      */
+    gint                 pending_fades;  /* active fade-out animations      */
 } BtLibrary;
 
 /* list_label() — a list's display label: the optional emoji prefixes
@@ -1209,6 +1210,133 @@ on_task_activated(GtkTreeView *view, GtkTreePath *path,
     bt_editor_open(lw->app, id);
 }
 
+/* ---------------------------------------------------------------------------
+ * Fade-out animation for tasks marked done while completeds are hidden.
+ *
+ * 20 steps × 50 ms = 1 s.  Each step wraps TL_DESC in a <span alpha="N%">
+ * that decrements from 95 → 0.  At step 20 a full_refresh removes the row.
+ * lib_of() / gtk_tree_row_reference_get_path() guard against a window close
+ * or another refresh occurring mid-flight.
+ * ------------------------------------------------------------------------- */
+#define FADE_STEPS    20
+#define FADE_INTERVAL 50   /* ms — 20 × 50 ms = 1 s                         */
+
+typedef struct {
+    BtApp              *app;
+    GtkListStore       *store;
+    GtkTreeRowReference *row_ref;
+    gchar              *orig_desc;  /* TL_DESC value at fade-start           */
+    gint                step;
+} FadeCtx;
+
+static void
+fade_ctx_free(FadeCtx *ctx)
+{
+    gtk_tree_row_reference_free(ctx->row_ref);
+    g_free(ctx->orig_desc);
+    g_free(ctx);
+}
+
+/* fade_done() — shared terminal path: decrement lw->pending_fades and
+ * call full_refresh only when the last active fade finishes.                */
+static void
+fade_done(BtLibrary *lw)
+{
+    if (--lw->pending_fades <= 0) {
+        lw->pending_fades = 0;
+        full_refresh(lw);
+    }
+}
+
+static gboolean
+fade_step_cb(gpointer data)
+{
+    FadeCtx   *ctx = data;
+    BtLibrary *lw  = lib_of(ctx->app);
+    ctx->step++;
+
+    /* Window closed, or a new window opened at a different address — this
+     * timer is stale.  Check store membership to detect the latter case.    */
+    if (lw == NULL) {
+        fade_ctx_free(ctx);
+        return G_SOURCE_REMOVE;
+    }
+    gboolean store_ok = (ctx->store == lw->task_store);
+    for (gint i = 0; i < 7 && !store_ok; i++)
+        store_ok = (ctx->store == lw->day_stores[i]);
+    if (!store_ok) {
+        fade_ctx_free(ctx);
+        return G_SOURCE_REMOVE;
+    }
+
+    GtkTreePath *path = gtk_tree_row_reference_get_path(ctx->row_ref);
+    if (path == NULL) {              /* row already gone (external refresh)  */
+        fade_done(lw);
+        fade_ctx_free(ctx);
+        return G_SOURCE_REMOVE;
+    }
+
+    GtkTreeIter iter;
+    if (!gtk_tree_model_get_iter(GTK_TREE_MODEL(ctx->store), &iter, path)) {
+        gtk_tree_path_free(path);
+        fade_done(lw);
+        fade_ctx_free(ctx);
+        return G_SOURCE_REMOVE;
+    }
+
+    if (ctx->step >= FADE_STEPS) {   /* fade complete — remove this row      */
+        gtk_list_store_remove(ctx->store, &iter);
+        gtk_tree_path_free(path);
+        fade_done(lw);               /* full_refresh fires on the last one   */
+        fade_ctx_free(ctx);
+        return G_SOURCE_REMOVE;
+    }
+
+    gtk_tree_path_free(path);
+
+    /* alpha: 95 → 5 across FADE_STEPS steps (step 1 = 95%, step 19 = 5%)  */
+    gint alpha = 100 - (ctx->step * 100 / FADE_STEPS);
+    gchar *faded = g_strdup_printf("<span alpha=\"%d%%\">%s</span>",
+                                   alpha, ctx->orig_desc);
+    gtk_list_store_set(ctx->store, &iter, TL_DESC, faded, -1);
+    g_free(faded);
+
+    return G_SOURCE_CONTINUE;
+}
+
+/* start_fade() — kick off a fade-out for iter in store.  Reads orig_desc
+ * from the store, updates TL_DONE=TRUE, posts a status, and fires the
+ * repeating timer.                                                          */
+static void
+start_fade(BtLibrary *lw, GtkListStore *store, GtkTreeIter *iter,
+           const gchar *title)
+{
+    gchar *orig_desc = NULL;
+    gtk_tree_model_get(GTK_TREE_MODEL(store), iter, TL_DESC, &orig_desc, -1);
+
+    gtk_list_store_set(store, iter, TL_DONE, TRUE, -1);
+
+    gchar *escaped = g_markup_escape_text(
+        title != NULL && *title != '\0' ? title : "Untitled Task", -1);
+    bt_app_status(lw->app,
+                  "\xe2\x80\x9c%s\xe2\x80\x9d \xe2\x80\x94 Completed",
+                  escaped);
+    g_free(escaped);
+
+    GtkTreePath *path =
+        gtk_tree_model_get_path(GTK_TREE_MODEL(store), iter);
+    FadeCtx *ctx   = g_new0(FadeCtx, 1);
+    ctx->app       = lw->app;
+    ctx->store     = store;
+    ctx->row_ref   = gtk_tree_row_reference_new(GTK_TREE_MODEL(store), path);
+    ctx->orig_desc = orig_desc;          /* ownership transferred            */
+    ctx->step      = 0;
+    gtk_tree_path_free(path);
+
+    lw->pending_fades++;
+    g_timeout_add(FADE_INTERVAL, fade_step_cb, ctx);
+}
+
 /* on_task_done_toggled() / on_task_pinned_toggled() — the two toggle
  * columns write straight through to the row.                                */
 static void
@@ -1223,7 +1351,9 @@ on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
         return;
     gint64 id;
     gboolean done;
-    gtk_tree_model_get(model, &iter, TL_ID, &id, TL_DONE, &done, -1);
+    gchar *title = NULL;
+    gtk_tree_model_get(model, &iter,
+                       TL_ID, &id, TL_DONE, &done, TL_TITLE, &title, -1);
 
     /* Blue Notes rows (any view they appear in) write back through the
      * blue_notes CLI, which strikes/un-strikes the '!' line in the note
@@ -1241,9 +1371,20 @@ on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
         }
         g_free(err);
         g_free(ref);
+        g_free(title);
         return;
     }
     bt_db_task_set_done(lw->app->db, id, !done);
+
+    /* When hiding completed tasks and a task is just being ticked done,
+     * animate a 1 s fade-out before the full_refresh removes the row.      */
+    gboolean hiding = !bt_app_config_get_bool("show_completed", TRUE);
+    if (!done && hiding) {
+        start_fade(lw, lw->task_store, &iter, title);
+        g_free(title);
+        return;
+    }
+    g_free(title);
     full_refresh(lw);
 }
 
@@ -1263,10 +1404,22 @@ on_forecast_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
         return;
     gint64 id;
     gboolean done;
-    gtk_tree_model_get(model, &iter, TL_ID, &id, TL_DONE, &done, -1);
-    if (id == 0)
+    gchar *title = NULL;
+    gtk_tree_model_get(model, &iter,
+                       TL_ID, &id, TL_DONE, &done, TL_TITLE, &title, -1);
+    if (id == 0) {
+        g_free(title);
         return;
+    }
     bt_db_task_set_done(lw->app->db, id, !done);
+
+    gboolean hiding = !bt_app_config_get_bool("show_completed", TRUE);
+    if (!done && hiding) {
+        start_fade(lw, GTK_LIST_STORE(model), &iter, title);
+        g_free(title);
+        return;
+    }
+    g_free(title);
     full_refresh(lw);
 }
 
