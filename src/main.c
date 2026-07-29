@@ -115,6 +115,18 @@ on_activate(GtkApplication *gtk_app, gpointer data)
                                        theme_dir);
     g_free(theme_dir);
 
+    /* On Linux (and any non-macOS platform) the window manager shows a
+     * generic icon unless we set one explicitly.  Load eco-home.png from
+     * the icons/ directory and register it as the default for all windows. */
+#ifndef HAVE_GTKOSX
+    gchar *icon_path = g_build_filename(boot->app->icons_dir,
+                                        "eco-home.png", NULL);
+    GError *icon_err = NULL;
+    gtk_window_set_default_icon_from_file(icon_path, &icon_err);
+    g_clear_error(&icon_err);
+    g_free(icon_path);
+#endif
+
     bt_library_window_new(boot->app);
     bt_sync_auto_start(boot->app, boot->db_path);
 
