@@ -66,6 +66,16 @@ make
 make run
 ```
 
+Hacienda uses emoji extensively (list icons, sidebar labels, task
+markers). Debian ships the Noto Color Emoji font, but for Apple-style
+emoji install the Apple Color Emoji TTF:
+
+```sh
+curl -L "https://github.com/samuelngs/apple-emoji-ttf/releases/download/macos-26-20260722-484daf4e/fonts-apple-color-emoji.deb" \
+     -o fonts-apple-color-emoji.deb
+sudo dpkg -i fonts-apple-color-emoji.deb
+```
+
 The Makefile auto-detects `gtk-mac-integration-gtk3`; if you install
 it later, rebuild from clean (`make clean && make`) so every file sees
 it. On macOS, `make app` wraps the binary into
