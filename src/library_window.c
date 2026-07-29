@@ -3986,9 +3986,14 @@ bt_library_window_new(BtApp *app)
     /* Both labels 85% of the UI font (Blue Notes size).  CSS font-size: 85%
      * can resolve to zero on Linux when the per-widget provider has no
      * explicit base size in scope; Pango scale attributes are always
-     * relative to the actual rendered font and work on every platform.      */
+     * relative to the actual rendered font and work on every platform.
+     * The font-family attribute forces a sans-serif text face so that
+     * fontconfig cannot select Apple Color Emoji (or any emoji font) as a
+     * fallback for ASCII digits — emoji color bitmaps render blank in plain
+     * GTK label contexts on Linux.                                          */
     PangoAttrList *small_attrs = pango_attr_list_new();
     pango_attr_list_insert(small_attrs, pango_attr_scale_new(0.85));
+    pango_attr_list_insert(small_attrs, pango_attr_family_new("sans-serif"));
     gtk_label_set_attributes(GTK_LABEL(lw->status_left),  small_attrs);
     gtk_label_set_attributes(GTK_LABEL(lw->status_right), small_attrs);
     pango_attr_list_unref(small_attrs);
