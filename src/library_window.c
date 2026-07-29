@@ -3983,9 +3983,15 @@ bt_library_window_new(BtApp *app)
                             PANGO_ELLIPSIZE_END);
     gtk_widget_set_halign(lw->status_right, GTK_ALIGN_END);
     gtk_box_pack_end(GTK_BOX(status), lw->status_right, FALSE, FALSE, 0);
-    /* Both labels a step smaller than the UI font (Blue Notes size).        */
-    bt_app_widget_add_css(lw->status_left,  "label { font-size: 85%; }");
-    bt_app_widget_add_css(lw->status_right, "label { font-size: 85%; }");
+    /* Both labels 85% of the UI font (Blue Notes size).  CSS font-size: 85%
+     * can resolve to zero on Linux when the per-widget provider has no
+     * explicit base size in scope; Pango scale attributes are always
+     * relative to the actual rendered font and work on every platform.      */
+    PangoAttrList *small_attrs = pango_attr_list_new();
+    pango_attr_list_insert(small_attrs, pango_attr_scale_new(0.85));
+    gtk_label_set_attributes(GTK_LABEL(lw->status_left),  small_attrs);
+    gtk_label_set_attributes(GTK_LABEL(lw->status_right), small_attrs);
+    pango_attr_list_unref(small_attrs);
     gtk_box_pack_end(GTK_BOX(vbox), status, FALSE, FALSE, 0);
     /* Matching thin rule above the status bar.                              */
     gtk_box_pack_end(GTK_BOX(vbox),
