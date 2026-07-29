@@ -1,5 +1,5 @@
 /* ===========================================================================
- * main.c — Hacienda entry point
+ * main.c — Lists entry point
  *
  * A GTK3 + SQLite task-list application in plain C — the companion app to
  * Blue Notes.  Boot order: config (needs argv[0] for the portable ini) →
@@ -38,10 +38,10 @@ startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
             NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE,
             "No tasks database was found at\n%s",
             expected);
-        gtk_window_set_title(GTK_WINDOW(dlg), "Hacienda - Welcome");
+        gtk_window_set_title(GTK_WINDOW(dlg), "Lists - Welcome");
         gtk_dialog_add_buttons(GTK_DIALOG(dlg),
-            "_Open a hacienda.db File",  1,
-            "Create a _New hacienda.db", 2,
+            "_Open a lists.db File",  1,
+            "Create a _New lists.db", 2,
             NULL);
         gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
         gtk_widget_destroy(dlg);
@@ -58,7 +58,7 @@ startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
             "_Open",   GTK_RESPONSE_ACCEPT,
             NULL);
         gtk_window_set_title(GTK_WINDOW(chooser),
-                             "Hacienda - Open Database");
+                             "Lists - Open Database");
         /* Filter to hacienda.db only — the ini stores db_dir, the
          * filename is always the fixed constant.                           */
         GtkFileFilter *ff = gtk_file_filter_new();
@@ -116,11 +116,11 @@ on_activate(GtkApplication *gtk_app, gpointer data)
     g_free(theme_dir);
 
     /* On Linux (and any non-macOS platform) the window manager shows a
-     * generic icon unless we set one explicitly.  Load eco-home.png from
+     * generic icon unless we set one explicitly.  Load document.png from
      * the icons/ directory and register it as the default for all windows. */
 #ifndef HAVE_GTKOSX
     gchar *icon_path = g_build_filename(boot->app->icons_dir,
-                                        "eco-home.png", NULL);
+                                        "document.png", NULL);
     GError *icon_err = NULL;
     gtk_window_set_default_icon_from_file(icon_path, &icon_err);
     g_clear_error(&icon_err);
@@ -178,7 +178,7 @@ main(int argc, char **argv)
     GError *gerr = NULL;
     BtDatabase *db = bt_db_open(db_path, &gerr);
     if (db == NULL) {
-        g_printerr("hacienda: %s\n",
+        g_printerr("lists: %s\n",
                    gerr != NULL ? gerr->message : "cannot open database");
         g_clear_error(&gerr);
         g_free(db_dir);
@@ -201,7 +201,7 @@ main(int argc, char **argv)
     bt_app_load_toolbar_style(app);
 
     BtBoot boot = { app, db_path };
-    app->gtk_app = gtk_application_new("org.example.hacienda",
+    app->gtk_app = gtk_application_new("org.example.lists",
                                        G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(app->gtk_app, "activate",
                      G_CALLBACK(on_activate), &boot);

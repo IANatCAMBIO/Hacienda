@@ -1,5 +1,5 @@
 /* ===========================================================================
- * app.c — shared application context for Hacienda (see app.h)
+ * app.c — shared application context for Lists (see app.h)
  * =========================================================================== */
 
 #include "app.h"
@@ -115,7 +115,7 @@ copy_file(const gchar *src, const gchar *dest)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_app_switch_database() — move hacienda.db to a new directory (see app.h).
+ * bt_app_switch_database() — move lists.db to a new directory (see app.h).
  * ------------------------------------------------------------------------- */
 gboolean
 bt_app_switch_database(BtApp *app, const gchar *new_dir)
@@ -146,7 +146,7 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
             "of your current database?\n"
             "(Overwriting permanently replaces the file at %s.)", target);
         gtk_window_set_title(GTK_WINDOW(dialog),
-                             "Hacienda - Existing Database");
+                             "Lists - Existing Database");
         gtk_dialog_add_buttons(GTK_DIALOG(dialog),
             "_Cancel",                GTK_RESPONSE_CANCEL,
             "_Use Existing Database", 1,
@@ -419,7 +419,7 @@ bt_app_register_toolbar(BtApp *app, GtkWidget *toolbar)
  * Config — ini next to the binary, ~/.config fallback (see app.h).
  * =========================================================================== */
 
-#define BT_INI_GROUP "hacienda"
+#define BT_INI_GROUP "lists"
 
 static GKeyFile *config_kf   = NULL; /* the in-memory config                */
 static gchar    *config_path = NULL; /* where it is written                 */
@@ -447,9 +447,9 @@ bt_app_exe_dir(void)
 
 /* ---------------------------------------------------------------------------
  * bt_app_config_init() — resolve + load the config file once.  Portable
- * mode: hacienda.ini next to the binary; when none exists there AND the
- * directory is unwritable, ~/.config/hacienda/hacienda.ini.  On first
- * run it is seeded from hacienda.ini.defaults next to the binary.
+ * mode: lists.ini next to the binary; when none exists there AND the
+ * directory is unwritable, ~/.config/lists/lists.ini.  On first
+ * run it is seeded from lists.ini.defaults next to the binary.
  * ------------------------------------------------------------------------- */
 void
 bt_app_config_init(const gchar *argv0)
@@ -459,16 +459,16 @@ bt_app_config_init(const gchar *argv0)
 
     gchar *exe_dir = exe_dir_from_argv0(argv0);
     exe_dir_cached = g_strdup(exe_dir);
-    gchar *local = g_build_filename(exe_dir, "hacienda.ini", NULL);
+    gchar *local = g_build_filename(exe_dir, "lists.ini", NULL);
     if (g_file_test(local, G_FILE_TEST_EXISTS) ||
         g_access(exe_dir, W_OK) == 0) {
         config_path = local;         /* portable mode                       */
     } else {
         g_free(local);
         gchar *dir = g_build_filename(g_get_user_config_dir(),
-                                      "hacienda", NULL);
+                                      "lists", NULL);
         g_mkdir_with_parents(dir, 0700);
-        config_path = g_build_filename(dir, "hacienda.ini", NULL);
+        config_path = g_build_filename(dir, "lists.ini", NULL);
         g_free(dir);
     }
 
@@ -477,7 +477,7 @@ bt_app_config_init(const gchar *argv0)
                                    G_KEY_FILE_NONE, NULL)) {
         /* First launch: seed from the committed defaults, if present.       */
         gchar *defaults = g_build_filename(exe_dir,
-                                           "hacienda.ini.defaults", NULL);
+                                           "lists.ini.defaults", NULL);
         g_key_file_load_from_file(config_kf, defaults,
                                   G_KEY_FILE_NONE, NULL);
         g_free(defaults);

@@ -1,5 +1,5 @@
 /* ===========================================================================
- * json.h — minimal JSON parser + string escaping for Hacienda
+ * json.h — minimal JSON parser + string escaping for Lists
  *
  * Neither json-glib nor json-c is a Blue Notes-family dependency, and the
  * Google Tasks API only needs a small subset of JSON: parse a response

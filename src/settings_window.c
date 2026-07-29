@@ -1,5 +1,5 @@
 /* ===========================================================================
- * settings_window.c — the Hacienda settings window (see header)
+ * settings_window.c — the Lists settings window (see header)
  * =========================================================================== */
 
 #include "settings_window.h"
@@ -17,6 +17,7 @@ typedef struct {
     gchar     *db_path;
     GtkWidget *window;
     GtkWidget *sync_check;           /* Google Tasks master switch          */
+    GtkWidget *sync_toolbar_check;   /* show Sync button in toolbar         */
     GtkWidget *interval_spin;
     GtkWidget *signin_btn;
     GtkWidget *signout_btn;
@@ -48,6 +49,7 @@ state_refresh(BtSettings *sw)
     gtk_widget_set_sensitive(sw->signin_btn,
                              enabled && bt_oauth_have_client() && !in);
     gtk_widget_set_sensitive(sw->interval_spin, enabled);
+    gtk_widget_set_sensitive(sw->sync_toolbar_check, enabled);
 }
 
 /* ---------------------------------------------------------------------------
@@ -84,6 +86,19 @@ on_interval_changed(GtkWidget *w, gpointer data)
     bt_app_config_set("sync_interval_min", v);
     g_free(v);
     bt_sync_auto_start(sw->app, sw->app->db->path);
+}
+
+/* on_sync_toolbar_toggled() — persist the toolbar-button visibility pref
+ * and tell the library window to show or hide its Sync button live.         */
+static void
+on_sync_toolbar_toggled(GtkWidget *w, gpointer data)
+{
+    BtSettings *sw = data;
+    if (sw->loading)
+        return;
+    gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
+    bt_app_config_set("sync_toolbar_button", on ? "1" : "0");
+    bt_app_notify_changed(sw->app);
 }
 
 /* signin_done() — completion of the browser flow started here.              */
@@ -412,7 +427,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     sw->loading = TRUE;
 
     sw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(sw->window), "Hacienda - Settings");
+    gtk_window_set_title(GTK_WINDOW(sw->window), "Lists - Settings");
     gtk_window_set_transient_for(GTK_WINDOW(sw->window), parent);
     gtk_window_set_default_size(GTK_WINDOW(sw->window), 470, -1);
 
@@ -652,11 +667,20 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
                        FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), interval_row, FALSE, FALSE, 0);
 
+    sw->sync_toolbar_check = gtk_check_button_new_with_label(
+        "Show Sync button in toolbar");
+    g_signal_connect(sw->sync_toolbar_check, "toggled",
+                     G_CALLBACK(on_sync_toolbar_toggled), sw);
+    gtk_box_pack_start(GTK_BOX(vbox), sw->sync_toolbar_check,
+                       FALSE, FALSE, 0);
+
     /* --- Load current values ------------------------------------------------ */
     gchar *iv  = bt_app_config_get("sync_interval_min");
     gchar *bnc = bt_app_config_get("blue_notes_cli");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->sync_check),
         bt_app_config_get_bool("google_sync_enabled", TRUE));
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->sync_toolbar_check),
+        bt_app_config_get_bool("sync_toolbar_button", TRUE));
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->interval_spin),
                               iv != NULL ? g_ascii_strtod(iv, NULL) : 5);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->bn_check),

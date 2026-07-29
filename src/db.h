@@ -1,5 +1,5 @@
 /* ===========================================================================
- * db.h — SQLite storage for Hacienda
+ * db.h — SQLite storage for Lists
  *
  * Schema (PRAGMA user_version = 5; v2 added lists.emoji, v3 the five
  * Google-mirror task columns, v4 tasks.priority, v5 list_groups +
@@ -34,8 +34,8 @@
 #include <glib.h>
 #include <sqlite3.h>
 
-/* Database filename, under g_get_user_data_dir()/hacienda/.               */
-#define BT_DB_FILENAME "hacienda.db"
+/* Database filename, under g_get_user_data_dir()/lists/.                  */
+#define BT_DB_FILENAME "lists.db"
 
 /* ---------------------------------------------------------------------------
  * BtDatabase — one open connection.  A connection must not cross threads:
@@ -255,7 +255,7 @@ void bt_db_totals(BtDatabase *db, gint *n_tasks, gint *n_lists);
 
 /* -------------------- Blue Notes pins and priorities --------------------- */
 
-/* Pinned state for Blue Notes action items (pinning is a Hacienda
+/* Pinned state for Blue Notes action items (pinning is a Lists
  * concept; Blue Notes has none, so membership lives in the local
  * bn_pins table keyed by the item's "NOTEID:ORD" address).                  */
 gboolean    bt_db_bn_pin_get(BtDatabase *db, const gchar *ref);
@@ -269,7 +269,7 @@ GHashTable *bt_db_bn_pins(BtDatabase *db);
 /* High-priority state for Blue Notes action items — the same local
  * design as pins (bn_priority table, "NOTEID:ORD" keys): Blue Notes
  * has no priority concept, so the flag only affects where the items
- * appear in Hacienda's views.                                               */
+ * appear in Lists' views.                                                   */
 gboolean    bt_db_bn_priority_get(BtDatabase *db, const gchar *ref);
 void        bt_db_bn_priority_set(BtDatabase *db, const gchar *ref,
                                   gboolean priority);

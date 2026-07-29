@@ -1,16 +1,16 @@
-# Hacienda — project guide
+# Lists — project guide
 
 Task-list app in **plain C + GTK3 + SQLite**, the companion app to Blue
 Notes (`~/salt_development/orange_notes` — NOT `../orange_notes`).  Two
 window types: a Library (lists sidebar + tall task rows) and one editor
 window per task.  Two-way Google Tasks sync.  No GNOME HeaderBars
-anywhere — plain `GtkWindow` titlebars, formatted `"Hacienda - <thing>"`.
+anywhere — plain `GtkWindow` titlebars, formatted `"Lists - <thing>"`.
 
 ## Build & run
 
 ```sh
 export PATH=/opt/local/bin:$PATH   # MacPorts pkg-config
-make          # builds ./hacienda  (-Wall -Wextra must stay clean)
+make          # builds ./lists  (-Wall -Wextra must stay clean)
 make run
 ```
 
@@ -20,7 +20,7 @@ module is **`gtk-mac-integration-gtk3`**; the Makefile auto-detects it
 and defines `HAVE_GTKOSX`).  After toggling a dependency run
 `make clean && make`.
 
-Launch for testing: `pkill -f './hacienda'; nohup ./hacienda
+Launch for testing: `pkill -f './lists'; nohup ./lists
 >/tmp/bt_launch.log 2>&1 &` then `screencapture -x` for screenshots.
 Do NOT drive the GUI with osascript accessibility clicks (rejected by
 the user).  A logic test harness lives in the session scratchpad
@@ -52,9 +52,9 @@ the user).  A logic test harness lives in the session scratchpad
   x.h" plus the how.  Non-obvious variables get column-aligned trailing
   comments; ~78-col lines.  UTF-8 escapes (`\xe2\x80\xa6`) for …/—/✓ in
   source strings.
-- Config: `hacienda.ini` NEXT TO THE BINARY (portable mode), fallback
-  `~/.config/hacienda/` when unwritable; seeded from
-  `hacienda.ini.defaults`; loaded ONCE, written through on change,
+- Config: `lists.ini` NEXT TO THE BINARY (portable mode), fallback
+  `~/.config/lists/` when unwritable; seeded from
+  `lists.ini.defaults`; loaded ONCE, written through on change,
   never re-read.  Everything except the OAuth client keys and the
   window geometry is editable in File → Settings….
 - **Error discipline**: every prepared WRITE goes through `step_done()`
@@ -96,12 +96,12 @@ the user).  A logic test harness lives in the session scratchpad
   `manual_order_all`, `manual_order_pinned`, `manual_order_today`,
   `manual_order_bn_actions`.  A drag-lock (`drag_lock_ref`) prevents
   rapid row flicker at boundaries.  Far right (after an expanding blank
-  separator): the About button — eco-home.png logo in every style
+  separator): the About button — document.png logo in every style
   except text-only, which swaps in an "About" label
   (`about_button_fit_style` on "style-changed"); it opens the Blue
   Notes-style about dialog (`on_menu_about`: HiDPI logo, compile
-  stamp, `bt_db_totals` vitals), shared with File → About Hacienda.
-  eco-home.png is also the .app bundle icon (Makefile `app` target).
+  stamp, `bt_db_totals` vitals), shared with File → About Lists.
+  document.png is also the .app bundle icon (Makefile `app` target).
 - Thin `gtk_separator_new` rules under the toolbar and above the status
   bar.  Status bar: margins 8/8/3/3 (NOT border_width) and
   `label { font-size: 85%; }` on both labels — measured pixel-identical
@@ -318,7 +318,7 @@ the user).  A logic test harness lives in the session scratchpad
 10. macOS AX geometry (osascript) reports frame incl. titlebar;
     `gtk_window_get_size` is the client area (~28 pt difference).
 11. The live ini rewrites drop comments and carry per-machine values —
-    it stays gitignored; document defaults in `hacienda.ini.defaults`.
+    it stays gitignored; document defaults in `lists.ini.defaults`.
 12. `Gdk-CRITICAL … gdk_atom_intern: assertion 'atom_name != NULL'` on
     the console during a sidebar list drag (or exotic clipboard
     flavors) is a GTK-quartz bug, NOT ours — do not re-investigate:

@@ -1,5 +1,5 @@
 /* ===========================================================================
- * db.c — SQLite storage for Hacienda (see db.h)
+ * db.c — SQLite storage for Lists (see db.h)
  * =========================================================================== */
 
 #include "db.h"
@@ -181,7 +181,7 @@ bt_ptr_array_free_attachments(GPtrArray *a)
 gchar *
 bt_db_default_path(void)
 {
-    gchar *dir = g_build_filename(g_get_user_data_dir(), "hacienda", NULL);
+    gchar *dir = g_build_filename(g_get_user_data_dir(), "lists", NULL);
     g_mkdir_with_parents(dir, 0755);
     gchar *path = g_build_filename(dir, BT_DB_FILENAME, NULL);
     g_free(dir);

@@ -1,27 +1,18 @@
-# Hacienda
-
-hacienda /hä″sē-ĕn′də, ä″sē-/
-noun
-
-    1. A large estate in a Spanish-speaking region.  
-    2. The house of the owner of such an estate.  
-    3. A large estate where work of any kind is done, as agriculture, manufacturing, mining, or raising of animals; a cultivated farm, with a good house, in distinction from a farming establishment with rude huts for herdsmen, etc.; -- a word used in Spanish-American regions. 
-
-Like a traditional hacienda, this app is designed to help you get things done. 
+# Lists
 
 Make lists of things. If your things are tasks, you can give them a due date. If the task is too big, break it down into subtasks.
 
-Hacienda is written in classic C with GTK3 and SQLite. It is a companion app to
+Lists is written in classic C with GTK3 and SQLite. It is a companion app to
 [Blue Notes](https://github.com/IANatCAMBIO/blue_notes), built the same way and **with the help
 of Claude Code for edits, testing, and code organization**. 
 No Electron or interpreted code. 
 Low resource usage, and runs on macOS and Linux.
 
-![Hacienda](Screenshot.png)
+![Lists](Screenshot.png)
 
 TLDR; Your tasks live in a single SQLite file you can take anywhere.
 You organize them in a Library window — lists in the sidebar, tasks in a listview. 
-Add subtasks and a color-coded due date to each item. Hacienda, also syncs both ways with
+Add subtasks and a color-coded due date to each item. Lists also syncs both ways with
 Google Tasks and Blue Notes action items. 
 
 Want more detail?
@@ -35,12 +26,12 @@ Want more detail?
 ## Syncing with Google Tasks
 
 Open the Settings window to enable Google Tasks sync and login. Once authenticated,
-Hacienda will automatically sync on the interval specified in settings. 
+Lists will automatically sync on the interval specified in settings. 
 
 ## Syncing with Blue Notes
 
 You can also enable sync with Blue Notes in the Settings window. Just specify the path to 
-your Blue Notes binary, and tell Hacienda where to put the Action Items. 
+your Blue Notes binary, and tell Lists where to put the Action Items. 
 
 
 ## Building
@@ -66,7 +57,7 @@ make
 make run
 ```
 
-Hacienda uses emoji extensively (list icons, sidebar labels, task
+Lists uses emoji extensively (list icons, sidebar labels, task
 markers). Debian ships the Noto Color Emoji font, but for Apple-style
 emoji install the Apple Color Emoji TTF:
 
@@ -79,7 +70,7 @@ sudo dpkg -i fonts-apple-color-emoji.deb
 The Makefile auto-detects `gtk-mac-integration-gtk3`; if you install
 it later, rebuild from clean (`make clean && make`) so every file sees
 it. On macOS, `make app` wraps the binary into
-`dist/Hacienda-<version>.app` (it still links against the MacPorts GTK
+`dist/Lists-<version>.app` (it still links against the MacPorts GTK
 libraries, so the bundle runs on the machine that built it).
 
 One more step if you want Google sync: set up `client_credentials.mk`

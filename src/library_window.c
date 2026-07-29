@@ -1,5 +1,5 @@
 /* ===========================================================================
- * library_window.c — the main Hacienda window (see library_window.h)
+ * library_window.c — the main Lists window (see library_window.h)
  * =========================================================================== */
 
 #include "library_window.h"
@@ -586,7 +586,7 @@ bn_rows_clear(BnRows *br)
 /* ---------------------------------------------------------------------------
  * append_bn_items() — append fetched Blue Notes action items to the
  * task pane.  Rows carry their "NOTEID:ORD" address in TL_REF and 0 in
- * TL_ID; pin and priority state are Hacienda-local (bn_pins /
+ * TL_ID; pin and priority state are Lists-local (bn_pins /
  * bn_priority — Blue Notes knows neither concept).  The dimmed
  * "❗ Action Items · note N" line marks where the item really lives.
  *   only_pinned      — skip unpinned items (the Pinned Tasks view).
@@ -985,7 +985,8 @@ full_refresh(BtLibrary *lw)
     refresh_sidebar(lw);
     refresh_tasks(lw);
     gtk_widget_set_visible(lw->sync_item,
-        bt_app_config_get_bool("google_sync_enabled", TRUE));
+        bt_app_config_get_bool("google_sync_enabled", TRUE) &&
+        bt_app_config_get_bool("sync_toolbar_button", TRUE));
     bt_editor_refresh_all(lw->app);
 }
 
@@ -2810,7 +2811,7 @@ on_open_db(GtkWidget *widget, gpointer user_data)
         "Open \xe2\x80\x9c%s\xe2\x80\x9d as your new default database, "
         "or for this session only?", display);
     g_free(display);
-    gtk_window_set_title(GTK_WINDOW(dlg), "Hacienda - Open Database");
+    gtk_window_set_title(GTK_WINDOW(dlg), "Lists - Open Database");
     gtk_dialog_add_buttons(GTK_DIALOG(dlg),
         "_Cancel",         GTK_RESPONSE_CANCEL,
         "_Session Only",   1,
@@ -2833,7 +2834,7 @@ on_open_db(GtkWidget *widget, gpointer user_data)
 
     if (app->db == NULL) {
         bt_app_notice(GTK_WINDOW(lw->window), GTK_MESSAGE_ERROR,
-                      "Hacienda - Database Error",
+                      "Lists - Database Error",
                       "Could not open:\n%s\n\n%s",
                       file_path,
                       gerr != NULL ? gerr->message : "Unknown error");
@@ -2902,11 +2903,11 @@ on_menu_about(GtkWidget *w, gpointer data)
     (void)w;
     BtLibrary *lw = data;
 
-    /* 128x128-logical logo from eco-home.png, decoded at the display's
+    /* 128x128-logical logo from document.png, decoded at the display's
      * scale factor so it stays sharp on Retina.                             */
     gint sf = gtk_widget_get_scale_factor(lw->window);
     gchar *icon_path = g_build_filename(lw->app->icons_dir,
-                                        "eco-home.png", NULL);
+                                        "document.png", NULL);
     GdkPixbuf *logo = gdk_pixbuf_new_from_file_at_size(icon_path,
                                                        128 * sf, 128 * sf,
                                                        NULL);
@@ -2918,7 +2919,7 @@ on_menu_about(GtkWidget *w, gpointer data)
     gtk_window_set_transient_for(GTK_WINDOW(dialog),
                                  GTK_WINDOW(lw->window));
     gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog),
-                                      "Hacienda");
+                                      "Lists");
     gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), BT_VERSION);
     if (logo != NULL) {
         /* set_logo() first (it makes the internal image visible and
@@ -3622,7 +3623,7 @@ bt_library_window_new(BtApp *app)
     lw->group_expanded = g_hash_table_new(g_direct_hash, g_direct_equal);
 
     lw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(lw->window), "Hacienda - Library");
+    gtk_window_set_title(GTK_WINDOW(lw->window), "Lists - Library");
     /* The last session's closing size (win_w/win_h), else the default.      */
     gchar *ww = bt_app_config_get("win_w");
     gchar *wh = bt_app_config_get("win_h");
@@ -3746,7 +3747,7 @@ bt_library_window_new(BtApp *app)
     gtk_container_add(GTK_CONTAINER(about_item), about_btn);
     {
         GtkWidget *logo =            /* the icon-mode child                 */
-            bt_app_icon_image_sized(app, "eco-home", 24);
+            bt_app_icon_image_sized(app, "document", 24);
         if (logo == NULL)
             logo = gtk_label_new("\xf0\x9f\x8f\xa0");    /* 🏠 fallback     */
         GtkWidget *label = gtk_label_new("About");   /* text-mode child     */
@@ -3757,7 +3758,7 @@ bt_library_window_new(BtApp *app)
         g_object_set_data_full(G_OBJECT(about_item), "bt-label",
                                g_object_ref_sink(label), g_object_unref);
     }
-    gtk_tool_item_set_tooltip_text(about_item, "About Hacienda");
+    gtk_tool_item_set_tooltip_text(about_item, "About Lists");
     g_signal_connect(about_btn, "clicked",
                      G_CALLBACK(on_menu_about), lw);
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar), about_item, -1);
@@ -4020,8 +4021,9 @@ bt_library_window_new(BtApp *app)
                            lw->sel_kind != SB_KIND_FORECAST);
     gtk_widget_set_visible(lw->forecast_box,
                            lw->sel_kind == SB_KIND_FORECAST);
-    /* No Sync button while the Google master switch is off.                 */
-    if (!bt_app_config_get_bool("google_sync_enabled", TRUE))
+    /* Hide Sync button when the master switch is off or user opted out.     */
+    if (!bt_app_config_get_bool("google_sync_enabled", TRUE) ||
+        !bt_app_config_get_bool("sync_toolbar_button", TRUE))
         gtk_widget_hide(lw->sync_item);
     return lw->window;
 }

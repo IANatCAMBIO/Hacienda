@@ -1,11 +1,11 @@
 /* ===========================================================================
- * app.h — shared application context for Hacienda
+ * app.h — shared application context for Lists
  *
  * A single BtApp instance is created in main() and passed to every window.
  * It owns the database handle, tracks open task-editor windows, and hosts
  * the notification hooks the library window installs.  Companion app to
  * Blue Notes — same design language: plain C + GTK3 + SQLite, no
- * HeaderBars, window titles "Hacienda - <thing>".
+ * HeaderBars, window titles "Lists - <thing>".
  * =========================================================================== */
 
 #ifndef BT_APP_H

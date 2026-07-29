@@ -87,13 +87,13 @@ editor_due_entry_parse(BtEditor *ed, gint64 current)
 }
 
 /* ---------------------------------------------------------------------------
- * editor_title_refresh() — window title "Hacienda - <task title>".
+ * editor_title_refresh() — window title "Lists - <task title>".
  * ------------------------------------------------------------------------- */
 static void
 editor_title_refresh(BtEditor *ed)
 {
     const gchar *t = gtk_entry_get_text(GTK_ENTRY(ed->title_entry));
-    gchar *title = g_strdup_printf("Hacienda - %s",
+    gchar *title = g_strdup_printf("Lists - %s",
                                    *t != '\0' ? t : "Untitled Task");
     gtk_window_set_title(GTK_WINDOW(ed->window), title);
     g_free(title);
@@ -861,10 +861,10 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
     ed->priority_check = gtk_check_button_new_with_label("High Priority");
     g_signal_connect(ed->priority_check, "toggled",
                      G_CALLBACK(on_toggle_changed), ed);
-    if (bn)                          /* Hacienda-local, like the pin (the
+    if (bn)                          /* Lists-local, like the pin (the
                                       * bn_priority table)                   */
         gtk_widget_set_tooltip_text(ed->priority_check,
-            "Kept in Hacienda only \xe2\x80\x94 affects ordering here, "
+            "Kept in Lists only \xe2\x80\x94 affects ordering here, "
             "not Blue Notes");
     gtk_box_pack_start(GTK_BOX(row), ed->priority_check,
                        FALSE, FALSE, 0);

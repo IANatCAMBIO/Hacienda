@@ -1,6 +1,6 @@
-# Hacienda — User Guide
+# Lists — User Guide
 
-Everyday use of Hacienda: the library, the task editor, settings,
+Everyday use of Lists: the library, the task editor, settings,
 storage, Google Tasks sync, and the Blue Notes integration. For build
 instructions and OAuth client setup see the [README](README.md); for
 the database schema and the sync engine see [Internals](Internals.md).
@@ -23,7 +23,7 @@ the database schema and the sync engine see [Internals](Internals.md).
   caveat if you launch from a terminal on macOS: dragging a list may
   print a `Gdk-CRITICAL … gdk_atom_intern` line on the console. It is
   harmless noise from a bug in the Mac build of the GTK library
-  itself, not in Hacienda — the drag works fine. The compact
+  itself, not in Lists — the drag works fine. The compact
   **+ ✎ −** bar at the bottom creates, renames (with an emoji picker)
   and deletes lists; double-clicking a list opens that same rename
   dialog. The sidebar starts hidden; the toolbar's
@@ -33,7 +33,7 @@ the database schema and the sync engine see [Internals](Internals.md).
   their own checkboxes rendered inline. Tasks marked **High
   Priority** (a checkbox in the editor) sort to the top of every
   list they appear in and wear a red ⚑ beside the title. The flag
-  is local to Hacienda — Google Tasks has no priority, so it never
+  is local to Lists — Google Tasks has no priority, so it never
   syncs. Columns: a done checkbox, the
   task, and the due date. Pinning is done from the editor window's
   Pinned checkbox or the task's right-click menu. Rows alternate
@@ -97,7 +97,7 @@ window per task: opening it again focuses the one you already have.
   the auto-sync interval in minutes (default 5; 0 turns the timer
   off while the toolbar Sync button always works).
 
-All changes apply live and persist (in `hacienda.ini` next to the
+All changes apply live and persist (in `lists.ini` next to the
 binary). Toolbar icons are PNGs bundled in `icons/` — replaceable by
 dropping in files.
 
@@ -105,13 +105,13 @@ dropping in files.
 
 Everything lives in a single SQLite database:
 
-- `~/.local/share/hacienda/hacienda.db` (GLib's user-data directory).
+- `~/.local/share/lists/lists.db` (GLib's user-data directory).
   Any standard SQLite tool can read it — the schema is documented in
   [Internals](Internals.md). Back it up by copying the file while the
   app is closed.
-- Settings live in `hacienda.ini` next to the binary (portable mode),
-  falling back to `~/.config/hacienda/` when that directory is not
-  writable; it is seeded from `hacienda.ini.defaults` on first launch
+- Settings live in `lists.ini` next to the binary (portable mode),
+  falling back to `~/.config/lists/` when that directory is not
+  writable; it is seeded from `lists.ini.defaults` on first launch
   and rewritten by the app as you change things.
 
 ## Google Tasks sync
@@ -147,7 +147,7 @@ How it behaves:
   delete-and-recreate when offline). Tasks cleared on Google's side
   stay cleared — they are never resurrected here.
 - Google's default tasklist cannot be deleted (their rule, enforced
-  by their API); Hacienda refuses up front rather than failing
+  by their API); Lists refuses up front rather than failing
   mid-sync.
 
 Signing out drops the tokens; the grant can also be revoked at
@@ -171,12 +171,12 @@ while it's on.
   in the note itself. Double-click to open the reduced editor: done
   and due date are editable; the text lives in the note, so title,
   notes, subtasks and attachments are shown but locked.
-- **Pinning works** and is Hacienda-local (Blue Notes has no pin
+- **Pinning works** and is Lists-local (Blue Notes has no pin
   concept); pinned action items appear in the Pinned Tasks view
   alongside your tasks. **High Priority works the same way** —
-  Hacienda-local, never written to Blue Notes — and floats the item
-  to the top of whichever Hacienda view shows it.
+  Lists-local, never written to Blue Notes — and floats the item
+  to the top of whichever Lists view shows it.
 - Everything goes through the `blue_notes` command-line interface —
-  never its database file — so a running Blue Notes GUI and Hacienda
+  never its database file — so a running Blue Notes GUI and Lists
   cooperate safely (the CLI forwards to the GUI over its socket).
   Action items are not part of Google Tasks sync.
