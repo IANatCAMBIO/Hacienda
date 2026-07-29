@@ -683,7 +683,7 @@ refresh_bn_actions(BtLibrary *lw)
            + append_bn_items(lw, &br, FALSE, 0);
     bn_rows_clear(&br);
     gchar *loc = g_strdup_printf(
-        "Action Items (from Blue Notes) \xe2\x80\x94 %d item%s",
+        "Action Items (from Blue Notes) - %d item%s",
         n, n == 1 ? "" : "s");
     gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
     g_free(loc);
@@ -860,7 +860,7 @@ refresh_forecast(BtLibrary *lw)
     task_row_ctx_clear(&ctx);
 
     gchar *loc = g_strdup_printf(
-        "Weekly Forecast \xe2\x80\x94 %u task%s this week",
+        "Weekly Forecast - %u task%s this week",
         shown, shown == 1 ? "" : "s");
     gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
     g_free(loc);
@@ -964,10 +964,10 @@ refresh_tasks(BtLibrary *lw)
     const gchar *where = virtual_view    ? view_name
                        : sel_list != NULL ? sel_list->name : "?";
     gchar *loc = bn_shown > 0
-        ? g_strdup_printf("%s \xe2\x80\x94 %u task%s + %d action item%s",
+        ? g_strdup_printf("%s - %u task%s + %d action item%s",
                           where, appended, appended == 1 ? "" : "s",
                           bn_shown, bn_shown == 1 ? "" : "s")
-        : g_strdup_printf("%s \xe2\x80\x94 %u task%s",
+        : g_strdup_printf("%s - %u task%s",
                           where, shown, shown == 1 ? "" : "s");
     gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
     g_free(loc);
