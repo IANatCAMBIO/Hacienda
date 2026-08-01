@@ -279,6 +279,19 @@ on_native_menubar_toggled(GtkToggleButton *check, gpointer data)
 }
 #endif /* HAVE_GTKOSX */
 
+/* on_integrity_check_toggled() — persist the db_integrity_check pref and
+ * update the in-memory flag so the setting takes effect next launch.         */
+static void
+on_integrity_check_toggled(GtkWidget *w, gpointer data)
+{
+    BtSettings *sw = data;
+    if (sw->loading)
+        return;
+    gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
+    bt_app_config_set("db_integrity_check", on ? "1" : "0");
+    sw->app->db_integrity_check = on;
+}
+
 /* ---------------------------------------------------------------------------
  * DbSection — widgets of the Database settings block, kept alive so
  * handlers can update them after a location switch.
@@ -541,6 +554,15 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
                      G_CALLBACK(on_db_custom_toggled), dbs);
     g_signal_connect(dbs->choose_btn, "clicked",
                      G_CALLBACK(on_db_choose_clicked), dbs);
+
+    GtkWidget *integrity_check = gtk_check_button_new_with_label(
+        "Check database integrity on startup (PRAGMA integrity_check)");
+    gtk_widget_set_margin_start(integrity_check, 12);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(integrity_check),
+        bt_app_config_get_bool("db_integrity_check", TRUE));
+    g_signal_connect(integrity_check, "toggled",
+                     G_CALLBACK(on_integrity_check_toggled), sw);
+    gtk_box_pack_start(GTK_BOX(vbox), integrity_check, FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(vbox),
                        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),

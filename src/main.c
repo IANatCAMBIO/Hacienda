@@ -9,6 +9,7 @@
 
 #include <gtk/gtk.h>
 #include <curl/curl.h>
+#include <sqlite3.h>
 #include "app.h"
 #include "db.h"
 #include "oauth.h"
@@ -17,6 +18,82 @@
 #ifdef HAVE_GTKOSX
 #include <gtkosxapplication.h>
 #endif
+
+/* ---------------------------------------------------------------------------
+ * integrity_collect() — sqlite3_exec callback: accumulates non-"ok" rows
+ * from a PRAGMA integrity_check result into the GString passed as `data`.
+ * ------------------------------------------------------------------------- */
+static int
+integrity_collect(void *data, int argc, char **argv, char **col_names)
+{
+    (void)col_names;
+    GString *out = data;
+    for (int i = 0; i < argc; i++) {
+        if (argv[i] != NULL && g_strcmp0(argv[i], "ok") != 0) {
+            if (out->len > 0)
+                g_string_append_c(out, '\n');
+            g_string_append(out, argv[i]);
+        }
+    }
+    return 0;
+}
+
+/* fk_collect() — sqlite3_exec callback: formats PRAGMA foreign_key_check
+ * rows (table, rowid, parent, fkid) into human-readable lines.             */
+static int
+fk_collect(void *data, int argc, char **argv, char **col_names)
+{
+    (void)col_names;
+    GString *out = data;
+    if (argc >= 3 && argv[0] != NULL) {
+        if (out->len > 0)
+            g_string_append_c(out, '\n');
+        g_string_append_printf(out, "  %s (row %s) \xe2\x86\x92 %s",
+                               argv[0],
+                               argv[1] != NULL ? argv[1] : "?",
+                               argv[2] != NULL ? argv[2] : "?");
+    }
+    return 0;
+}
+
+/* startup_integrity_check() — run PRAGMA integrity_check and PRAGMA
+ * foreign_key_check against the open database.  Shows a warning dialog if
+ * either check reports problems.  Returns TRUE if both passed.             */
+static gboolean
+startup_integrity_check(BtApp *app)
+{
+    GString *ic_errors = g_string_new(NULL);
+    sqlite3_exec(app->db->sq, "PRAGMA integrity_check",
+                 integrity_collect, ic_errors, NULL);
+
+    GString *fk_errors = g_string_new(NULL);
+    sqlite3_exec(app->db->sq, "PRAGMA foreign_key_check",
+                 fk_collect, fk_errors, NULL);
+
+    gboolean ok = (ic_errors->len == 0 && fk_errors->len == 0);
+    if (!ok) {
+        GString *msg = g_string_new(NULL);
+        if (ic_errors->len > 0) {
+            g_string_append(msg, "Integrity check errors:\n");
+            g_string_append(msg, ic_errors->str);
+        }
+        if (fk_errors->len > 0) {
+            if (msg->len > 0)
+                g_string_append(msg, "\n\n");
+            g_string_append(msg, "Foreign key violations:\n");
+            g_string_append(msg, fk_errors->str);
+        }
+        bt_app_notice(NULL, GTK_MESSAGE_WARNING,
+                      "Lists \xe2\x80\x94 Database Integrity Check",
+                      "The database integrity check found issues:\n\n%s",
+                      msg->str);
+        g_string_free(msg, TRUE);
+    }
+
+    g_string_free(ic_errors, TRUE);
+    g_string_free(fk_errors, TRUE);
+    return ok;
+}
 
 /* ---------------------------------------------------------------------------
  * startup_first_run() — no hacienda.db found at the expected location:
@@ -127,8 +204,16 @@ on_activate(GtkApplication *gtk_app, gpointer data)
     g_free(icon_path);
 #endif
 
+    /* DB integrity check: run PRAGMA integrity_check + foreign_key_check.    */
+    gboolean db_ok = !boot->app->db_integrity_check
+                     || startup_integrity_check(boot->app);
+
     bt_library_window_new(boot->app);
     bt_sync_auto_start(boot->app, boot->db_path);
+
+    if (boot->app->db_integrity_check && db_ok)
+        bt_app_status(boot->app, "DB at %s loaded, integrity check passed",
+                      boot->app->db->path);
 
 #ifdef HAVE_GTKOSX
     /* Honor the persisted native-menu-bar preference, then let the macOS
@@ -199,6 +284,8 @@ main(int argc, char **argv)
     app->toolbars = g_ptr_array_new();
     bt_app_init_icons_dir(app);
     bt_app_load_toolbar_style(app);
+    app->db_integrity_check =
+        bt_app_config_get_bool("db_integrity_check", TRUE);
 
     BtBoot boot = { app, db_path };
     app->gtk_app = gtk_application_new("org.example.lists",

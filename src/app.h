@@ -74,6 +74,7 @@ typedef struct BtApp {
     GPtrArray       *toolbars;
     gchar           *icons_dir;
     gchar           *db_dir;
+    gboolean         db_integrity_check; /* run PRAGMA checks on startup      */
 } BtApp;
 
 /* ---------------------------------------------------------------------------
