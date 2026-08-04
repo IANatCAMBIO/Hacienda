@@ -3623,7 +3623,7 @@ bt_library_window_new(BtApp *app)
     lw->group_expanded = g_hash_table_new(g_direct_hash, g_direct_equal);
 
     lw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(lw->window), "Lists - Library");
+    gtk_window_set_title(GTK_WINDOW(lw->window), "Lists");
     /* The last session's closing size (win_w/win_h), else the default.      */
     gchar *ww = bt_app_config_get("win_w");
     gchar *wh = bt_app_config_get("win_h");
