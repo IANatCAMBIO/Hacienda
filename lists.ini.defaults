@@ -1,5 +1,11 @@
 # Lists — default settings, copied into the live lists.ini on
 # first launch.  The live ini is rewritten by the app and is gitignored.
+#
+# The group name below is load-bearing: an ini written before the 3.0
+# rename keeps its settings under [hacienda] instead, which this build
+# does not read.  Such a file is migrated once on launch (a copy is left
+# as lists.ini.pre-3.0.bak) — everything carries over except the Google
+# refresh token and client keys, so sync needs a single new sign-in.
 [lists]
 # Google Tasks sync — the OAuth client comes from Google's downloaded
 # client_secret.apps.googleusercontent.com.json placed next to the app

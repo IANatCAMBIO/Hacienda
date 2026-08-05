@@ -1,10 +1,19 @@
 # Lists — project guide
 
 Task-list app in **plain C + GTK3 + SQLite**, the companion app to Blue
-Notes (`~/salt_development/orange_notes` — NOT `../orange_notes`).  Two
-window types: a Library (lists sidebar + tall task rows) and one editor
-window per task.  Two-way Google Tasks sync.  No GNOME HeaderBars
-anywhere — plain `GtkWindow` titlebars, formatted `"Lists - <thing>"`.
+Notes.  Two window types: a Library (lists sidebar + tall task rows) and
+one editor window per task.  Two-way Google Tasks sync.  No GNOME
+HeaderBars anywhere — plain `GtkWindow` titlebars, formatted
+`"Lists - <thing>"`.
+
+**Where Blue Notes actually is** (it was renamed too, and the old paths
+still exist as leftovers — verify before believing any of them):
+`~/salt_development/records`, whose git remote is still `orange_notes.git`.
+The live CLI binary is **`records`**, not `blue_notes` — the `blue_notes`
+binary sitting beside it is the stale pre-rename build and answers
+`action list` with an EMPTY result and exit 0, so pointing
+`blue_notes_cli` at it produces an empty Action Items list and no error
+at all.  There is no `~/salt_development/orange_notes` directory any more.
 
 ## Build & run
 
@@ -19,6 +28,13 @@ optionally `gtk-osx-application-gtk3` (native macOS menubar — pkg-config
 module is **`gtk-mac-integration-gtk3`**; the Makefile auto-detects it
 and defines `HAVE_GTKOSX`).  After toggling a dependency run
 `make clean && make`.
+
+Every module goes in the `PKGS` list for ONE pkg-config query — the
+optional gtk-mac-integration module must not get its own `--libs` run,
+because it depends on GTK and a second run hands the linker every GTK
+library twice (`ld: warning: ignoring duplicate libraries`).  That is
+why `HAVE_GTKOSX` is detected above the flag definitions; the link must
+stay warning-free so a real warning is visible.
 
 Launch for testing: `pkill -f './lists'; nohup ./lists
 >/tmp/bt_launch.log 2>&1 &` then `screencapture -x` for screenshots.
@@ -57,13 +73,38 @@ the user).  A logic test harness lives in the session scratchpad
   `lists.ini.defaults`; loaded ONCE, written through on change,
   never re-read.  Everything except the OAuth client keys and the
   window geometry is editable in File → Settings….
+  The ini GROUP NAME is `[lists]`, and it is part of the file format —
+  a pre-3.0 ini keeps everything under `[hacienda]`, which this build
+  does not read, so the rename silently reverted upgraders to defaults.
+  `config_migrate_legacy_group` (app.c, run from `bt_app_config_init`
+  before any key is read) folds that group in ONCE and removes it,
+  backing the file up to `lists.ini.pre-3.0.bak` first.  It merges PER
+  KEY with the CURRENT group winning — the user may already have been
+  running the renamed build, and their newer choices must not be
+  reverted.  It is an ALLOWLIST (`LEGACY_KEYS` + the `manual_order_`
+  prefix): dead keys like `task_columns` / `task_sort_manual` are
+  dropped, and the three sync keys `google_client_id`,
+  `google_client_secret` and **`gtasks_refresh_token`** are deliberately
+  NOT carried over — a pre-rename token was issued to that build's OAuth
+  client, Google answers the refresh with `invalid_grant` (verified), and
+  a failed refresh does NOT clear the token, so migrating it would leave
+  the app reporting "signed in" while every sync failed.  Signed-out
+  plus one sign-in click beats silent breakage.  The `.bak` holds the
+  same refresh token as the live file, so it is gitignored (`*.bak`).
 - **Error discipline**: every prepared WRITE goes through `step_done()`
   (logs sqlite's message on prepare/step failure — silent write loss is
   the unacceptable outcome); multi-statement writes go through
   `exec_txn()` (BEGIN IMMEDIATE + ROLLBACK on failure — a bare
   `BEGIN;…;COMMIT` via sqlite3_exec wedges the connection in an open
   transaction on SQLITE_BUSY).  Create failures (id 0) must surface a
-  status-bar message at the call site.
+  status-bar message at the call site.  The same rule binds READS whose
+  whole purpose is to report health: `startup_integrity_check` checks
+  both `sqlite3_exec` return codes, because a PRAGMA that never ran
+  collects no rows and is otherwise indistinguishable from a clean
+  result — "checked, all good" when nothing was checked is the one
+  outcome a health check must never produce, so a failed exec reports
+  sqlite's own message and the dialog says "did not complete" rather
+  than "found issues".
 - Notify hooks on BtApp: `notify_changed` = FULL refresh (sidebar +
   tasks + reload all editors) for structural changes; `notify_tasks` =
   task pane only — editor saves and subtask/attachment edits use this
@@ -92,10 +133,25 @@ the user).  A logic test harness lives in the session scratchpad
   including Blue Notes rows.  The Manual Sort toggle
   (`task_list_manual_sort`, default 0) enables drag-reorder of the task
   pane: a ⠿ drag-handle column (26 px wide, `cdrag`) appears; order is
-  persisted per view in config keys `manual_order_list_<id>`,
+  persisted per view in config keys `manual_order_list_<id>` (built by
+  `list_order_key`, the single source of that format),
   `manual_order_all`, `manual_order_pinned`, `manual_order_today`,
-  `manual_order_bn_actions`.  A drag-lock (`drag_lock_ref`) prevents
-  rapid row flicker at boundaries.  Far right (after an expanding blank
+  `manual_order_bn_actions`.  The ⠿ glyph and its dimming live on the
+  `cdrag` RENDERER, not in `drag_handle_func` — a data func runs per
+  DRAW, and the glyph is the same on every row; the func does the row
+  stripe only.  `task_view_apply_manual_order` must be called from
+  EVERY view's populate path: `refresh_bn_actions` returns from
+  `refresh_tasks` before its call site, so the Action Items view needs
+  its own (without it the drags were written and never read back).
+  `on_delete_list` removes the deleted list's order key — nothing else
+  would, and the ini otherwise grows one dead entry per deleted list.
+  `lw->manual_sort` caches the config flag (read per motion event and
+  per refresh); `task_manual_sort_apply` is the only writer, and
+  `bt_library_window_new` seeds it before building the toolbar and View
+  menu, which read the cache.  A drag-lock (`drag_lock_ref`) prevents
+  rapid row flicker at boundaries; the "ns-resize" cursor is made once
+  and kept on `lw->drag_cursor` (the motion path must not allocate).
+  Far right (after an expanding blank
   separator): the About button — document.png logo in every style
   except text-only, which swaps in an "About" label
   (`about_button_fit_style` on "style-changed"); it opens the Blue
@@ -112,7 +168,11 @@ the user).  A logic test harness lives in the session scratchpad
   a two-button pill (New Task + Delete Task, icons only, never
   registered with `bt_app_register_toolbar`) added as a `GtkOverlay`
   child over the paned with halign/valign END and 20 px end/bottom
-  margins.  The overlay wraps the PANED, not the whole vbox, so the
+  margins.  Its plate is themed through `themed_bg_css_apply`
+  (`float_bar_css`), NOT hardcoded — the light-theme grays it shipped
+  with put a white slab over a dark theme's rows; the border is a
+  `shade()` of the plate, lightened instead of darkened when the plate
+  is dark.  The overlay wraps the PANED, not the whole vbox, so the
   float never covers the status bar's event messages.
   `compact_layout_apply` is the single applier (also called after the
   construction-time `show_all`, where it replaces the old
@@ -149,11 +209,34 @@ the user).  A logic test harness lives in the session scratchpad
   separate widgets (get them via `gtk_tree_view_column_get_button`, as
   the header right-click wiring already does).  `:hover` / `:active` keep
   `shade()`s of the same color so a sortable header still responds.
+  Both this and the compact float bar go through
+  `themed_bg_css_apply(widget, builder)`: it keeps ONE provider per
+  widget as object data and RELOADS it on "style-updated" (a macOS
+  light/dark switch or a GTK theme swap), because resolving the color
+  once at construction leaves the stale value behind, and
+  `bt_app_widget_add_css` would stack a fresh provider per change.  It
+  stores the last color it wrote and returns early when unchanged —
+  that guard is what stops the recursion, since our own reload re-emits
+  "style-updated".
 - Task-cell notes preview: gate it on the first line that actually HAS
   content (`line_is_blank`, Unicode-aware), NOT on `*notes != '\0'` —
   a note holding one space previewed as an empty line, which reads as
   nothing while making that row a whole line taller than its neighbors
-  (a real bug report).  The previewed line is `g_strstrip`ed.
+  (a real bug report).  The previewed line is `g_strstrip`ed, and no
+  line is emitted at all when nothing survives that.  The 120-char cap
+  must land on a UTF-8 CHARACTER boundary (walk back with
+  `g_utf8_find_prev_char`): the cap counts BYTES, a whole task cell is
+  ONE Pango markup string, and a partial sequence anywhere in it makes
+  `pango_parse_markup` reject the lot — the row then draws completely
+  blank, title and all, not merely without its preview.  For the same
+  reason every DB- or CLI-sourced string entering that markup is
+  escaped through `markup_escape_db` (`g_utf8_make_valid` then
+  `g_markup_escape_text`): `g_markup_escape_text` does NOT validate, so
+  a bad byte from a sync payload or a hand-edited database would reach
+  Pango and blank the row.  The status bar is the opposite case — a
+  plain-text label (`set_text`), so text bound for `bt_app_status` must
+  NOT be markup-escaped or the user reads a literal "&amp;"; the fade
+  animation escapes what it reads back off the label itself.
 - Sidebar: gray backdrop CSS (rgb 230,230,230 / text 65,65,65 /
   selection rgb 86,131,224 white); meta rows bold (Favorites ⭐️, All
   Tasks 🔮, Due Today ☀️, Weekly Forecast 🌤️).  Due Today optionally

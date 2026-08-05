@@ -51,9 +51,6 @@ typedef struct {
     gboolean      adv_shown;         /* disclosure state                    */
     gint          adv_height;        /* px the window grew when expanding,
                                       * given back on collapse             */
-    gboolean      is_new;            /* opened straight from New Task: gets
-                                      * the Save / Cancel pair, and Cancel
-                                      * deletes the throwaway row           */
     guint         save_source;       /* pending debounce save, or 0         */
     gboolean      loading;           /* suppress change handlers            */
     gboolean      bn_done;           /* Blue Notes editors: last loaded     */
@@ -953,7 +950,6 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref,
     ed->task_id   = task_id;
     ed->bn_ref    = g_strdup(bn_ref);
     ed->parent_id = t != NULL ? t->parent_id : 0;
-    ed->is_new    = is_new;
     gboolean bn   = bn_ref != NULL;  /* the reduced Blue Notes editor       */
 
     ed->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);

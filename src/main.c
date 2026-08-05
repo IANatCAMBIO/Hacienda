@@ -56,24 +56,47 @@ fk_collect(void *data, int argc, char **argv, char **col_names)
     return 0;
 }
 
-/* startup_integrity_check() — run PRAGMA integrity_check and PRAGMA
+/* ---------------------------------------------------------------------------
+ * startup_integrity_check() — run PRAGMA integrity_check and PRAGMA
  * foreign_key_check against the open database.  Shows a warning dialog if
- * either check reports problems.  Returns TRUE if both passed.             */
+ * either check reports problems.  Returns TRUE if both actually RAN and
+ * both passed.
+ *
+ * The sqlite3_exec return codes are load-bearing, not noise: a PRAGMA that
+ * never ran (a locked database, an I/O error) collects no rows, which is
+ * indistinguishable from a clean result if you only look at the collectors.
+ * Reporting "checked, all good" when nothing was checked is the one outcome
+ * a health check must never produce, so a failed exec is surfaced with
+ * sqlite's own message.
+ * ------------------------------------------------------------------------- */
 static gboolean
 startup_integrity_check(BtApp *app)
 {
     GString *ic_errors = g_string_new(NULL);
-    sqlite3_exec(app->db->sq, "PRAGMA integrity_check",
-                 integrity_collect, ic_errors, NULL);
+    gchar   *ic_fail   = NULL;       /* sqlite's message if exec failed     */
+    if (sqlite3_exec(app->db->sq, "PRAGMA integrity_check",
+                     integrity_collect, ic_errors, NULL) != SQLITE_OK)
+        ic_fail = g_strdup(sqlite3_errmsg(app->db->sq));
 
     GString *fk_errors = g_string_new(NULL);
-    sqlite3_exec(app->db->sq, "PRAGMA foreign_key_check",
-                 fk_collect, fk_errors, NULL);
+    gchar   *fk_fail   = NULL;
+    if (sqlite3_exec(app->db->sq, "PRAGMA foreign_key_check",
+                     fk_collect, fk_errors, NULL) != SQLITE_OK)
+        fk_fail = g_strdup(sqlite3_errmsg(app->db->sq));
 
-    gboolean ok = (ic_errors->len == 0 && fk_errors->len == 0);
+    gboolean ok = ic_errors->len == 0 && fk_errors->len == 0 &&
+                  ic_fail == NULL && fk_fail == NULL;
     if (!ok) {
         GString *msg = g_string_new(NULL);
+        if (ic_fail != NULL)
+            g_string_append_printf(msg,
+                "The integrity check could not be run:\n  %s\n", ic_fail);
+        if (fk_fail != NULL)
+            g_string_append_printf(msg,
+                "The foreign key check could not be run:\n  %s\n", fk_fail);
         if (ic_errors->len > 0) {
+            if (msg->len > 0)
+                g_string_append_c(msg, '\n');
             g_string_append(msg, "Integrity check errors:\n");
             g_string_append(msg, ic_errors->str);
         }
@@ -83,13 +106,21 @@ startup_integrity_check(BtApp *app)
             g_string_append(msg, "Foreign key violations:\n");
             g_string_append(msg, fk_errors->str);
         }
+        /* "found issues" would be a lie when the checks never ran at all,
+         * which is exactly the case this dialog exists to expose.           */
+        gboolean ran = ic_fail == NULL && fk_fail == NULL;
         bt_app_notice(NULL, GTK_MESSAGE_WARNING,
                       "Lists \xe2\x80\x94 Database Integrity Check",
-                      "The database integrity check found issues:\n\n%s",
+                      ran ? "The database integrity check found issues:"
+                            "\n\n%s"
+                          : "The database integrity check did not "
+                            "complete:\n\n%s",
                       msg->str);
         g_string_free(msg, TRUE);
     }
 
+    g_free(ic_fail);
+    g_free(fk_fail);
     g_string_free(ic_errors, TRUE);
     g_string_free(fk_errors, TRUE);
     return ok;

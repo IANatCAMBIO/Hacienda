@@ -28,25 +28,36 @@ CC       := cc
 # be on PATH in every shell, so fall back to the absolute path if needed.
 PKGCONF  := $(shell command -v pkg-config 2>/dev/null || echo /opt/local/bin/pkg-config)
 
-# Compiler flags: C11, broad warnings, debug symbols, plus the include
-# paths for GTK3, SQLite3 and libcurl from pkg-config.
-CFLAGS   := -std=c11 -Wall -Wextra -g \
-            -DBT_VERSION='"$(VERSION)"' \
-            $(shell $(PKGCONF) --cflags gtk+-3.0 sqlite3 libcurl)
-
-# Linker flags: the GTK3, SQLite3 and libcurl libraries, plus libm.
-LDFLAGS  := $(shell $(PKGCONF) --libs gtk+-3.0 sqlite3 libcurl) -lm
-
 # Optional macOS menu-bar integration (MacPorts: gtk-osx-application-gtk3;
 # the pkg-config module is gtk-mac-integration-gtk3).  When present, the
 # Settings window offers moving the menu into the native macOS menu bar;
 # without it the option shows as unavailable.  After toggling the
 # dependency, run `make clean && make` so every object sees the new flags.
+#
+# Detected BEFORE the flags below because it joins the pkg-config module
+# list rather than appending a second --libs run: gtk-mac-integration
+# depends on GTK itself, so two separate runs hand the linker every GTK
+# library twice ("ld: warning: ignoring duplicate libraries").  One run
+# over all modules lets pkg-config collapse them.
 HAVE_GTKOSX := $(shell $(PKGCONF) --exists gtk-mac-integration-gtk3 && echo 1)
+
+# Every pkg-config module the build needs, resolved in a single query.
+PKGS     := gtk+-3.0 sqlite3 libcurl
 ifeq ($(HAVE_GTKOSX),1)
-CFLAGS  += -DHAVE_GTKOSX $(shell $(PKGCONF) --cflags gtk-mac-integration-gtk3)
-LDFLAGS += $(shell $(PKGCONF) --libs gtk-mac-integration-gtk3)
+PKGS    += gtk-mac-integration-gtk3
 endif
+
+# Compiler flags: C11, broad warnings, debug symbols, plus the include
+# paths for the modules above.
+CFLAGS   := -std=c11 -Wall -Wextra -g \
+            -DBT_VERSION='"$(VERSION)"' \
+            $(shell $(PKGCONF) --cflags $(PKGS))
+ifeq ($(HAVE_GTKOSX),1)
+CFLAGS  += -DHAVE_GTKOSX
+endif
+
+# Linker flags: those same libraries, plus libm.
+LDFLAGS  := $(shell $(PKGCONF) --libs $(PKGS)) -lm
 
 # The app's own Google OAuth client, baked into the binary so users just
 # click Sync and sign in — no configuration.  One-time developer setup:

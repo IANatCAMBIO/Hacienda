@@ -97,10 +97,20 @@ typedef struct {
     GHashTable   *group_expanded;    /* group id (ptr) → expanded gboolean  */
     gint          win_w, win_h;      /* live client size (persisted at
                                       * close as the next launch's size)    */
+    gboolean             manual_sort;    /* task_list_manual_sort, cached:
+                                          * read per motion event and per
+                                          * refresh, so it must not cost a
+                                          * GKeyFile lookup + strdup each
+                                          * time.  task_manual_sort_apply
+                                          * is the single writer.          */
     gboolean             drag_active;    /* live task-row drag in progress  */
     GtkTreeRowReference *drag_row_ref;   /* auto-updating ref to drag row  */
     GtkTreeRowReference *drag_lock_ref;  /* row just swapped; locked until
                                           * cursor re-enters drag row      */
+    GdkCursor           *drag_cursor;    /* the "ns-resize" cursor, made
+                                          * once (owned; the motion path
+                                          * would otherwise allocate one
+                                          * per event)                     */
     gint                 pending_fades;       /* active fade-out animations  */
     guint                status_fade_source;  /* delay before fade starts    */
     guint                status_fade_step_source; /* per-step fade timer     */
@@ -128,8 +138,116 @@ lib_of(BtApp *app)
 }
 
 /* ===========================================================================
- * Task description markup — the tall cell.
+ * Chrome that has to match the window background (@theme_bg_color).
  * =========================================================================== */
+
+/* ThemedCssFunc — build a widget's CSS from the resolved background color.
+ * New string (the caller g_frees it).                                       */
+typedef gchar *(*ThemedCssFunc)(const GdkRGBA *bg);
+
+/* ---------------------------------------------------------------------------
+ * themed_bg_css_apply() — style `w` from the theme's @theme_bg_color, and
+ * keep it in step when the theme changes (a macOS light/dark switch, or a
+ * GTK theme swap on Linux).
+ *
+ * Resolving the NAMED color rather than hardcoding a gray is the whole
+ * point: it is what makes these widgets match the window and the status
+ * bar, whatever the theme paints them.  A theme that doesn't name the
+ * color is the one case we leave alone rather than guess — the widget
+ * keeps its default look.
+ *
+ * The provider is created once and RELOADED in place, kept on the widget as
+ * object data: bt_app_widget_add_css would stack a fresh provider on every
+ * theme change.  The last color written is stored alongside it, which is
+ * also what stops the recursion — our own reload re-emits "style-updated",
+ * and the second pass resolves the same color and returns without writing.
+ * (@theme_bg_color comes from the theme's provider, not ours, so the
+ * resolved value really is stable across our own reload.)
+ * ------------------------------------------------------------------------- */
+static void themed_bg_css_apply(GtkWidget *w, ThemedCssFunc build);
+
+/* on_themed_style_updated() — the theme moved: recompute from the builder
+ * stashed on the widget.                                                    */
+static void
+on_themed_style_updated(GtkWidget *w, gpointer data)
+{
+    (void)data;
+    themed_bg_css_apply(w, (ThemedCssFunc)g_object_get_data(
+                               G_OBJECT(w), "bt-themed-build"));
+}
+
+static void
+themed_bg_css_apply(GtkWidget *w, ThemedCssFunc build)
+{
+    if (build == NULL)
+        return;
+    GdkRGBA bg;                      /* the window/status-bar background    */
+    if (!gtk_style_context_lookup_color(gtk_widget_get_style_context(w),
+                                        "theme_bg_color", &bg))
+        return;
+
+    GdkRGBA *last = g_object_get_data(G_OBJECT(w), "bt-themed-rgba");
+    if (last != NULL && gdk_rgba_equal(last, &bg))
+        return;                      /* unchanged — and ends the recursion  */
+
+    GtkCssProvider *provider =
+        g_object_get_data(G_OBJECT(w), "bt-themed-css");
+    if (provider == NULL) {
+        provider = gtk_css_provider_new();
+        gtk_style_context_add_provider(gtk_widget_get_style_context(w),
+            GTK_STYLE_PROVIDER(provider),
+            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        g_object_set_data_full(G_OBJECT(w), "bt-themed-css", provider,
+                               g_object_unref);
+        g_object_set_data(G_OBJECT(w), "bt-themed-build", (gpointer)build);
+        g_signal_connect(w, "style-updated",
+                         G_CALLBACK(on_themed_style_updated), NULL);
+    }
+    g_object_set_data_full(G_OBJECT(w), "bt-themed-rgba",
+                           gdk_rgba_copy(&bg),
+                           (GDestroyNotify)gdk_rgba_free);
+    gchar *css = build(&bg);
+    gtk_css_provider_load_from_data(provider, css, -1, NULL);
+    g_free(css);
+}
+
+/* rgb_of() — a GdkRGBA as a CSS "rgb(r,g,b)" literal (new string).          */
+static gchar *
+rgb_of(const GdkRGBA *c)
+{
+    return g_strdup_printf("rgb(%d,%d,%d)",
+                           (gint)(c->red   * 255 + 0.5),
+                           (gint)(c->green * 255 + 0.5),
+                           (gint)(c->blue  * 255 + 0.5));
+}
+
+/* header_flatten_css() — the column-header CSS: the flat background plus
+ * shades of it for :hover / :active, so a sortable header still gives
+ * feedback instead of jumping back to the theme's button color.  Quartz
+ * only, like its one caller — otherwise it is an unused static.             */
+#ifdef GDK_WINDOWING_QUARTZ
+static gchar *
+header_flatten_css(const GdkRGBA *bg)
+{
+    gchar *c   = rgb_of(bg);
+    gchar *css = g_strdup_printf(
+        "button {"
+        "  background-image: none;"
+        "  background-color: %s;"
+        "}"
+        "button:hover {"
+        "  background-image: none;"
+        "  background-color: shade(%s, 0.94);"
+        "}"
+        "button:active {"
+        "  background-image: none;"
+        "  background-color: shade(%s, 0.88);"
+        "}",
+        c, c, c);
+    g_free(c);
+    return css;
+}
+#endif /* GDK_WINDOWING_QUARTZ */
 
 /* ---------------------------------------------------------------------------
  * header_button_flatten() — paint a tree-view column header the same color
@@ -139,16 +257,11 @@ lib_of(BtApp *app)
  * The status bar sets no background of its own: it shows the window's,
  * which the theme paints from @theme_bg_color.  Headers, by contrast, are
  * real GtkButtons and come with the quartz theme's button gradient, so
- * they read lighter than the rest of the chrome.  Resolving the named
- * theme color (rather than hardcoding a gray) keeps the match if the
- * theme changes, and lookup_color failing is the "theme doesn't name it"
- * case — leave the default header alone rather than guess.
+ * they read lighter than the rest of the chrome.
  *
  * The provider goes on the header BUTTON, not the tree view: a provider
  * added to a widget's style context styles that widget only, and the
- * header buttons are separate widgets from the view.  :hover and :active
- * keep a shade of the same color so a sortable header still gives
- * feedback without jumping back to the theme's button color.
+ * header buttons are separate widgets from the view.
  *
  * Gated on GDK_WINDOWING_QUARTZ rather than __APPLE__: the reason to
  * restyle is how the quartz backend draws buttons, so an X11 build on a
@@ -160,29 +273,7 @@ header_button_flatten(GtkWidget *hbtn)
 #ifndef GDK_WINDOWING_QUARTZ
     (void)hbtn;                      /* Linux/X11: the GTK theme decides    */
 #else
-    GdkRGBA bg;                      /* the window/status-bar background    */
-    if (!gtk_style_context_lookup_color(gtk_widget_get_style_context(hbtn),
-                                        "theme_bg_color", &bg))
-        return;
-    gint r = (gint)(bg.red   * 255 + 0.5);
-    gint g = (gint)(bg.green * 255 + 0.5);
-    gint b = (gint)(bg.blue  * 255 + 0.5);
-    gchar *css = g_strdup_printf(
-        "button {"
-        "  background-image: none;"
-        "  background-color: rgb(%d,%d,%d);"
-        "}"
-        "button:hover {"
-        "  background-image: none;"
-        "  background-color: shade(rgb(%d,%d,%d), 0.94);"
-        "}"
-        "button:active {"
-        "  background-image: none;"
-        "  background-color: shade(rgb(%d,%d,%d), 0.88);"
-        "}",
-        r, g, b, r, g, b, r, g, b);
-    bt_app_widget_add_css(hbtn, css);
-    g_free(css);
+    themed_bg_css_apply(hbtn, header_flatten_css);
 #endif
 }
 
@@ -208,6 +299,33 @@ append_line(GString *s, const gchar *markup)
 }
 
 /* ---------------------------------------------------------------------------
+ * markup_escape_db() — g_markup_escape_text() for a string that came out of
+ * the DATABASE, i.e. one whose UTF-8 validity we do not control.
+ *
+ * A whole task cell is ONE Pango markup string, so a single bad byte
+ * anywhere in it makes pango_parse_markup reject the lot and the row draws
+ * completely blank — title, list, notes and all.  g_markup_escape_text does
+ * not validate (it escapes the markup metacharacters and copies the rest),
+ * so invalid bytes pass straight through to Pango.  g_utf8_make_valid
+ * substitutes U+FFFD for them, which shows the user a replacement glyph in
+ * the one bad spot instead of silently losing the entire row.
+ *
+ * Text the app itself produced (GtkTextBuffer contents, our own literals)
+ * is always valid; this is for anything a sync payload or a hand-edited
+ * database could have put there.  New string (g_free).
+ * ------------------------------------------------------------------------- */
+static gchar *
+markup_escape_db(const gchar *text)
+{
+    if (g_utf8_validate(text, -1, NULL))
+        return g_markup_escape_text(text, -1);
+    gchar *valid = g_utf8_make_valid(text, -1);
+    gchar *esc   = g_markup_escape_text(valid, -1);
+    g_free(valid);
+    return esc;
+}
+
+/* ---------------------------------------------------------------------------
  * task_desc_markup() — build the Task cell: bold title (struck when
  * done), an "in <list>" line in the virtual views, a dimmed notes
  * preview, an attachment count, and up to four subtask lines.  This is
@@ -224,8 +342,8 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
                  GPtrArray *subs, gboolean bold)
 {
     GString *s = g_string_new(NULL);
-    gchar *title = g_markup_escape_text(
-        *t->title != '\0' ? t->title : "Untitled Task", -1);
+    gchar *title = markup_escape_db(
+        *t->title != '\0' ? t->title : "Untitled Task");
     const gchar *open  = bold ? "<b>" : "";
     const gchar *close = bold ? "</b>" : "";
     gchar *line = t->done
@@ -255,7 +373,7 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
      * unreadable — alpha dims whatever color the theme picks, so the
      * text follows the row's selected/unselected state.                     */
     if (list_name != NULL) {
-        gchar *esc = g_markup_escape_text(list_name, -1);
+        gchar *esc = markup_escape_db(list_name);
         gchar *l = g_strdup_printf(
             "<small><i><span alpha=\"60%%\">in %s</span></i>"
             "</small>", esc);
@@ -285,20 +403,42 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
     if (nline < nend) {
         gsize len   = (gsize)(nend - nline);
         gsize shown = MIN(len, (gsize)120);
+        /* The cap is a BYTE cap, so walk it back to a character boundary:
+         * a multi-byte character straddling byte 120 would leave a partial
+         * sequence, and the whole cell is ONE Pango markup string — so
+         * pango_parse_markup rejects it and the row renders completely
+         * blank, title and all (not just the preview).  g_utf8_find_prev_char
+         * from the cut point gives the last character that STARTS before it;
+         * keep it only when it also ends at or before the cut.               */
+        if (shown < len) {
+            const gchar *cut  = nline + shown;
+            const gchar *prev = g_utf8_find_prev_char(nline, cut);
+            if (prev == NULL)            /* no boundary found: drop it all   */
+                shown = 0;
+            else if (g_utf8_next_char(prev) > cut)
+                shown = (gsize)(prev - nline);   /* char is cut: exclude it  */
+        }
         gchar *preview = g_strndup(nline, shown);
         /* Trim both ends: leading indentation reads as a stray gap in a
          * one-line preview, trailing space would sit before the ellipsis.
          * g_strstrip chugs in place, so `preview` stays the pointer to
          * free.                                                            */
         g_strstrip(preview);
-        gchar *esc = g_markup_escape_text(preview, -1);
-        gchar *l = g_strdup_printf(
-            "<small><span alpha=\"65%%\">%s%s</span></small>", esc,
-            /* more of THIS line, or any line after it                      */
-            shown < len || *nend != '\0' ? "\xe2\x80\xa6" : "");
-        append_line(s, l);
-        g_free(l);
-        g_free(esc);
+        /* Nothing survived the cap (a single over-long character, or bytes
+         * that were not valid UTF-8 to begin with): emit no line at all
+         * rather than an empty one — an empty preview reads as nothing
+         * while still making this row a line taller than its neighbours,
+         * which is the bug the content-gating above exists to prevent.      */
+        if (*preview != '\0') {
+            gchar *esc = markup_escape_db(preview);
+            gchar *l = g_strdup_printf(
+                "<small><span alpha=\"65%%\">%s%s</span></small>", esc,
+                /* more of THIS line, or any line after it                  */
+                shown < len || *nend != '\0' ? "\xe2\x80\xa6" : "");
+            append_line(s, l);
+            g_free(l);
+            g_free(esc);
+        }
         g_free(preview);
     }
 
@@ -314,8 +454,8 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
     guint nsubs = subs != NULL ? subs->len : 0;
     for (guint i = 0; i < MIN(nsubs, 4u); i++) {
         BtTask *sub = g_ptr_array_index(subs, i);
-        gchar *esc = g_markup_escape_text(
-            *sub->title != '\0' ? sub->title : "Untitled", -1);
+        gchar *esc = markup_escape_db(
+            *sub->title != '\0' ? sub->title : "Untitled");
         gchar *l = sub->done
             ? g_strdup_printf("<small>\xe2\x98\x91 <span "
                               "alpha=\"55%%\"><s>%s</s></span>"
@@ -388,6 +528,7 @@ scroll_keep_queue(GtkWidget *view)
 static gint64   bn_embed_list(BtLibrary *lw);
 static void     task_view_apply_manual_order(BtLibrary *lw);
 static void     task_manual_sort_apply(BtLibrary *lw);
+static gchar   *list_order_key(gint64 list_id);
 static gboolean on_column_header_press(GtkWidget *, GdkEventButton *, gpointer);
 static void     on_menu_toggle_done_visible(GtkWidget *, gpointer);
 static void     on_menu_toggle_manual_sort(GtkWidget *, gpointer);
@@ -708,8 +849,10 @@ append_bn_items(BtLibrary *lw, const BnRows *br, gboolean only_pinned,
             continue;
         if (!show_done && na->done)
             continue;
-        gchar *esc = g_markup_escape_text(
-            *na->text != '\0' ? na->text : "(empty item)", -1);
+        /* CLI output, so its UTF-8 is no more guaranteed than the DB's —
+         * same blank-row failure mode if a bad byte reaches Pango.          */
+        gchar *esc = markup_escape_db(
+            *na->text != '\0' ? na->text : "(empty item)");
         gchar *note = g_strndup(na->ref, strcspn(na->ref, ":"));
         const gchar *open  = bold ? (na->done ? "<b><s>" : "<b>")
                                   : (na->done ? "<s>" : "");
@@ -778,6 +921,13 @@ refresh_bn_actions(BtLibrary *lw)
     gint n = append_bn_items(lw, &br, FALSE, 1)
            + append_bn_items(lw, &br, FALSE, 0);
     bn_rows_clear(&br);
+    /* Same manual-order restore refresh_tasks does for the other views —
+     * this one reaches refresh_bn_actions and returns before getting
+     * there, so without this the drag order written to
+     * manual_order_bn_actions was never read back and every refresh
+     * (a ticked checkbox is enough) threw the order away.                   */
+    if (lw->manual_sort)
+        task_view_apply_manual_order(lw);
     gchar *loc = g_strdup_printf(
         "Action Items (from Blue Notes) - %d item%s",
         n, n == 1 ? "" : "s");
@@ -1051,7 +1201,7 @@ refresh_tasks(BtLibrary *lw)
     }
 
     /* Reorder to match the saved manual order (no-op when mode is off).       */
-    if (bt_app_config_get_bool("task_list_manual_sort", FALSE))
+    if (lw->manual_sort)
         task_view_apply_manual_order(lw);
 
     /* Status bar left: where we are + how many rows.                        */
@@ -1132,7 +1282,7 @@ on_toggle_done_visible(GtkWidget *w, gpointer data)
 static void
 manual_sort_icon_refresh(BtLibrary *lw)
 {
-    gboolean manual = bt_app_config_get_bool("task_list_manual_sort", FALSE);
+    gboolean manual = lw->manual_sort;   /* every caller applies first      */
     GtkWidget *icon = bt_app_icon_image_sized(lw->app,
         manual ? "menu" : "slide", 24);
     if (icon) {
@@ -1160,7 +1310,7 @@ on_toggle_manual_sort(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtLibrary *lw = data;
-    gboolean manual = !bt_app_config_get_bool("task_list_manual_sort", FALSE);
+    gboolean manual = !lw->manual_sort;
     bt_app_config_set("task_list_manual_sort", manual ? "1" : "0");
     task_manual_sort_apply(lw);
     manual_sort_icon_refresh(lw);
@@ -1483,12 +1633,14 @@ start_fade(BtLibrary *lw, GtkListStore *store, GtkTreeIter *iter,
 
     gtk_list_store_set(store, iter, TL_DONE, TRUE, -1);
 
-    gchar *escaped = g_markup_escape_text(
-        title != NULL && *title != '\0' ? title : "Untitled Task", -1);
+    /* The RAW title: the status bar is a plain-text label (set_text, no
+     * markup), so escaping here put a literal "&amp;" on screen for any
+     * task with an ampersand in its name.  The fade animation is the only
+     * thing that needs markup, and it escapes what it reads back off the
+     * label itself.                                                         */
     bt_app_status(lw->app,
                   "\xe2\x80\x9c%s\xe2\x80\x9d \xe2\x80\x94 Completed",
-                  escaped);
-    g_free(escaped);
+                  title != NULL && *title != '\0' ? title : "Untitled Task");
 
     GtkTreePath *path =
         gtk_tree_model_get_path(GTK_TREE_MODEL(store), iter);
@@ -2267,6 +2419,12 @@ on_delete_list(GtkWidget *w, gpointer data)
         "tasks?", l->name);
     if (yes) {
         bt_db_list_delete(lw->app->db, id);
+        /* Drop the list's manual-order key with it — nothing else ever
+         * would, so the ini otherwise grows a dead manual_order_list_<id>
+         * entry for every list the user has ever deleted.                   */
+        gchar *order_key = list_order_key(id);
+        bt_app_config_set(order_key, NULL);   /* NULL removes the key       */
+        g_free(order_key);
         lw->sel_kind = SB_KIND_LIST;
         lw->sel_id = 0;              /* falls back to the first list        */
         full_refresh(lw);
@@ -2569,8 +2727,7 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
     BtLibrary *lw = data;
 
     /* Left-click in the drag handle column starts a manual reorder. */
-    if (event->button == 1 &&
-        bt_app_config_get_bool("task_list_manual_sort", FALSE)) {
+    if (event->button == 1 && lw->manual_sort) {
         GtkTreePath      *path = NULL;
         GtkTreeViewColumn *col = NULL;
         if (gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(view),
@@ -3279,6 +3436,29 @@ compact_bar_button(BtLibrary *lw, GtkWidget *box, const gchar *icon,
     gtk_box_pack_start(GTK_BOX(box), btn, FALSE, FALSE, 0);
 }
 
+/* float_bar_css() — the floating pill's plate: the window background, with
+ * a border shaded off the same color so it reads as a raised object in
+ * either a light or a dark theme.                                           */
+static gchar *
+float_bar_css(const GdkRGBA *bg)
+{
+    /* Light themes want a DARKER border than the plate, dark themes a
+     * lighter one — pick the direction from the plate's own luminance so
+     * the edge stays visible either way.                                    */
+    gdouble lum = 0.299 * bg->red + 0.587 * bg->green + 0.114 * bg->blue;
+    gchar *c   = rgb_of(bg);
+    gchar *css = g_strdup_printf(
+        "box {"
+        "  background-color: %s;"
+        "  border: 1px solid shade(%s, %s);"
+        "  border-radius: 8px;"
+        "  padding: 2px;"
+        "}",
+        c, c, lum > 0.5 ? "0.80" : "1.35");
+    g_free(c);
+    return css;
+}
+
 /* ---------------------------------------------------------------------------
  * compact_bar_new() — Compact Layout's floating toolbar: New Task and
  * Delete Task as a two-button pill pinned 20 px in from the bottom and
@@ -3296,14 +3476,11 @@ compact_bar_new(BtLibrary *lw)
 {
     GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
     /* A rounded, bordered plate so the buttons read as one floating
-     * object over the task rows rather than two loose glyphs.               */
-    bt_app_widget_add_css(bar,
-        "box {"
-        "  background-color: rgb(246,246,246);"
-        "  border: 1px solid rgb(198,198,198);"
-        "  border-radius: 8px;"
-        "  padding: 2px;"
-        "}");
+     * object over the task rows rather than two loose glyphs.  Both colors
+     * come from the theme's @theme_bg_color (the border a shade of it), the
+     * same resolution the column headers use — hardcoding the light-theme
+     * grays put a white slab over a dark theme's task rows.                 */
+    themed_bg_css_apply(bar, float_bar_css);
     compact_bar_button(lw, bar, "add2", "+", "Create a task in the "
                        "selected list", G_CALLBACK(on_new_task));
     compact_bar_button(lw, bar, "remove", "\xe2\x88\x92",
@@ -3434,6 +3611,7 @@ on_library_destroy(GtkWidget *w, gpointer data)
         gtk_tree_row_reference_free(lw->drag_row_ref);
     if (lw->drag_lock_ref != NULL)
         gtk_tree_row_reference_free(lw->drag_lock_ref);
+    g_clear_object(&lw->drag_cursor);
     if (lw->group_expanded != NULL)
         g_hash_table_destroy(lw->group_expanded);
     g_free(lw);
@@ -3443,6 +3621,15 @@ on_library_destroy(GtkWidget *w, gpointer data)
  * Manual sort: order persistence, drag handlers, mode toggle.
  * =========================================================================== */
 
+/* list_order_key() — a real list's manual-order config key.  Its own
+ * function so on_delete_list can name the key it has to remove without
+ * repeating the format string.  New string (g_free).                        */
+static gchar *
+list_order_key(gint64 list_id)
+{
+    return g_strdup_printf("manual_order_list_%" G_GINT64_FORMAT, list_id);
+}
+
 /* view_order_key() — the config key for the current view's manual sort
  * order, or NULL if the view doesn't support it.  New string (g_free).       */
 static gchar *
@@ -3450,8 +3637,7 @@ view_order_key(BtLibrary *lw)
 {
     switch (lw->sel_kind) {
     case SB_KIND_LIST:
-        return g_strdup_printf("manual_order_list_%" G_GINT64_FORMAT,
-                               lw->sel_id);
+        return list_order_key(lw->sel_id);
     case SB_KIND_ALL:
         return g_strdup("manual_order_all");
     case SB_KIND_PINNED:
@@ -3567,31 +3753,36 @@ task_view_apply_manual_order(BtLibrary *lw)
     g_free(refs);
 }
 
-/* drag_handle_func() — cell data func for the drag handle column: applies
- * the row stripe and draws the handle glyph, dimmed on rows that can't be
- * moved (currently none — both real tasks and BN items are draggable).       */
+/* drag_handle_func() — cell data func for the drag handle column.  The row
+ * stripe is all it does: the ⠿ glyph and its dimming are constants, so they
+ * are set once on the renderer at construction instead of on every draw.
+ * Kept as its own function (rather than pointing the column straight at
+ * task_row_bg_func) because the column is where a per-row "this row cannot
+ * move" state would land if one is ever added.                              */
 static void
 drag_handle_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
                  GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
 {
     task_row_bg_func(col, cell, model, iter, data);
-    g_object_set(cell,
-                 "text",       "\xe2\xa0\xbf",            /* ⠿ handle glyph */
-                 "foreground", "#808080",
-                 NULL);
 }
 
-/* task_drag_set_cursor() — update the cursor on the task view's GdkWindow:
+/* ---------------------------------------------------------------------------
+ * task_drag_set_cursor() — update the cursor on the task view's GdkWindow:
  * "ns-resize" while over the drag handle column or while dragging, else
- * reset to the window default.                                                */
+ * reset to the window default.
+ *
+ * Runs on EVERY motion event over the task view, so it holds no allocation:
+ * the manual-sort flag comes from lw->manual_sort rather than the ini, and
+ * the cursor is made once and kept on lw (created lazily — the display is
+ * only reachable from a realized widget).
+ * ------------------------------------------------------------------------- */
 static void
 task_drag_set_cursor(GtkWidget *widget, BtLibrary *lw, gdouble x, gdouble y)
 {
     GdkWindow  *win = gtk_widget_get_window(widget);
     if (win == NULL) return;
     gboolean want_resize = lw->drag_active;
-    if (!want_resize &&
-        bt_app_config_get_bool("task_list_manual_sort", FALSE)) {
+    if (!want_resize && lw->manual_sort) {
         GtkTreeViewColumn *over = NULL;
         gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(widget),
             (gint)x, (gint)y, NULL, &over, NULL, NULL);
@@ -3599,12 +3790,13 @@ task_drag_set_cursor(GtkWidget *widget, BtLibrary *lw, gdouble x, gdouble y)
             g_object_get_data(G_OBJECT(lw->task_view), "bt-cdrag");
         want_resize = (over != NULL && over == cdrag);
     }
-    GdkCursor *cursor = want_resize
-        ? gdk_cursor_new_from_name(gtk_widget_get_display(widget),
-                                   "ns-resize")
-        : NULL;
-    gdk_window_set_cursor(win, cursor);
-    if (cursor) g_object_unref(cursor);
+    if (want_resize && lw->drag_cursor == NULL)
+        lw->drag_cursor = gdk_cursor_new_from_name(
+            gtk_widget_get_display(widget), "ns-resize");
+    /* NULL restores the window default — and is also what a display that
+     * cannot supply "ns-resize" leaves us with, which is the right
+     * fallback rather than a guessed stock cursor.                          */
+    gdk_window_set_cursor(win, want_resize ? lw->drag_cursor : NULL);
 }
 
 /* on_task_leave_notify() — restore the default cursor when the pointer
@@ -3747,12 +3939,17 @@ on_task_drag_release(GtkWidget *widget, GdkEventButton *ev, gpointer data)
 
 /* task_manual_sort_apply() — sync the task view to the current
  * task_list_manual_sort config: show/hide drag handle, enable/disable
- * column-header click-to-sort, and clear any active sort indicator.          */
+ * column-header click-to-sort, and clear any active sort indicator.
+ * ALSO the single writer of lw->manual_sort, the cached copy the
+ * per-motion and per-refresh paths read instead of the ini — every writer
+ * of the config key calls this straight afterwards, so the cache cannot
+ * drift.                                                                    */
 static void
 task_manual_sort_apply(BtLibrary *lw)
 {
     gboolean manual =
         bt_app_config_get_bool("task_list_manual_sort", FALSE);
+    lw->manual_sort = manual;
     GtkTreeViewColumn *cdrag =
         g_object_get_data(G_OBJECT(lw->task_view), "bt-cdrag");
     GtkTreeViewColumn *cdone =
@@ -3851,6 +4048,11 @@ bt_library_window_new(BtApp *app)
 {
     BtLibrary *lw = g_new0(BtLibrary, 1);
     lw->app = app;
+    /* Seeded here, not left to task_manual_sort_apply at the end of this
+     * function: the toolbar icon, tooltip and View-menu check are all built
+     * before that call and read the cache.                                  */
+    lw->manual_sort =
+        bt_app_config_get_bool("task_list_manual_sort", FALSE);
     lw->sel_kind = SB_KIND_LIST;     /* refresh falls back to first list    */
     lw->group_expanded = g_hash_table_new(g_direct_hash, g_direct_equal);
 
@@ -3915,8 +4117,7 @@ bt_library_window_new(BtApp *app)
     lw->view_manual_sort_item =
         gtk_check_menu_item_new_with_label("Manual Sort");
     gtk_check_menu_item_set_active(
-        GTK_CHECK_MENU_ITEM(lw->view_manual_sort_item),
-        bt_app_config_get_bool("task_list_manual_sort", FALSE));
+        GTK_CHECK_MENU_ITEM(lw->view_manual_sort_item), lw->manual_sort);
     g_signal_connect(lw->view_manual_sort_item, "toggled",
                      G_CALLBACK(on_menu_toggle_manual_sort), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
@@ -4108,10 +4309,17 @@ bt_library_window_new(BtApp *app)
     g_signal_connect(lw->task_view, "button-press-event",
                      G_CALLBACK(on_task_button_press), lw);
 
-    /* Drag handle column — shown only in manual sort mode; the handle glyph
-     * is set by drag_handle_func rather than a model binding.                */
+    /* Drag handle column — shown only in manual sort mode.  The glyph comes
+     * from the renderer itself, not the model and not the data func: it is
+     * the same on every row, and a data func runs per DRAW, so setting it
+     * there was two property notifications per visible row per redraw.
+     * Dimming is Pango `alpha` on the markup, never a fixed gray — a gray
+     * is unreadable on the blue selection, while alpha rides whatever
+     * foreground the row already has.                                       */
     GtkCellRenderer   *drag_cell = gtk_cell_renderer_text_new();
-    g_object_set(drag_cell, "ypad", 8, "xpad", 4, NULL);
+    g_object_set(drag_cell, "ypad", 8, "xpad", 4,
+                 "markup",                       /* ⠿ handle glyph          */
+                 "<span alpha=\"55%\">\xe2\xa0\xbf</span>", NULL);
     GtkTreeViewColumn *cdrag     = gtk_tree_view_column_new();
     gtk_tree_view_column_set_title(cdrag, "");
     gtk_tree_view_column_pack_start(cdrag, drag_cell, FALSE);

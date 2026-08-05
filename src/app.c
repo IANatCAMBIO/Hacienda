@@ -421,8 +421,16 @@ bt_app_register_toolbar(BtApp *app, GtkWidget *toolbar)
 
 #define BT_INI_GROUP "lists"
 
+/* The pre-3.0 ini group.  The app was called Hacienda before the rename,
+ * and the GROUP NAME is part of the file format — so an ini written by a
+ * pre-rename build carries every setting under a name this build does not
+ * read.  Without the migration below, upgrading silently reverted the user
+ * to defaults and, because gtasks_refresh_token was among the abandoned
+ * keys, made them re-authorize Google.                                     */
+#define BT_INI_GROUP_LEGACY "hacienda"
+
 static GKeyFile *config_kf   = NULL; /* the in-memory config                */
-static gchar    *config_path = NULL; /* where it is written                 */
+static gchar    *config_path = NULL; /* written through on every change     */
 static gchar    *exe_dir_cached = NULL;  /* binary's directory (owned)      */
 
 /* exe_dir_from_argv0() — the directory holding the binary (new string).     */
@@ -443,6 +451,133 @@ const gchar *
 bt_app_exe_dir(void)
 {
     return exe_dir_cached;
+}
+
+/* ---------------------------------------------------------------------------
+ * Legacy-group migration (pre-3.0 "hacienda" ini → "lists").
+ *
+ * An ALLOWLIST, deliberately, not a blind group copy: the old group also
+ * holds keys this build no longer has (`task_columns`, `task_sort_manual`)
+ * which would just be dead weight in the new group.  Add a key here when a
+ * pre-3.0 build could have written it AND the current build still reads it.
+ *
+ * Three sync keys are knowingly LEFT BEHIND:
+ *
+ *   google_client_id / google_client_secret — the current build still
+ *     honors them, but no UI writes them, so one that exists is a
+ *     hand-edit, and reviving a stale OAuth client breaks sync outright.
+ *     Dropping it just falls back to the baked-in client, which works.
+ *
+ *   gtasks_refresh_token — tempting (it costs a browser round trip to
+ *     replace) but WRONG.  A pre-3.0 token was issued to whatever OAuth
+ *     client that build carried; against the current one Google answers
+ *     the refresh with invalid_grant, and a failed refresh does NOT clear
+ *     the token — so the app would report "signed in" while every sync
+ *     failed.  Migrating nothing leaves a clean signed-out state and one
+ *     sign-in click.  Verified against a real pre-rename ini: the token
+ *     came back invalid_grant.
+ *
+ * In both cases silent breakage is the worse failure than a re-entry.
+ * ------------------------------------------------------------------------- */
+static const gchar *const LEGACY_KEYS[] = {
+    /* sync */
+    "google_sync_enabled", "sync_interval_min", "sync_toolbar_button",
+    /* Blue Notes */
+    "blue_notes_sync", "blue_notes_cli", "blue_notes_embed_list",
+    /* database */
+    "db_dir", "db_integrity_check",
+    /* UI */
+    "toolbar_style", "bold_task_titles", "native_menubar",
+    "show_completed", "sidebar_visible", "compact_layout",
+    "weekly_forecast", "due_today_show_overdue", "task_list_manual_sort",
+    "col_done_visible", "col_due_visible", "win_w", "win_h",
+};
+
+/* legacy_key_wanted() — is `key` one the new group should inherit?  The
+ * per-view manual order keys are matched by PREFIX: manual_order_list_<id>
+ * carries a list id, so they cannot be enumerated.                          */
+static gboolean
+legacy_key_wanted(const gchar *key)
+{
+    if (g_str_has_prefix(key, "manual_order_"))
+        return TRUE;
+    for (gsize i = 0; i < G_N_ELEMENTS(LEGACY_KEYS); i++)
+        if (strcmp(key, LEGACY_KEYS[i]) == 0)
+            return TRUE;
+    return FALSE;
+}
+
+/* ---------------------------------------------------------------------------
+ * config_migrate_legacy_group() — fold a pre-3.0 "hacienda" group into
+ * "lists", then drop it.  No-op when there is no legacy group, which is
+ * every launch after the first and every fresh install.
+ *
+ * Merged PER KEY, and the CURRENT group always wins: this runs against
+ * files where the user has already been using the renamed build, so their
+ * post-rename choices must not be reverted by an older value.  The legacy
+ * group only fills gaps — e.g. db_dir stays whatever "lists" says, while
+ * gtasks_refresh_token arrives because "lists" has none.
+ *
+ * The file is BACKED UP before the first rewrite (it holds an OAuth refresh
+ * token, and this is the one operation that removes lines from it), and the
+ * legacy group is removed so the migration cannot run twice — a second pass
+ * would otherwise resurrect keys the user has since deliberately cleared.
+ * ------------------------------------------------------------------------- */
+static void
+config_migrate_legacy_group(void)
+{
+    if (config_kf == NULL || config_path == NULL ||
+        !g_key_file_has_group(config_kf, BT_INI_GROUP_LEGACY))
+        return;
+
+    gsize   nkeys = 0;
+    gchar **keys  = g_key_file_get_keys(config_kf, BT_INI_GROUP_LEGACY,
+                                        &nkeys, NULL);
+    if (keys == NULL)
+        return;
+
+    /* Backup first — best effort: a failure here must not block the
+     * migration, but the user gets told where the copy went (or didn't).    */
+    gchar *backup = g_strconcat(config_path, ".pre-3.0.bak", NULL);
+    if (!g_file_test(backup, G_FILE_TEST_EXISTS)) {
+        gchar *raw = NULL;
+        gsize  len = 0;
+        if (g_file_get_contents(config_path, &raw, &len, NULL))
+            g_file_set_contents(backup, raw, (gssize)len, NULL);
+        g_free(raw);
+    }
+
+    guint moved = 0, kept = 0, dropped = 0;
+    for (gsize i = 0; i < nkeys; i++) {
+        const gchar *key = keys[i];
+        if (!legacy_key_wanted(key)) {
+            dropped++;               /* no longer part of the config        */
+            continue;
+        }
+        if (g_key_file_has_key(config_kf, BT_INI_GROUP, key, NULL)) {
+            kept++;                  /* the newer value stands              */
+            continue;
+        }
+        gchar *v = g_key_file_get_string(config_kf, BT_INI_GROUP_LEGACY,
+                                         key, NULL);
+        if (v != NULL && *v != '\0') {
+            g_key_file_set_string(config_kf, BT_INI_GROUP, key, v);
+            moved++;
+        }
+        g_free(v);
+    }
+    g_strfreev(keys);
+
+    g_key_file_remove_group(config_kf, BT_INI_GROUP_LEGACY, NULL);
+    g_key_file_save_to_file(config_kf, config_path, NULL);
+
+    /* Worth a line on the console: it happens once, silently changes the
+     * running configuration, and names the backup if anything looks wrong.  */
+    g_message("Migrated %u setting%s from the pre-3.0 [%s] config group "
+              "(%u already set here, %u no longer used); backup: %s",
+              moved, moved == 1 ? "" : "s", BT_INI_GROUP_LEGACY,
+              kept, dropped, backup);
+    g_free(backup);
 }
 
 /* ---------------------------------------------------------------------------
@@ -482,6 +617,9 @@ bt_app_config_init(const gchar *argv0)
                                   G_KEY_FILE_NONE, NULL);
         g_free(defaults);
     }
+    /* Before any caller reads a key: an ini from a pre-rename build keeps
+     * everything in a group this build ignores (see the banner above).      */
+    config_migrate_legacy_group();
     g_free(exe_dir);
 }
 

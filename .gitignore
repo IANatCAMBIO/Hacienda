@@ -15,6 +15,13 @@ Lists.app/
 # match lists.ini.defaults.
 /lists.ini
 
+# The pre-3.0 config migration writes a verbatim copy of the old ini
+# before rewriting it — same secrets as the live file, refresh token and
+# all, so it must be just as uncommittable.  The bare *.bak rule is the
+# backstop: no editor or script backup belongs in this repo.
+/lists.ini.pre-3.0.bak
+*.bak
+
 # Pre-rename names, still ignored so an old build/config left in a
 # working copy cannot be committed.
 hacienda
