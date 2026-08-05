@@ -19,7 +19,7 @@
 
 # Semantic version — the single source: baked into the binary (BT_VERSION,
 # shown in the About dialog).
-VERSION  := 2.9.4
+VERSION  := 3.0.4
 
 # The compiler to use.  clang is the system compiler on macOS.
 CC       := cc
