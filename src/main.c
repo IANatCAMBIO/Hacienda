@@ -96,7 +96,7 @@ startup_integrity_check(BtApp *app)
 }
 
 /* ---------------------------------------------------------------------------
- * startup_first_run() — no hacienda.db found at the expected location:
+ * startup_first_run() — no lists.db found at the expected location:
  * ask whether to open an existing file or create a new one there, instead
  * of silently creating an empty database (a user pointing at a shared
  * folder usually means to OPEN a file that is already there).
@@ -136,7 +136,7 @@ startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
             NULL);
         gtk_window_set_title(GTK_WINDOW(chooser),
                              "Lists - Open Database");
-        /* Filter to hacienda.db only — the ini stores db_dir, the
+        /* Filter to lists.db only — the ini stores db_dir, the
          * filename is always the fixed constant.                           */
         GtkFileFilter *ff = gtk_file_filter_new();
         gtk_file_filter_add_pattern(ff, BT_DB_FILENAME);

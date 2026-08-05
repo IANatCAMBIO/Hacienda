@@ -112,8 +112,9 @@ BtDatabase *bt_db_open(const gchar *path, GError **err);
 /* bt_db_close() — close the connection and free the handle.  NULL-safe.     */
 void bt_db_close(BtDatabase *db);
 
-/* bt_db_default_path() — "<user data dir>/hacienda/hacienda.db",
- * creating the directory.  Returns a new string (g_free it).                */
+/* bt_db_default_path() — "<user data dir>/lists/lists.db" (the filename
+ * is BT_DB_FILENAME), creating the directory.  Returns a new string
+ * (g_free it).                                                              */
 gchar *bt_db_default_path(void);
 
 /* --------------------------------- lists --------------------------------- */

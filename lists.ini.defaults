@@ -45,5 +45,24 @@ compact_layout=0
 # Show the Weekly Forecast view in the sidebar (1|0, default 1;
 # Settings → Appearance).
 weekly_forecast=1
+# Let the Due Today view also list everything already past due
+# (1|0, default 0; Settings → Appearance).
+due_today_show_overdue=0
+# Manual task ordering (1|0, default 0; the toolbar sort-mode toggle or
+# View → Manual Sort): shows a drag handle and lets rows be dragged.
+# The order itself is stored per view in manual_order_list_<id>,
+# manual_order_all, manual_order_pinned, manual_order_today and
+# manual_order_bn_actions — written by the app, not hand-edited.
+task_list_manual_sort=0
+# Task-pane column visibility (1|0, default 1 each; right-click a column
+# header).  The Task column is always shown and has no key.
+col_done_visible=1
+col_due_visible=1
+# Run PRAGMA integrity_check + foreign_key_check on the database at
+# startup (1|0, default 1); the result lands in the status bar.
+db_integrity_check=1
+# db_dir — a custom directory holding lists.db (Settings → Database);
+# absent = the default location under the user data dir.  Per-machine,
+# so it is not seeded here.
 # win_w/win_h — the library window size, written on clean close and
 # restored at launch (980x640 fallback); not meant for hand-editing.

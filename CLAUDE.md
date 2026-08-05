@@ -138,7 +138,7 @@ the user).  A logic test harness lives in the session scratchpad
   `col_due_visible`.
 - Sidebar: gray backdrop CSS (rgb 230,230,230 / text 65,65,65 /
   selection rgb 86,131,224 white); meta rows bold (Favorites ⭐️, All
-  Tasks, Due Today ☀️, Weekly Forecast 🌤️).  Due Today optionally
+  Tasks 🔮, Due Today ☀️, Weekly Forecast 🌤️).  Due Today optionally
   includes all past-due tasks via `due_today_show_overdue` (Settings →
   Appearance; default off).  Weekly Forecast is its OWN
   panel, not rows in the task store: seven full-width day sections
