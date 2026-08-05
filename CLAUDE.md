@@ -135,7 +135,25 @@ the user).  A logic test harness lives in the session scratchpad
   overdue #c01c28, today #d19a00, ahead #26a269, computed at draw time.
   Right-clicking any column header shows a hide/show menu for the Done
   and Due Date columns; visibility persists in `col_done_visible` /
-  `col_due_visible`.
+  `col_due_visible`.  On **macOS only** (`#ifndef GDK_WINDOWING_QUARTZ`
+  compiles it out — the quartz backend's button drawing is the reason to
+  restyle, so an X11 build on a Mac keeps its theme, and Linux keeps the
+  standard GTK theme untouched) column headers are flattened to the
+  status bar's color by `header_button_flatten`: headers are real
+  GtkButtons and ship the theme's button gradient, which reads lighter
+  than the rest of the chrome.  It resolves `@theme_bg_color` (rgb 246,245,244 in Adwaita —
+  the same color the window paints and the status bar therefore shows)
+  instead of hardcoding a gray, and bails when the theme doesn't name it.
+  The provider must go on each header BUTTON, not the tree view — a
+  per-widget provider styles only that widget, and the header buttons are
+  separate widgets (get them via `gtk_tree_view_column_get_button`, as
+  the header right-click wiring already does).  `:hover` / `:active` keep
+  `shade()`s of the same color so a sortable header still responds.
+- Task-cell notes preview: gate it on the first line that actually HAS
+  content (`line_is_blank`, Unicode-aware), NOT on `*notes != '\0'` —
+  a note holding one space previewed as an empty line, which reads as
+  nothing while making that row a whole line taller than its neighbors
+  (a real bug report).  The previewed line is `g_strstrip`ed.
 - Sidebar: gray backdrop CSS (rgb 230,230,230 / text 65,65,65 /
   selection rgb 86,131,224 white); meta rows bold (Favorites ⭐️, All
   Tasks 🔮, Due Today ☀️, Weekly Forecast 🌤️).  Due Today optionally

@@ -131,6 +131,61 @@ lib_of(BtApp *app)
  * Task description markup — the tall cell.
  * =========================================================================== */
 
+/* ---------------------------------------------------------------------------
+ * header_button_flatten() — paint a tree-view column header the same color
+ * as the status bar.  macOS (quartz) ONLY: elsewhere the platform theme
+ * owns the header's look and we leave it completely alone.
+ *
+ * The status bar sets no background of its own: it shows the window's,
+ * which the theme paints from @theme_bg_color.  Headers, by contrast, are
+ * real GtkButtons and come with the quartz theme's button gradient, so
+ * they read lighter than the rest of the chrome.  Resolving the named
+ * theme color (rather than hardcoding a gray) keeps the match if the
+ * theme changes, and lookup_color failing is the "theme doesn't name it"
+ * case — leave the default header alone rather than guess.
+ *
+ * The provider goes on the header BUTTON, not the tree view: a provider
+ * added to a widget's style context styles that widget only, and the
+ * header buttons are separate widgets from the view.  :hover and :active
+ * keep a shade of the same color so a sortable header still gives
+ * feedback without jumping back to the theme's button color.
+ *
+ * Gated on GDK_WINDOWING_QUARTZ rather than __APPLE__: the reason to
+ * restyle is how the quartz backend draws buttons, so an X11 build on a
+ * Mac correctly keeps its GTK theme.
+ * ------------------------------------------------------------------------- */
+static void
+header_button_flatten(GtkWidget *hbtn)
+{
+#ifndef GDK_WINDOWING_QUARTZ
+    (void)hbtn;                      /* Linux/X11: the GTK theme decides    */
+#else
+    GdkRGBA bg;                      /* the window/status-bar background    */
+    if (!gtk_style_context_lookup_color(gtk_widget_get_style_context(hbtn),
+                                        "theme_bg_color", &bg))
+        return;
+    gint r = (gint)(bg.red   * 255 + 0.5);
+    gint g = (gint)(bg.green * 255 + 0.5);
+    gint b = (gint)(bg.blue  * 255 + 0.5);
+    gchar *css = g_strdup_printf(
+        "button {"
+        "  background-image: none;"
+        "  background-color: rgb(%d,%d,%d);"
+        "}"
+        "button:hover {"
+        "  background-image: none;"
+        "  background-color: shade(rgb(%d,%d,%d), 0.94);"
+        "}"
+        "button:active {"
+        "  background-image: none;"
+        "  background-color: shade(rgb(%d,%d,%d), 0.88);"
+        "}",
+        r, g, b, r, g, b, r, g, b);
+    bt_app_widget_add_css(hbtn, css);
+    g_free(css);
+#endif
+}
+
 /* line_is_blank() — TRUE when [start, end) holds nothing but whitespace.
  * Unicode-aware on purpose: a stray U+00A0 pasted into a note is just as
  * invisible as a space and must not earn a preview line either.            */
@@ -4128,9 +4183,11 @@ bt_library_window_new(BtApp *app)
     GtkTreeViewColumn *header_cols[] = { cdrag, cdone, cdesc, cdue };
     for (gsize i = 0; i < G_N_ELEMENTS(header_cols); i++) {
         GtkWidget *hbtn = gtk_tree_view_column_get_button(header_cols[i]);
-        if (hbtn)
+        if (hbtn) {
             g_signal_connect(hbtn, "button-press-event",
                              G_CALLBACK(on_column_header_press), lw);
+            header_button_flatten(hbtn);   /* match the status bar          */
+        }
     }
     task_columns_apply(lw);
     task_manual_sort_apply(lw);   /* show/hide cdrag per persisted setting  */
