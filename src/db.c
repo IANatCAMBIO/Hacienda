@@ -864,26 +864,28 @@ bt_db_task_set_done(BtDatabase *db, gint64 id, gboolean done)
     sqlite3_finalize(st);
 }
 
-/* bt_db_task_set_pinned() — toggle the local-only pin (see db.h).           */
+/* bt_db_task_set_pinned() — toggle the local-only pin (see db.h).
+ * Deliberately NO updated_at bump: the pin is local-only and must not
+ * dirty the row for sync (a bump makes newest-wins push a no-op PATCH
+ * and can starve a concurrent remote edit behind a 412).                    */
 void
 bt_db_task_set_pinned(BtDatabase *db, gint64 id, gboolean pinned)
 {
     gchar *sql = g_strdup_printf(
-        "UPDATE tasks SET pinned = %d, updated_at = %lld WHERE id = %lld",
-        pinned ? 1 : 0, (long long)now(), (long long)id);
+        "UPDATE tasks SET pinned = %d WHERE id = %lld",
+        pinned ? 1 : 0, (long long)id);
     exec(db, sql);
     g_free(sql);
 }
 
 /* bt_db_task_set_priority() — toggle the local-only high-priority flag
- * (see db.h).                                                               */
+ * (see db.h).  Deliberately NO updated_at bump (see set_pinned above).      */
 void
 bt_db_task_set_priority(BtDatabase *db, gint64 id, gboolean priority)
 {
     gchar *sql = g_strdup_printf(
-        "UPDATE tasks SET priority = %d, updated_at = %lld "
-        "WHERE id = %lld",
-        priority ? 1 : 0, (long long)now(), (long long)id);
+        "UPDATE tasks SET priority = %d WHERE id = %lld",
+        priority ? 1 : 0, (long long)id);
     exec(db, sql);
     g_free(sql);
 }

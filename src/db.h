@@ -206,7 +206,10 @@ gint64 bt_db_task_create(BtDatabase *db, gint64 list_id, gint64 parent_id,
  * `t` back to its row and stamp updated_at.                                 */
 void bt_db_task_update(BtDatabase *db, const BtTask *t);
 
-/* Field setters used by the list-view toggles (stamp updated_at).           */
+/* Field setters used by the list-view toggles.  `done` is a SYNCED field
+ * and stamps updated_at; `pinned` and `priority` are LOCAL-ONLY and
+ * deliberately do NOT — stamping them would mark the row sync-dirty and
+ * cost a no-op PATCH per toggle (see the .c banners).                       */
 void bt_db_task_set_done(BtDatabase *db, gint64 id, gboolean done);
 void bt_db_task_set_pinned(BtDatabase *db, gint64 id, gboolean pinned);
 void bt_db_task_set_priority(BtDatabase *db, gint64 id, gboolean priority);

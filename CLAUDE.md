@@ -294,6 +294,11 @@ the user).  A logic test harness lives in the session scratchpad
   high-priority flag; every view query sorts `priority DESC` first so
   flagged tasks top any list they appear in, 🚨 (siren emoji) in the task cell,
   "High Priority" editor checkbox), list `emoji`, attachments.
+  A write to a local-only field must NOT bump `updated_at`
+  (`bt_db_task_set_pinned` / `_set_priority` deliberately don't): the
+  bump marks the row sync-dirty, so every Favorite/priority toggle buys
+  a no-op PATCH, and a concurrent remote edit can be starved behind a
+  412 skip for as long as the flag keeps changing.
   The API has NO starring and `due` is DATE-ONLY (time is documented as
   discarded and unreadable) — both confirmed against the docs; don't
   re-attempt.
