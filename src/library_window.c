@@ -131,6 +131,18 @@ lib_of(BtApp *app)
  * Task description markup — the tall cell.
  * =========================================================================== */
 
+/* line_is_blank() — TRUE when [start, end) holds nothing but whitespace.
+ * Unicode-aware on purpose: a stray U+00A0 pasted into a note is just as
+ * invisible as a space and must not earn a preview line either.            */
+static gboolean
+line_is_blank(const gchar *start, const gchar *end)
+{
+    for (const gchar *p = start; p < end; p = g_utf8_next_char(p))
+        if (!g_unichar_isspace(g_utf8_get_char(p)))
+            return FALSE;
+    return TRUE;
+}
+
 /* append_line() — add a `\n`-separated markup line.                         */
 static void
 append_line(GString *s, const gchar *markup)
@@ -197,16 +209,38 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
         g_free(esc);
     }
 
-    if (*t->notes != '\0') {
-        /* First line of the notes, capped, as a dimmed preview.             */
-        gchar *preview = g_strndup(t->notes, 120);
-        gchar *nl = strchr(preview, '\n');
-        if (nl != NULL)
-            *nl = '\0';
+    /* Notes preview: the first line that actually HAS content, capped,
+     * dimmed.  Testing `*notes != '\0'` was not enough — a note holding
+     * just a space (or a leading blank line) previewed as an empty line,
+     * which reads as nothing at all while still making that one row a
+     * whole line taller than every other row in the list.                  */
+    const gchar *nline = t->notes;   /* candidate line, start …             */
+    const gchar *nend  = nline;      /* … and one past its last byte        */
+    while (*nline != '\0') {
+        const gchar *eol = strchr(nline, '\n');
+        nend = eol != NULL ? eol : nline + strlen(nline);
+        if (!line_is_blank(nline, nend))
+            break;
+        if (eol == NULL) {           /* every line was blank                */
+            nline = nend;
+            break;
+        }
+        nline = eol + 1;
+    }
+    if (nline < nend) {
+        gsize len   = (gsize)(nend - nline);
+        gsize shown = MIN(len, (gsize)120);
+        gchar *preview = g_strndup(nline, shown);
+        /* Trim both ends: leading indentation reads as a stray gap in a
+         * one-line preview, trailing space would sit before the ellipsis.
+         * g_strstrip chugs in place, so `preview` stays the pointer to
+         * free.                                                            */
+        g_strstrip(preview);
         gchar *esc = g_markup_escape_text(preview, -1);
         gchar *l = g_strdup_printf(
-            "<small><span alpha=\"65%%\">%s%s</span></small>",
-            esc, strlen(t->notes) > strlen(preview) ? "\xe2\x80\xa6" : "");
+            "<small><span alpha=\"65%%\">%s%s</span></small>", esc,
+            /* more of THIS line, or any line after it                      */
+            shown < len || *nend != '\0' ? "\xe2\x80\xa6" : "");
         append_line(s, l);
         g_free(l);
         g_free(esc);
