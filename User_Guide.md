@@ -46,6 +46,15 @@ the database schema and the sync engine see [Internals](Internals.md).
   (program info plus live database statistics). Button style —
   icons, icons + text, or text — is set in Settings or by
   right-clicking an empty spot on the toolbar.
+- **View menu** — *Show Completed* and *Manual Sort* mirror their
+  toolbar buttons, *Show Sidebar* mirrors the Sidebar toggle, and
+  *Compact Layout* strips the window down to the task list: the whole
+  toolbar and the sidebar go away, and a small floating bar with just
+  **New Task** and **Delete Task** sits 20 px in from the bottom-right
+  corner. Turning Compact Layout back off restores the toolbar and
+  puts the sidebar back the way you had it; *Show Sidebar* still works
+  while compact if you want the lists pane over the task list. The
+  choice persists between launches.
 - **Multi-select** (Cmd/Shift-click) for bulk actions via the
   right-click menu: mark complete or incomplete, pin or unpin, set
   or clear **High Priority**, **Move to List**, Delete. With a

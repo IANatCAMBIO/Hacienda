@@ -75,6 +75,10 @@ typedef struct {
     GtkListStore *day_stores[7];     /* one store per day view              */
     GtkWidget    *day_views[7];      /* the per-day tree views              */
     GtkWidget    *sidebar_box;       /* for the toolbar show/hide toggle    */
+    GtkWidget    *toolbar;           /* hidden by Compact Layout            */
+    GtkWidget    *toolbar_rule;      /* the thin rule under the toolbar     */
+    GtkWidget    *float_bar;         /* Compact Layout's floating New /
+                                      * Delete Task pair (overlay child)    */
     GtkWidget    *status_left;       /* selection info label                */
     GtkWidget    *status_right;      /* latest event message label          */
     GtkWidget    *sync_item;         /* the Lists-menu Sync item            */
@@ -82,6 +86,8 @@ typedef struct {
     GtkWidget    *manual_sort_item;  /* manual-sort mode toggle button      */
     GtkWidget    *view_show_done_item;  /* View menu: Show Completed check  */
     GtkWidget    *view_manual_sort_item;/* View menu: Manual Sort check     */
+    GtkWidget    *view_compact_item;    /* View menu: Compact Layout check  */
+    GtkWidget    *view_sidebar_item;    /* View menu: Show Sidebar check    */
     gint          sel_kind;
     gint64        sel_id;
     gboolean      populating;
@@ -296,6 +302,7 @@ static void     task_manual_sort_apply(BtLibrary *lw);
 static gboolean on_column_header_press(GtkWidget *, GdkEventButton *, gpointer);
 static void     on_menu_toggle_done_visible(GtkWidget *, gpointer);
 static void     on_menu_toggle_manual_sort(GtkWidget *, gpointer);
+static void     on_menu_toggle_sidebar(GtkWidget *, gpointer);
 
 /* sidebar_show_pinned() — whether the Pinned Tasks meta row should
  * exist: any pinned task, or (while the integration is on) any pinned
@@ -1575,6 +1582,62 @@ sort_by_due(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b,
  * Toolbar actions.
  * =========================================================================== */
 
+/* sidebar_menu_sync() — push the lists pane's live visibility into the
+ * View menu's Show Sidebar check.  The handler is blocked around the
+ * set_active so the toolbar → menu sync path cannot recurse (same
+ * protocol as hide_done_icon_refresh).                                      */
+static void
+sidebar_menu_sync(BtLibrary *lw)
+{
+    if (lw->view_sidebar_item == NULL)
+        return;
+    g_signal_handlers_block_by_func(lw->view_sidebar_item,
+                                    on_menu_toggle_sidebar, lw);
+    gtk_check_menu_item_set_active(
+        GTK_CHECK_MENU_ITEM(lw->view_sidebar_item),
+        gtk_widget_get_visible(lw->sidebar_box));
+    g_signal_handlers_unblock_by_func(lw->view_sidebar_item,
+                                      on_menu_toggle_sidebar, lw);
+}
+
+/* sidebar_set_visible() — show or hide the lists pane, persist the
+ * choice in `sidebar_visible` and keep the View menu check in step.
+ * Both the toolbar button and the menu item route through here.             */
+static void
+sidebar_set_visible(BtLibrary *lw, gboolean show)
+{
+    gtk_widget_set_visible(lw->sidebar_box, show);
+    bt_app_config_set("sidebar_visible", show ? "1" : "0");
+    sidebar_menu_sync(lw);
+}
+
+/* ---------------------------------------------------------------------------
+ * compact_layout_apply() — put the window in (or take it out of) Compact
+ * Layout, per the persisted `compact_layout` flag.
+ *
+ * Compact hides the whole top toolbar (and its rule) plus the lists pane,
+ * and shows the floating New/Delete Task pair pinned to the bottom-right
+ * of the task area instead.  Leaving compact restores the toolbar and
+ * puts the sidebar back to the user's own `sidebar_visible` preference —
+ * compact never overwrites it, so the pane returns as the user left it.
+ * Show Sidebar still works while compact (an explicit override).
+ *
+ * gtk_widget_show() — never show_all() — on the toolbar: its children
+ * carry their own visibility (a hidden Sync button must stay hidden).
+ * ------------------------------------------------------------------------- */
+static void
+compact_layout_apply(BtLibrary *lw)
+{
+    gboolean compact = bt_app_config_get_bool("compact_layout", FALSE);
+
+    gtk_widget_set_visible(lw->toolbar,      !compact);
+    gtk_widget_set_visible(lw->toolbar_rule, !compact);
+    gtk_widget_set_visible(lw->float_bar,     compact);
+    gtk_widget_set_visible(lw->sidebar_box,
+        !compact && bt_app_config_get_bool("sidebar_visible", FALSE));
+    sidebar_menu_sync(lw);
+}
+
 /* on_toggle_sidebar() — toolbar show/hide button for the lists pane:
  * the task view takes the whole window while it is hidden (mirrors the
  * Blue Notes "Folders" toggle).                                             */
@@ -1583,9 +1646,7 @@ on_toggle_sidebar(GtkWidget *widget, gpointer data)
 {
     (void)widget;
     BtLibrary *lw = data;
-    gboolean show = !gtk_widget_get_visible(lw->sidebar_box);
-    gtk_widget_set_visible(lw->sidebar_box, show);
-    bt_app_config_set("sidebar_visible", show ? "1" : "0");
+    sidebar_set_visible(lw, !gtk_widget_get_visible(lw->sidebar_box));
 }
 
 /* on_emoji_chooser_closed() — picker dismissed: shrink the dialog back
@@ -2894,6 +2955,28 @@ on_menu_toggle_manual_sort(GtkWidget *w, gpointer data)
     refresh_tasks(lw);
 }
 
+/* on_menu_toggle_compact() — View → Compact Layout: persist the flag and
+ * re-apply the layout (toolbar + sidebar out, floating buttons in).          */
+static void
+on_menu_toggle_compact(GtkWidget *w, gpointer data)
+{
+    BtLibrary *lw = data;
+    gboolean compact = gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(w));
+    bt_app_config_set("compact_layout", compact ? "1" : "0");
+    compact_layout_apply(lw);
+}
+
+/* on_menu_toggle_sidebar() — View → Show Sidebar: the menu twin of the
+ * toolbar Sidebar button (sidebar_set_visible persists and re-syncs the
+ * check, which is a no-op here since the item is already in that state).     */
+static void
+on_menu_toggle_sidebar(GtkWidget *w, gpointer data)
+{
+    BtLibrary *lw = data;
+    sidebar_set_visible(lw,
+        gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(w)));
+}
+
 /* on_menu_about() — File → About and the toolbar About button: the
  * standard about dialog with the app logo, version, database vitals and
  * a link to the BSD license (the Blue Notes About, retinted).               */
@@ -3084,6 +3167,66 @@ tool_button(BtLibrary *lw, GtkToolbar *bar, const gchar *icon,
     g_signal_connect(item, "clicked", cb, lw);
     gtk_toolbar_insert(bar, item, -1);
     return item;
+}
+
+/* compact_bar_button() — one floating-bar button: the 24 px local icon
+ * (Pango-markup glyph when the PNG is missing, matching the toolbar's
+ * fallback rule) wired to `cb`, appended to `box`.                          */
+static void
+compact_bar_button(BtLibrary *lw, GtkWidget *box, const gchar *icon,
+                   const gchar *fallback_markup, const gchar *tooltip,
+                   GCallback cb)
+{
+    GtkWidget *btn   = gtk_button_new();
+    GtkWidget *image = bt_app_icon_image_sized(lw->app, icon, 24);
+    if (image == NULL) {
+        image = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(image), fallback_markup);
+    }
+    gtk_button_set_relief(GTK_BUTTON(btn), GTK_RELIEF_NONE);
+    gtk_container_add(GTK_CONTAINER(btn), image);
+    gtk_widget_set_tooltip_text(btn, tooltip);
+    g_signal_connect(btn, "clicked", cb, lw);
+    gtk_box_pack_start(GTK_BOX(box), btn, FALSE, FALSE, 0);
+}
+
+/* ---------------------------------------------------------------------------
+ * compact_bar_new() — Compact Layout's floating toolbar: New Task and
+ * Delete Task as a two-button pill pinned 20 px in from the bottom and
+ * right edges of the task area.  Same icons and actions as the top
+ * toolbar's pair, so the compact window keeps both task verbs.
+ *
+ * Returned as an overlay child (halign/valign END + 20 px margins do the
+ * pinning); also stored as lw->float_bar, which compact_layout_apply
+ * shows and hides.  The bar is NOT registered with
+ * bt_app_register_toolbar — it is icons-only by design and must not grow
+ * labels when the toolbar style changes.
+ * ------------------------------------------------------------------------- */
+static GtkWidget *
+compact_bar_new(BtLibrary *lw)
+{
+    GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+    /* A rounded, bordered plate so the buttons read as one floating
+     * object over the task rows rather than two loose glyphs.               */
+    bt_app_widget_add_css(bar,
+        "box {"
+        "  background-color: rgb(246,246,246);"
+        "  border: 1px solid rgb(198,198,198);"
+        "  border-radius: 8px;"
+        "  padding: 2px;"
+        "}");
+    compact_bar_button(lw, bar, "add2", "+", "Create a task in the "
+                       "selected list", G_CALLBACK(on_new_task));
+    compact_bar_button(lw, bar, "remove", "\xe2\x88\x92",
+                       "Delete the selected task",
+                       G_CALLBACK(on_delete_task));
+
+    gtk_widget_set_halign(bar, GTK_ALIGN_END);
+    gtk_widget_set_valign(bar, GTK_ALIGN_END);
+    gtk_widget_set_margin_end(bar, 20);
+    gtk_widget_set_margin_bottom(bar, 20);
+    lw->float_bar = bar;
+    return bar;
 }
 
 /* ---------------------------------------------------------------------------
@@ -3689,6 +3832,30 @@ bt_library_window_new(BtApp *app)
                      G_CALLBACK(on_menu_toggle_manual_sort), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
                           lw->view_manual_sort_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
+                          gtk_separator_menu_item_new());
+    /* Show Sidebar mirrors the toolbar's Sidebar button (both write
+     * `sidebar_visible`); Compact Layout strips the chrome down to the
+     * task pane plus the floating New/Delete pair.  Both are applied
+     * after the construction-time show_all, at the end of this function.    */
+    lw->view_sidebar_item =
+        gtk_check_menu_item_new_with_label("Show Sidebar");
+    gtk_check_menu_item_set_active(
+        GTK_CHECK_MENU_ITEM(lw->view_sidebar_item),
+        bt_app_config_get_bool("sidebar_visible", FALSE));
+    g_signal_connect(lw->view_sidebar_item, "toggled",
+                     G_CALLBACK(on_menu_toggle_sidebar), lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
+                          lw->view_sidebar_item);
+    lw->view_compact_item =
+        gtk_check_menu_item_new_with_label("Compact Layout");
+    gtk_check_menu_item_set_active(
+        GTK_CHECK_MENU_ITEM(lw->view_compact_item),
+        bt_app_config_get_bool("compact_layout", FALSE));
+    g_signal_connect(lw->view_compact_item, "toggled",
+                     G_CALLBACK(on_menu_toggle_compact), lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
+                          lw->view_compact_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), view_item);
 
     /* Remembered so the menu can be moved into the native macOS menu
@@ -3701,6 +3868,7 @@ bt_library_window_new(BtApp *app)
      * icons/ (case-exact for Linux).  Layout: sidebar toggle,
      * a drawn divider, then the task buttons and Sync.                      */
     GtkWidget *toolbar = gtk_toolbar_new();
+    lw->toolbar = toolbar;           /* Compact Layout hides it whole       */
     /* Small-toolbar metrics — the Blue Notes bar height.                    */
     gtk_toolbar_set_icon_size(GTK_TOOLBAR(toolbar),
                               GTK_ICON_SIZE_SMALL_TOOLBAR);
@@ -3772,14 +3940,20 @@ bt_library_window_new(BtApp *app)
     bt_app_register_toolbar(app, toolbar);
     gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
     /* Thin rule between the toolbar and the panes (Blue Notes look).        */
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 0);
+    lw->toolbar_rule = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_box_pack_start(GTK_BOX(vbox), lw->toolbar_rule, FALSE, FALSE, 0);
 
     /* --- Paned: sidebar | tasks ------------------------------------------ */
+    /* The panes sit in a GtkOverlay so Compact Layout's floating button
+     * pair can hover over the bottom-right corner of the task area.  The
+     * overlay wraps the panes rather than the whole window box so the
+     * float never covers the status bar's event messages.                   */
+    GtkWidget *overlay = gtk_overlay_new();
+    gtk_box_pack_start(GTK_BOX(vbox), overlay, TRUE, TRUE, 0);
     GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
     gtk_paned_set_position(GTK_PANED(paned), 220);
-    gtk_box_pack_start(GTK_BOX(vbox), paned, TRUE, TRUE, 0);
+    gtk_container_add(GTK_CONTAINER(overlay), paned);
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), compact_bar_new(lw));
 
     /* Sidebar.                                                              */
     lw->sb_store = gtk_tree_store_new(SB_N_COLS, G_TYPE_INT,
@@ -4011,10 +4185,11 @@ bt_library_window_new(BtApp *app)
     refresh_sidebar(lw);
     refresh_tasks(lw);
     gtk_widget_show_all(lw->window);
-    /* The lists pane starts HIDDEN by default (toolbar Sidebar button
-     * brings it back); the toggle persists the user's last choice.          */
-    if (!bt_app_config_get_bool("sidebar_visible", FALSE))
-        gtk_widget_hide(lw->sidebar_box);
+    /* show_all made the whole chrome visible — apply the persisted
+     * Compact Layout state, which also settles the lists pane (HIDDEN by
+     * default; the Sidebar button and View → Show Sidebar bring it back)
+     * and hides the floating button pair outside compact mode.              */
+    compact_layout_apply(lw);
     /* show_all made BOTH task-pane variants visible — restore the
      * regular-list / Weekly Forecast split for the current selection.       */
     gtk_widget_set_visible(lw->task_scroll,

@@ -34,8 +34,14 @@ blue_notes_sync=0
 # blue_notes_embed_list — a list id: embed the action items in that
 # list (tagged) instead of their own sidebar section; unset = their
 # own section (Settings → Blue Notes → "Show action items in").
-# Sidebar visibility (1|0, default 0; the toolbar Sidebar toggle).
+# Sidebar visibility (1|0, default 0; the toolbar Sidebar toggle and
+# View → Show Sidebar).
 sidebar_visible=0
+# Compact Layout (1|0, default 0; View → Compact Layout): hides the top
+# toolbar and the sidebar, and floats New/Delete Task 20 px in from the
+# bottom-right of the task area instead.  It does NOT touch
+# sidebar_visible, so leaving compact restores the pane as you left it.
+compact_layout=0
 # Show the Weekly Forecast view in the sidebar (1|0, default 1;
 # Settings → Appearance).
 weekly_forecast=1

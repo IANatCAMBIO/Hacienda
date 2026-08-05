@@ -102,6 +102,25 @@ the user).  A logic test harness lives in the session scratchpad
   Notes-style about dialog (`on_menu_about`: HiDPI logo, compile
   stamp, `bt_db_totals` vitals), shared with File → About Lists.
   document.png is also the .app bundle icon (Makefile `app` target).
+- View menu: Show Completed, Manual Sort, then Show Sidebar and Compact
+  Layout.  Show Sidebar is the menu twin of the toolbar Sidebar button —
+  both route through `sidebar_set_visible` (write-through
+  `sidebar_visible` + `sidebar_menu_sync`, which blocks the item's
+  handler around its own set_active, like `hide_done_icon_refresh`).
+  **Compact Layout** (`compact_layout`, default 0) hides the whole
+  toolbar and its rule plus the sidebar, and shows `float_bar` instead:
+  a two-button pill (New Task + Delete Task, icons only, never
+  registered with `bt_app_register_toolbar`) added as a `GtkOverlay`
+  child over the paned with halign/valign END and 20 px end/bottom
+  margins.  The overlay wraps the PANED, not the whole vbox, so the
+  float never covers the status bar's event messages.
+  `compact_layout_apply` is the single applier (also called after the
+  construction-time `show_all`, where it replaces the old
+  `sidebar_visible` hide); it uses `gtk_widget_show`, never `show_all`,
+  on the toolbar so a hidden Sync button stays hidden.  Compact does NOT
+  touch `sidebar_visible`, so leaving it restores the pane as the user
+  left it — and Show Sidebar still works while compact (explicit
+  override).
 - Thin `gtk_separator_new` rules under the toolbar and above the status
   bar.  Status bar: margins 8/8/3/3 (NOT border_width) and
   `label { font-size: 85%; }` on both labels — measured pixel-identical
