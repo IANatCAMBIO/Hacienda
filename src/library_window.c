@@ -2208,7 +2208,7 @@ on_new_task(GtkWidget *w, gpointer data)
         return;
     }
     full_refresh(lw);
-    bt_editor_open(lw->app, id);
+    bt_editor_open_new(lw->app, id);  /* the Save / Cancel variant          */
 }
 
 /* on_delete_task() — confirm + tombstone the selected task.                 */

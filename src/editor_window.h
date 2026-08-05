@@ -10,6 +10,15 @@
  * Saves are write-through with a short debounce (like the Blue Notes
  * editor autosave): every change lands in the database within ~600 ms
  * and the library refreshes.  Closing the window flushes a pending save.
+ *
+ * Subtasks and Attachments are folded away behind an "Advanced" link at
+ * the foot of the window: collapsed for a task that has neither, expanded
+ * on open for one that already does.  Expanding grows the window by that
+ * block's own height and collapsing gives the same pixels back.
+ *
+ * The foot row also carries a Save button (flush the pending save and
+ * close) at the right of every editor; the New Task variant adds Cancel
+ * to its right — see bt_editor_open_new().
  * =========================================================================== */
 
 #ifndef BT_EDITOR_WINDOW_H
@@ -21,6 +30,16 @@
  * bt_editor_open() — open (or raise) the editor for `task_id`.
  * ------------------------------------------------------------------------- */
 void bt_editor_open(BtApp *app, gint64 task_id);
+
+/* ---------------------------------------------------------------------------
+ * bt_editor_open_new() — bt_editor_open() for the row the New Task action
+ * has just created: the same window plus a Cancel button beside the Save
+ * every editor has.  Cancel closes and DELETES the task again (tombstoned
+ * with its subtasks, so the delete syncs), which is why this entry point
+ * exists at all — Cancel must never do that to a pre-existing task.
+ * Opens folded even if the row somehow has subtasks or attachments.
+ * ------------------------------------------------------------------------- */
+void bt_editor_open_new(BtApp *app, gint64 task_id);
 
 /* ---------------------------------------------------------------------------
  * bt_editor_open_bnote() — open (or raise) the reduced editor for a Blue

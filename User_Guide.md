@@ -76,7 +76,22 @@ window per task: opening it again focuses the one you already have.
   (`YYYY-MM-DD`) or pick from the calendar button. The entry is
   forgiving: while it holds a partial or invalid date nothing is
   clobbered — the stored date only changes once the text parses.
-- **Notes** — free multiline text below the field row.
+- **Notes** — free multiline text below the field row, eight lines tall
+  to start with; it scrolls past that, and grows if you enlarge the
+  window.
+- **Advanced** — Subtasks and Attachments start folded away behind the
+  **Advanced ▾** link at the bottom-left; clicking it drops the window
+  open to show both, and clicking again folds it back to the size it
+  was. A task that already has subtasks or attachments opens expanded,
+  so you never have to click to see what is already there.
+- **Save** sits under the notes box, at its right edge, in every editor:
+  it closes the window (your edits are already saved as you type, so it
+  is a "done here" button, not the only way to persist). Closing the
+  window with its close box does exactly the same thing.
+- **New Task** windows add **Cancel** to the right of Save. **Cancel
+  closes the window and deletes the task again** — the "never mind"
+  button for a task you just created. Only new tasks get it; nothing in
+  an existing task's editor can delete it.
 - **Subtasks** — add, rename, toggle and remove; exactly one level
   (subtasks cannot have subtasks, and Google Tasks agrees).
 - **Attachments** — file references (add/remove/open); the files stay

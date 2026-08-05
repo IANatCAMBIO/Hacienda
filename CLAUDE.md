@@ -219,6 +219,42 @@ the user).  A logic test harness lives in the session scratchpad
   invalid text (`editor_due_entry_parse`).  Editors are singletons per
   task (`app->editors` gint64 keys) / per Blue Notes ref
   (`app->bn_editors` string keys).
+- Editor foot row (packed LAST so it stays at the window's bottom in both
+  fold states): an "Advanced ▾/▴" link at the left, then Save at the
+  right in EVERY editor, with Cancel to its right only in the
+  `bt_editor_open_new` variant — so the order reads Save, Cancel
+  left-to-right, which means Cancel is `pack_end`ed FIRST (pack_end puts
+  the first-packed child rightmost).  Save flushes the write-through save
+  and closes;
+  **Cancel closes and tombstones the task** (`bt_db_task_delete`, so the
+  delete syncs), which is why New Task uses its own entry point —
+  `bt_editor_open` must never offer that.  Cancel drops the pending
+  debounce and destroys the window BEFORE deleting: `on_editor_destroy`
+  would otherwise flush a save into the row being tombstoned.  It then
+  notifies through `notify_changed` (a vanishing task is structural), and
+  `ed` is dead by then, so it captures app/task_id first.
+- Advanced disclosure (`editor_advanced_set`, the single applier):
+  Subtasks + Attachments live in `adv_box`, folded by default and
+  expanded on open when the task already HAS either
+  (`editor_has_advanced_content`, read off the loaded stores, so it runs
+  after `editor_load` + `show_all`).  Expanding measures the block's
+  preferred height and grows the window by it, remembering `adv_height`
+  so the collapse gives the same pixels back — measured round trip
+  307 → 581 → 307.
+- Editor geometry: default size is **490 × -1** — the -1 means the
+  layout's NATURAL height, which is only correct because `adv_box`
+  carries `no_show_all` and so is absent from that measurement (gotcha
+  15).  A fixed window height was the bug: the notes box is packed
+  expand=TRUE, so it swallowed every pixel of slack and opened huge.
+  The notes scroller is pinned to **8 lines** via BOTH
+  `min_content_height` and `max_content_height`, measured by laying out
+  eight "X\n" lines in the view's own Pango context (+12 px: the view's
+  4 px top/bottom margins and 4 px slack so the caret on the 8th line
+  is not flush against the frame).  Font metrics' ascent+descent is NOT
+  the right measure — it omits Pango's inter-line gap and lands about
+  half a line short.  The max is what keeps a task with 50 lines of
+  notes from opening a screen-tall window; it caps the size REQUEST
+  only, so a hand-resized window still stretches the box.
 - Emoji picking: a bare 18 px single-char entry; click clears it and
   emits `insert-emoji` (GTK stashes its chooser on the entry as
   `"gtk-emoji-chooser"` object data).  GTK3 popovers render INSIDE
@@ -365,3 +401,17 @@ the user).  A logic test harness lives in the session scratchpad
     anything.  sync_lists also seeds the default list's emoji to 🔴
     (`bt_db_list_emoji_if_empty` — only while empty, no updated_at
     bump) so it is visibly marked; a user's later emoji edit sticks.
+15. `gtk_widget_show_all(w)` returns EARLY when `w`'s OWN `no_show_all`
+    flag is set — the flag is not just "skip me when a parent recurses".
+    So the "hide it, then show it explicitly later" pattern silently
+    never shows anything.  Both deferred sections in the editor keep the
+    flag and LIFT it across their own show_all
+    (`set_no_show_all(FALSE)` → `show_all` → `set_no_show_all(TRUE)`):
+    the Advanced block (`adv_box`, in `editor_advanced_set`) and the
+    "From Google" box (`google_section_load` — without the lift that
+    section could never appear at all; found and fixed 2026-08-05).
+    Keeping the flag is load-bearing, not just tidy: it is what keeps
+    both boxes out of the window's NATURAL height, which the editor
+    passes -1 to use.  Related: a GtkBox's preferred height counts only
+    VISIBLE children, so measure a disclosure block AFTER showing it or
+    the grow-the-window arithmetic reads 0.

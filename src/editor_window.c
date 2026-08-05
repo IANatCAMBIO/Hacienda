@@ -45,6 +45,15 @@ typedef struct {
     GtkWidget    *google_box;        /* "From Google" section, or NULL      */
     GtkWidget    *google_info;       /* completed/assignment label          */
     GtkWidget    *glinks_box;        /* link buttons container              */
+    GtkWidget    *adv_box;           /* Subtasks + Attachments, folded away
+                                      * behind the Advanced disclosure      */
+    GtkWidget    *adv_label;         /* the "Advanced ▾" link's label       */
+    gboolean      adv_shown;         /* disclosure state                    */
+    gint          adv_height;        /* px the window grew when expanding,
+                                      * given back on collapse             */
+    gboolean      is_new;            /* opened straight from New Task: gets
+                                      * the Save / Cancel pair, and Cancel
+                                      * deletes the throwaway row           */
     guint         save_source;       /* pending debounce save, or 0         */
     gboolean      loading;           /* suppress change handlers            */
     gboolean      bn_done;           /* Blue Notes editors: last loaded     */
@@ -205,6 +214,50 @@ on_toggle_changed(GtkWidget *w, gpointer data)
     BtEditor *ed = data;
     if (!ed->loading)
         editor_save_now(ed);
+}
+
+/* ---------------------------------------------------------------------------
+ * on_editor_save() — the Save button every editor carries: flush the
+ * write-through save and close.  Saves are already write-through, so this
+ * is a "commit now and get out of my way" button rather than the only way
+ * to persist.
+ * ------------------------------------------------------------------------- */
+static void
+on_editor_save(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    BtEditor *ed = data;
+    editor_save_now(ed);             /* also clears the pending debounce    */
+    gtk_widget_destroy(ed->window);
+}
+
+/* ---------------------------------------------------------------------------
+ * on_editor_cancel() — the New Task window's Cancel: close and delete the
+ * task the New Task action created (tombstoned with its subtasks, the same
+ * path as the library's Delete Task, so the delete syncs).
+ *
+ * Order matters: drop the pending debounce and destroy the window FIRST,
+ * because on_editor_destroy frees `ed` and would otherwise flush a save
+ * into the row we are about to tombstone.  The library is notified after
+ * that through the app hook — a vanishing task is structural (list counts,
+ * the Favorites row), so it takes the FULL refresh, not notify_tasks.
+ * ------------------------------------------------------------------------- */
+static void
+on_editor_cancel(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    BtEditor *ed = data;
+    BtApp  *app = ed->app;           /* `ed` dies with the window below     */
+    gint64  id  = ed->task_id;
+    if (ed->save_source != 0) {
+        g_source_remove(ed->save_source);
+        ed->save_source = 0;
+    }
+    gtk_widget_destroy(ed->window);
+    bt_db_task_delete(app->db, id);
+    if (app->notify_changed != NULL)
+        app->notify_changed(app);
+    bt_app_status(app, "Discarded the new task");
 }
 
 /* ---------------------------------------------------------------------------
@@ -686,10 +739,18 @@ google_section_load(BtEditor *ed, const BtTask *t)
     gboolean any = info->len > 0 || t->web_link != NULL ||
                    t->glinks != NULL;
     g_string_free(info, TRUE);
-    if (any)
+    if (any) {
+        /* The box carries no_show_all so the construction-time show_all
+         * cannot reveal an empty section — but that same flag makes
+         * gtk_widget_show_all(google_box) return EARLY (it tests the
+         * widget's own flag before recursing), so the section would never
+         * appear at all.  Lift the flag across the show.                    */
+        gtk_widget_set_no_show_all(ed->google_box, FALSE);
         gtk_widget_show_all(ed->google_box);
-    else
+        gtk_widget_set_no_show_all(ed->google_box, TRUE);
+    } else {
         gtk_widget_hide(ed->google_box);
+    }
     gtk_widget_set_visible(ed->google_info,
         gtk_widget_get_visible(ed->google_box) &&
         *gtk_label_get_text(GTK_LABEL(ed->google_info)) != '\0');
@@ -795,13 +856,81 @@ small_button(const gchar *label, GCallback cb, gpointer data)
 }
 
 /* ---------------------------------------------------------------------------
+ * editor_advanced_set() — fold the Subtasks + Attachments block away (or
+ * back) and grow/shrink the window by exactly that block's height, so the
+ * rest of the layout never reflows.
+ *
+ * The measurement is taken AFTER the show, when the block's preferred
+ * height is real, and remembered in adv_height so the collapse gives back
+ * the same pixels it took (a GtkBox sizes itself from its VISIBLE children
+ * only, so re-measuring a folded box would read 0).
+ * ------------------------------------------------------------------------- */
+static void
+editor_advanced_set(BtEditor *ed, gboolean shown)
+{
+    ed->adv_shown = shown;
+    gtk_label_set_markup(GTK_LABEL(ed->adv_label),
+        shown ? "<u>Advanced \xe2\x96\xb4</u>"
+              : "<u>Advanced \xe2\x96\xbe</u>");
+
+    gint w, h;                       /* live client size                    */
+    gtk_window_get_size(GTK_WINDOW(ed->window), &w, &h);
+    if (shown) {
+        /* Lift no_show_all across the show — with it set, show_all on the
+         * box itself returns early and nothing would appear (gotcha 15).    */
+        gtk_widget_set_no_show_all(ed->adv_box, FALSE);
+        gtk_widget_show_all(ed->adv_box);
+        gtk_widget_set_no_show_all(ed->adv_box, TRUE);
+        gint min, nat;
+        gtk_widget_get_preferred_height(ed->adv_box, &min, &nat);
+        ed->adv_height = nat + 8;    /* + the vbox's inter-child spacing    */
+        gtk_window_resize(GTK_WINDOW(ed->window), w, h + ed->adv_height);
+    } else {
+        gtk_widget_hide(ed->adv_box);
+        if (ed->adv_height > 0)
+            gtk_window_resize(GTK_WINDOW(ed->window), w,
+                              MAX(h - ed->adv_height, 1));
+        ed->adv_height = 0;
+    }
+}
+
+/* on_editor_advanced() — the Advanced link: flip the disclosure.            */
+static void
+on_editor_advanced(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    BtEditor *ed = data;
+    editor_advanced_set(ed, !ed->adv_shown);
+}
+
+/* editor_has_advanced_content() — does this task already carry subtasks or
+ * attachments?  Read off the loaded stores, so it needs editor_load to
+ * have run.  Existing tasks with either open expanded (saving the user a
+ * click); new and empty ones open folded.                                   */
+static gboolean
+editor_has_advanced_content(BtEditor *ed)
+{
+    return (ed->sub_store != NULL &&
+            gtk_tree_model_iter_n_children(
+                GTK_TREE_MODEL(ed->sub_store), NULL) > 0) ||
+           (ed->att_store != NULL &&
+            gtk_tree_model_iter_n_children(
+                GTK_TREE_MODEL(ed->att_store), NULL) > 0);
+}
+
+/* ---------------------------------------------------------------------------
  * editor_open_common() — build an editor window for a task (bn_ref NULL)
  * or a Blue Notes action item (task_id 0).  The Blue Notes variant uses
  * the same layout with title/notes/subtasks/attachments disabled — done
  * and due write through the CLI, and pinned is local-only (bn_pins).
+ *
+ * Every editor gets a Save button under the notes box; `is_new` marks the
+ * window as the one the New Task action just opened and adds Cancel beside
+ * it, meaning "throw the row away again".
  * ------------------------------------------------------------------------- */
 static void
-editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
+editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref,
+                   gboolean is_new)
 {
     GtkWindow *existing = bn_ref != NULL
         ? g_hash_table_lookup(app->bn_editors, bn_ref)
@@ -824,10 +953,16 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
     ed->task_id   = task_id;
     ed->bn_ref    = g_strdup(bn_ref);
     ed->parent_id = t != NULL ? t->parent_id : 0;
+    ed->is_new    = is_new;
     gboolean bn   = bn_ref != NULL;  /* the reduced Blue Notes editor       */
 
     ed->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_default_size(GTK_WINDOW(ed->window), 520, 620);
+    /* Height -1 = the layout's NATURAL height, which with the Advanced
+     * block folded away (no_show_all, see below) is the 8-line notes box
+     * plus the fixed rows — so the notes area opens at the size it was
+     * asked for instead of swallowing the slack of a fixed window height.
+     * editor_advanced_set adds the block's own height when it opens.        */
+    gtk_window_set_default_size(GTK_WINDOW(ed->window), 490, -1);
     gtk_window_set_position(GTK_WINDOW(ed->window), GTK_WIN_POS_CENTER);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
@@ -904,9 +1039,45 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
     g_signal_connect(ed->notes_buf, "changed",
                      G_CALLBACK(on_field_changed), ed);
     gtk_container_add(GTK_CONTAINER(notes_scroll), notes_view);
+    /* Eight lines tall, measured by LAYING OUT eight lines in the view's
+     * own font and context — not from font metrics, whose ascent+descent
+     * omits the line gap Pango adds between lines and would leave the box
+     * about half a line short.  Measuring beats hardcoding pixels: the UI
+     * font differs per platform and per HiDPI scale.
+     *
+     * min AND max content height both get the value: the min is the ask,
+     * and the max keeps a task with 50 lines of notes from opening a
+     * window the height of the screen — the box scrolls instead.  A
+     * hand-resized window still stretches it (expand=TRUE below), since
+     * max-content-height caps the size REQUEST, not the allocation.        */
+    {
+        PangoLayout *lay = gtk_widget_create_pango_layout(notes_view,
+            "X\nX\nX\nX\nX\nX\nX\nX");
+        gint lines_w, lines_h;
+        pango_layout_get_pixel_size(lay, &lines_w, &lines_h);
+        g_object_unref(lay);
+        if (lines_h <= 0)            /* no font resolved yet: sane default  */
+            lines_h = 8 * 17;
+        /* + the view's 4 px top and bottom margins, + 4 px slack so the
+         * caret on the 8th line is not flush against the frame.            */
+        gint content = lines_h + 12;
+        gtk_scrolled_window_set_min_content_height(
+            GTK_SCROLLED_WINDOW(notes_scroll), content);
+        gtk_scrolled_window_set_max_content_height(
+            GTK_SCROLLED_WINDOW(notes_scroll), content);
+    }
     if (bn)
         gtk_widget_set_sensitive(notes_scroll, FALSE);
     gtk_box_pack_start(GTK_BOX(vbox), notes_scroll, TRUE, TRUE, 0);
+
+    /* Subtasks and Attachments live inside the Advanced disclosure — both
+     * are folded away until the user asks for them (or the task already
+     * has some).  no_show_all keeps the construction-time show_all out of
+     * the block, which is what makes the window's NATURAL height the
+     * folded one; editor_advanced_set lifts the flag across its own
+     * show_all (that call would otherwise return early — see gotcha 15).   */
+    ed->adv_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_widget_set_no_show_all(ed->adv_box, TRUE);
 
     /* Subtasks — only for top-level tasks (no nested subtasks).             */
     if (ed->parent_id == 0) {
@@ -957,7 +1128,8 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
             make_list_section("Subtasks", ed->sub_view, btns);
         if (bn)
             gtk_widget_set_sensitive(sub_section, FALSE);
-        gtk_box_pack_start(GTK_BOX(vbox), sub_section, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(ed->adv_box), sub_section,
+                           FALSE, FALSE, 0);
     } else {
         BtTask *parent = bt_db_task_get(app->db, ed->parent_id);
         gchar *txt = g_strdup_printf(
@@ -1002,7 +1174,8 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
         make_list_section("Attachments", ed->att_view, att_btns);
     if (bn)
         gtk_widget_set_sensitive(att_section, FALSE);
-    gtk_box_pack_start(GTK_BOX(vbox), att_section, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(ed->adv_box), att_section, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), ed->adv_box, FALSE, FALSE, 0);
 
     /* "From Google" — read-only metadata pulled by the sync (completed
      * time, Docs/Chat assignment, Google-attached links, the deep link
@@ -1029,6 +1202,36 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
                            FALSE, FALSE, 0);
     }
 
+    /* Bottom row: the Advanced disclosure link at the left, Save at the
+     * right (every editor) and Cancel to ITS right in the New Task variant
+     * — vbox's 12 px border puts them flush with the notes box's right
+     * edge.  The row is packed last so it stays at the foot of the window
+     * in both fold states.                                                  */
+    GtkWidget *foot = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *adv_btn = gtk_button_new();
+    gtk_button_set_relief(GTK_BUTTON(adv_btn), GTK_RELIEF_NONE);
+    ed->adv_label = gtk_label_new(NULL);
+    gtk_container_add(GTK_CONTAINER(adv_btn), ed->adv_label);
+    /* Link-blue + underlined (the markup comes from
+     * editor_advanced_set, which also owns the arrow direction).            */
+    bt_app_widget_add_css(adv_btn,
+        "button { color: #1c71d8; padding: 2px 4px; }");
+    gtk_widget_set_tooltip_text(adv_btn,
+        "Show or hide the Subtasks and Attachments sections");
+    g_signal_connect(adv_btn, "clicked",
+                     G_CALLBACK(on_editor_advanced), ed);
+    gtk_box_pack_start(GTK_BOX(foot), adv_btn, FALSE, FALSE, 0);
+    /* pack_end puts the FIRST-packed child rightmost, so Cancel goes in
+     * before Save to end up on Save's right.                                */
+    if (is_new)
+        gtk_box_pack_end(GTK_BOX(foot),
+            small_button("Cancel", G_CALLBACK(on_editor_cancel), ed),
+            FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(foot),
+        small_button("Save", G_CALLBACK(on_editor_save), ed),
+        FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), foot, FALSE, FALSE, 0);
+
     g_signal_connect(ed->window, "destroy",
                      G_CALLBACK(on_editor_destroy), ed);
 
@@ -1048,22 +1251,33 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref)
     if (!editor_load(ed))
         return;
     gtk_widget_show_all(ed->window);
+    /* Fold state, decided once the stores are loaded: a task that already
+     * has subtasks or attachments opens expanded so they are on screen
+     * without a click; a new (or empty) task opens folded.  Done AFTER
+     * the show so the block's height measures true.                         */
+    editor_advanced_set(ed, !is_new && editor_has_advanced_content(ed));
 }
 
 /* ---------------------------------------------------------------------------
- * bt_editor_open() / bt_editor_open_bnote() — the public entry points
- * (see header).
+ * bt_editor_open() / bt_editor_open_new() / bt_editor_open_bnote() — the
+ * public entry points (see header).
  * ------------------------------------------------------------------------- */
 void
 bt_editor_open(BtApp *app, gint64 task_id)
 {
-    editor_open_common(app, task_id, NULL);
+    editor_open_common(app, task_id, NULL, FALSE);
+}
+
+void
+bt_editor_open_new(BtApp *app, gint64 task_id)
+{
+    editor_open_common(app, task_id, NULL, TRUE);
 }
 
 void
 bt_editor_open_bnote(BtApp *app, const gchar *ref)
 {
-    editor_open_common(app, 0, ref);
+    editor_open_common(app, 0, ref, FALSE);
 }
 
 /* editor_windows() — every open editor window, task and Blue Notes
