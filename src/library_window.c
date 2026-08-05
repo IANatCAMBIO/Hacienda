@@ -15,7 +15,7 @@
 #include <gtkosxapplication.h>
 #endif
 
-/* Odd-row stripe tint of the task list (the Blue Notes list palette).       */
+/* Odd-row stripe tint of the task list (the Records list palette).          */
 #define ROW_TINT      "#e8f2fb"
 /* Background applied to the row currently held during a manual drag.        */
 #define DRAG_ROW_TINT "#fde68a"
@@ -24,7 +24,7 @@
 enum {
     SB_KIND_PINNED = 0,              /* "Pinned Tasks" virtual list         */
     SB_KIND_ALL,                     /* "All Tasks" virtual list            */
-    SB_KIND_BN_ACTIONS,              /* Blue Notes "Action Items" list      */
+    SB_KIND_BN_ACTIONS,              /* Records "Action Items" list         */
     SB_KIND_TODAY,                   /* "Due Today" virtual list            */
     SB_KIND_FORECAST,                /* "Weekly Forecast" virtual list      */
     SB_KIND_HEADER,                  /* the "Lists" section header          */
@@ -43,13 +43,13 @@ enum {
 
 /* Task pane store columns.                                                  */
 enum {
-    TL_ID = 0,                       /* gint64: task id (0 for Blue Notes
+    TL_ID = 0,                       /* gint64: task id (0 for Records
                                       * action rows)                        */
     TL_DONE,                         /* gboolean                            */
     TL_DESC,                         /* gchar*: the tall markup cell        */
     TL_DUE,                          /* gchar*: formatted due date ("")     */
     TL_DUE_RAW,                      /* gint64: due timestamp (sort/tint)   */
-    TL_REF,                          /* gchar*: Blue Notes "NOTEID:ORD"
+    TL_REF,                          /* gchar*: Records "NOTEID:ORD"
                                       * address, NULL for real tasks        */
     TL_TITLE,                        /* gchar*: raw task title (sort key)   */
     TL_N_COLS
@@ -482,7 +482,7 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
 
 /* scroll_keep_queue() — restore a scrolled window's vertical position
  * after a model rebuild (idle-deferred so the rebuilt view re-validates
- * its height first — Blue Notes gotcha #11).                                */
+ * its height first — Records gotcha #11).                                   */
 typedef struct {
     GtkAdjustment *vadj;
     gdouble        value;
@@ -536,7 +536,7 @@ static void     on_menu_toggle_sidebar(GtkWidget *, gpointer);
 
 /* sidebar_show_pinned() — whether the Pinned Tasks meta row should
  * exist: any pinned task, or (while the integration is on) any pinned
- * Blue Notes action item.                                                   */
+ * Records action item.                                                      */
 static gboolean
 sidebar_show_pinned(BtLibrary *lw)
 {
@@ -551,7 +551,7 @@ refresh_sidebar(BtLibrary *lw)
     scroll_keep_queue(lw->sb_view);
 
     /* Snapshot the Lists section's expansion BEFORE the clear — every
-     * model rebuild collapses it otherwise (Blue Notes gotcha #14).
+     * model rebuild collapses it otherwise (Records gotcha #14).
      * The first population expands it; after that the user's choice
      * is preserved.                                                         */
     GtkTreeModel *model = GTK_TREE_MODEL(lw->sb_store);
@@ -709,7 +709,7 @@ refresh_sidebar(BtLibrary *lw)
     bt_ptr_array_free_groups(groups);
     bt_ptr_array_free_lists(lists);
 
-    /* The Blue Notes Action Items list sits among the real lists (but
+    /* The Records Action Items list sits among the real lists (but
      * cannot be deleted or hold new tasks); it exists only while the
      * integration is enabled in Settings AND the items are not embedded
      * in a regular list (blue_notes_embed_list).                            */
@@ -720,7 +720,7 @@ refresh_sidebar(BtLibrary *lw)
                            SB_KIND, SB_KIND_BN_ACTIONS,
                            SB_ID, (gint64)0,
                            SB_LABEL, "\xe2\x9d\x97\xef\xb8\x8f  "
-                                     "Action Items (from Blue Notes)",
+                                     "Action Items (from Records)",
                            SB_WEIGHT, PANGO_WEIGHT_NORMAL,
                            -1);
         if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
@@ -781,7 +781,7 @@ refresh_sidebar(BtLibrary *lw)
 }
 
 /* ---------------------------------------------------------------------------
- * Blue Notes rows — fetched ONCE per refresh through the blue_notes CLI
+ * Records rows — fetched ONCE per refresh through the records CLI
  * (see bnotes.h) and appended in filtered passes, so high-priority
  * items can float above other rows without spawning the CLI twice.
  * ------------------------------------------------------------------------- */
@@ -821,10 +821,10 @@ bn_rows_clear(BnRows *br)
 }
 
 /* ---------------------------------------------------------------------------
- * append_bn_items() — append fetched Blue Notes action items to the
+ * append_bn_items() — append fetched Records action items to the
  * task pane.  Rows carry their "NOTEID:ORD" address in TL_REF and 0 in
  * TL_ID; pin and priority state are Lists-local (bn_pins /
- * bn_priority — Blue Notes knows neither concept).  The dimmed
+ * bn_priority — Records knows neither concept).  The dimmed
  * "❗ Action Items · note N" line marks where the item really lives.
  *   only_pinned      — skip unpinned items (the Pinned Tasks view).
  *   priority_filter  — 1 = only high-priority items, 0 = only normal,
@@ -885,7 +885,7 @@ append_bn_items(BtLibrary *lw, const BnRows *br, gboolean only_pinned,
     return shown;
 }
 
-/* bn_embed_list() — the list id Blue Notes action items are embedded in
+/* bn_embed_list() — the list id Records action items are embedded in
  * ("blue_notes_embed_list", Settings), or 0 when they live in their own
  * sidebar list.  0 while the integration is off; a stale id (the list
  * was deleted) also reads as 0, so the Action Items row comes back
@@ -915,7 +915,7 @@ refresh_bn_actions(BtLibrary *lw)
     BnRows br = { NULL, NULL, NULL };
     if (!bn_rows_fetch(lw, &br)) {
         gtk_label_set_text(GTK_LABEL(lw->status_left),
-                           "Action Items (Blue Notes)");
+                           "Action Items (Records)");
         return;
     }
     gint n = append_bn_items(lw, &br, FALSE, 1)
@@ -929,7 +929,7 @@ refresh_bn_actions(BtLibrary *lw)
     if (lw->manual_sort)
         task_view_apply_manual_order(lw);
     gchar *loc = g_strdup_printf(
-        "Action Items (from Blue Notes) - %d item%s",
+        "Action Items (from Records) - %d item%s",
         n, n == 1 ? "" : "s");
     gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
     g_free(loc);
@@ -1168,7 +1168,7 @@ refresh_tasks(BtLibrary *lw)
         break;
     }
 
-    /* Blue Notes action items embedded in THIS list (Settings'
+    /* Records action items embedded in THIS list (Settings'
      * blue_notes_embed_list): high-priority items go above the tasks,
      * the rest come after them.                                             */
     BnRows br = { NULL, NULL, NULL };
@@ -1189,7 +1189,7 @@ refresh_tasks(BtLibrary *lw)
         bn_rows_clear(&br);
     }
 
-    /* Pinned Tasks also gathers pinned Blue Notes action items (their
+    /* Pinned Tasks also gathers pinned Records action items (their
      * pin state is local — the bn_pins table), high priority first.         */
     guint shown = appended;          /* rows in the pane (for the status)   */
     if (lw->sel_kind == SB_KIND_PINNED &&
@@ -1475,7 +1475,7 @@ selected_list_id(BtLibrary *lw)
 
 /* selected_task_ids() — ids of every selected task row (the view is
  * multi-select: Ctrl/Cmd-click and Shift-click extend).  Free with
- * g_array_unref.  Blue Notes rows (id 0) are excluded.                      */
+ * g_array_unref.  Records rows (id 0) are excluded.                         */
 static GArray *
 selected_task_ids(BtLibrary *lw)
 {
@@ -1497,8 +1497,8 @@ selected_task_ids(BtLibrary *lw)
     return ids;
 }
 
-/* on_task_activated() — double-click opens the editor window; Blue
- * Notes rows open the reduced Blue Notes editor (done + due editable).      */
+/* on_task_activated() — double-click opens the editor window; Records
+ * rows open the reduced editor (done + due editable).                       */
 static void
 on_task_activated(GtkTreeView *view, GtkTreePath *path,
                   GtkTreeViewColumn *col, gpointer data)
@@ -1509,9 +1509,9 @@ on_task_activated(GtkTreeView *view, GtkTreePath *path,
     GtkTreeIter iter;
     if (!gtk_tree_model_get_iter(model, &iter, path))
         return;
-    /* A Blue Notes row (they carry a ref and id 0 — the Action Items
+    /* A Records row (they carry a ref and id 0 — the Action Items
      * list AND pinned items in the Pinned Tasks view) opens the reduced
-     * Blue Notes editor.                                                    */
+     * Records editor.                                                       */
     gchar *ref = NULL;
     gtk_tree_model_get(model, &iter, TL_REF, &ref, -1);
     if (ref != NULL) {
@@ -1674,15 +1674,15 @@ on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
     gtk_tree_model_get(model, &iter,
                        TL_ID, &id, TL_DONE, &done, TL_TITLE, &title, -1);
 
-    /* Blue Notes rows (any view they appear in) write back through the
-     * blue_notes CLI, which strikes/un-strikes the '!' line in the note
+    /* Records rows (any view they appear in) write back through the
+     * records CLI, which strikes/un-strikes the '!' line in the note
      * itself.                                                               */
     gchar *ref = NULL;
     gtk_tree_model_get(model, &iter, TL_REF, &ref, -1);
     if (ref != NULL) {
         gchar *err = NULL;
         if (bt_bnotes_action_set_done(ref, !done, &err)) {
-            bt_app_status(lw->app, "Updated in Blue Notes");
+            bt_app_status(lw->app, "Updated in Records");
             full_refresh(lw);        /* incl. an open editor of this ref    */
         } else {
             bt_app_status(lw->app, "%s",
@@ -1710,7 +1710,7 @@ on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
 /* on_forecast_done_toggled() — the done checkbox of a Weekly Forecast
  * day view.  Each day view has its own store (the handler above is
  * bound to the main task store), stashed on the renderer as
- * "bt-model".  Day views hold real tasks only — no Blue Notes rows.         */
+ * "bt-model".  Day views hold real tasks only — no Records rows.            */
 static void
 on_forecast_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
                          gpointer data)
@@ -1743,7 +1743,7 @@ on_forecast_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
 }
 
 /* task_row_bg_func() — cell data function giving list rows alternating
- * white / light-blue backgrounds regardless of theme (the Blue Notes
+ * white / light-blue backgrounds regardless of theme (the Records
  * notes-list stripes).  data is BtLibrary * for the task pane columns so
  * the dragged row can be highlighted; NULL is safe (forecast day views).   */
 static void
@@ -1774,7 +1774,7 @@ task_row_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
 
 /* forecast_toggle_bg_func() — the day views' checkbox data func: the
  * row stripe, plus hiding the checkbox on the "No tasks due"
- * placeholder rows (id 0 — day stores never hold Blue Notes rows, so
+ * placeholder rows (id 0 — day stores never hold Records rows, so
  * the id alone identifies them).                                            */
 static void
 forecast_toggle_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
@@ -1881,7 +1881,7 @@ compact_layout_apply(BtLibrary *lw)
 
 /* on_toggle_sidebar() — toolbar show/hide button for the lists pane:
  * the task view takes the whole window while it is hidden (mirrors the
- * Blue Notes "Folders" toggle).                                             */
+ * Records "Folders" toggle).                                                */
 static void
 on_toggle_sidebar(GtkWidget *widget, gpointer data)
 {
@@ -2321,7 +2321,7 @@ on_edit_list(GtkWidget *w, gpointer data)
     BtLibrary *lw = data;
     if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
         bt_app_status(lw->app,
-                      "This list mirrors Blue Notes and cannot be edited");
+                      "This list mirrors Records and cannot be edited");
         return;
     }
     gint64 id = selected_list_id(lw);
@@ -2348,7 +2348,7 @@ on_edit_list(GtkWidget *w, gpointer data)
 /* on_sidebar_activated() — double-click on a real list opens the Edit
  * List dialog (the first click of the pair already settled the
  * selection on the row).  Metas, the Lists header (which keeps its
- * default expand/collapse) and the Blue Notes row do nothing.               */
+ * default expand/collapse) and the Records row do nothing.                  */
 static void
 on_sidebar_activated(GtkTreeView *view, GtkTreePath *path,
                      GtkTreeViewColumn *col, gpointer data)
@@ -2389,7 +2389,7 @@ on_delete_list(GtkWidget *w, gpointer data)
         return;
     }
     if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
-        bt_app_status(lw->app, "This list mirrors Blue Notes and cannot "
+        bt_app_status(lw->app, "This list mirrors Records and cannot "
                       "be deleted \xe2\x80\x94 disable it in File \xe2\x86"
                       "\x92 Settings\xe2\x80\xa6");
         return;
@@ -2403,7 +2403,7 @@ on_delete_list(GtkWidget *w, gpointer data)
     if (l == NULL)
         return;
     /* Google's default tasklist cannot be deleted (the API refuses with
-     * 400 from any client) — block it here, like the Blue Notes list.       */
+     * 400 from any client) — block it here, like the Records list.          */
     gchar *default_gid = bt_db_state_get(lw->app->db, "default_list_gid");
     if (l->gtasks_id != NULL && default_gid != NULL &&
         strcmp(l->gtasks_id, default_gid) == 0) {
@@ -2465,8 +2465,8 @@ on_delete_task(GtkWidget *w, gpointer data)
     (void)w;
     BtLibrary *lw = data;
     if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
-        bt_app_status(lw->app, "Blue Notes items are deleted by editing "
-                      "the note in Blue Notes");
+        bt_app_status(lw->app, "Records items are deleted by editing "
+                      "the note in Records");
         return;
     }
     GArray *ids = selected_task_ids(lw);
@@ -2669,7 +2669,7 @@ on_ctx_move(GtkWidget *item, gpointer data)
 }
 
 /* on_ctx_bn_set_pinned() / on_ctx_bn_set_priority() — pin/priority actions
- * for embedded Blue Notes rows; the ref rides on the item as "bt-ref",
+ * for embedded Records rows; the ref rides on the item as "bt-ref",
  * the boolean as "bt-flag".                                                  */
 static void
 on_ctx_bn_set_done(GtkWidget *item, gpointer data)
@@ -2680,7 +2680,7 @@ on_ctx_bn_set_done(GtkWidget *item, gpointer data)
         g_object_get_data(G_OBJECT(item), "bt-flag"));
     gchar *err = NULL;
     if (bt_bnotes_action_set_done(ref, done, &err)) {
-        bt_app_status(lw->app, "Updated in Blue Notes");
+        bt_app_status(lw->app, "Updated in Records");
         full_refresh(lw);
     } else {
         bt_app_status(lw->app, "%s",
@@ -2719,7 +2719,7 @@ on_ctx_bn_set_priority(GtkWidget *item, gpointer data)
  * on_task_button_press() — right-click on a task row: keep an existing
  * multi-selection when clicked inside it (else select just that row)
  * and show the context menu, whose actions apply to the whole
- * selection.  Not offered in the Blue Notes view.
+ * selection.  Not offered in the Records view.
  * ------------------------------------------------------------------------- */
 static gboolean
 on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
@@ -2785,7 +2785,7 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
     GArray *ids = selected_task_ids(lw);
     if (ids->len == 0) {
         g_array_unref(ids);
-        /* The row may be an embedded Blue Notes item (TL_REF set, id 0).
+        /* The row may be an embedded Records item (TL_REF set, id 0).
          * Those are excluded from selected_task_ids; show a limited menu
          * with just Pin/Unpin and High Priority (both local-only).          */
         GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
@@ -3225,7 +3225,7 @@ on_menu_toggle_sidebar(GtkWidget *w, gpointer data)
 
 /* on_menu_about() — File → About and the toolbar About button: the
  * standard about dialog with the app logo, version, database vitals and
- * a link to the BSD license (the Blue Notes About, retinted).               */
+ * a link to the BSD license (the Records About, retinted).                  */
 static void
 on_menu_about(GtkWidget *w, gpointer data)
 {
@@ -3288,7 +3288,7 @@ on_menu_about(GtkWidget *w, gpointer data)
      * portable thing to a "last compiled" stamp.                           */
     gchar *comments = g_strdup_printf(
         "Task lists with subtasks, due dates and Google Tasks sync.\n"
-        "Companion app to Blue Notes.\n\n"
+        "Companion app to Records.\n\n"
         "Compiled " __DATE__ " " __TIME__ "\n\n"
         "Database: %s\n"
         "%d tasks in %d lists \xe2\x80\x94 %s on disk",
@@ -3365,7 +3365,7 @@ menu_item(GtkWidget *menu, const gchar *label, GCallback cb, gpointer data)
 
 /* ---------------------------------------------------------------------------
  * bt_library_apply_native_menubar() — move the library menu into (or out
- * of) the native macOS menu bar (see header).  Mirrors Blue Notes: the
+ * of) the native macOS menu bar (see header).  Mirrors Records: the
  * SAME menu shell drives the macOS bar — the in-window widget just has
  * to be hidden; leaving native mode hands macOS an empty bar so the app
  * menu stays functional.
@@ -3598,7 +3598,7 @@ on_library_destroy(GtkWidget *w, gpointer data)
     }
     /* Hooks come down BEFORE the editors: a closing editor's final save
      * would otherwise fire notify_changed → bt_editor_refresh_all, which
-     * can destroy sibling editors mid-teardown (a failing Blue Notes CLI
+     * can destroy sibling editors mid-teardown (a failing Records CLI
      * closes its editors on reload) and leave close_all's snapshot list
      * holding freed windows.                                                */
     lw->app->notify_changed = NULL;
@@ -4159,7 +4159,7 @@ bt_library_window_new(BtApp *app)
      * a drawn divider, then the task buttons and Sync.                      */
     GtkWidget *toolbar = gtk_toolbar_new();
     lw->toolbar = toolbar;           /* Compact Layout hides it whole       */
-    /* Small-toolbar metrics — the Blue Notes bar height.                    */
+    /* Small-toolbar metrics — the Records bar height.                       */
     gtk_toolbar_set_icon_size(GTK_TOOLBAR(toolbar),
                               GTK_ICON_SIZE_SMALL_TOOLBAR);
     tool_button(lw, GTK_TOOLBAR(toolbar), "sidebar",
@@ -4190,7 +4190,7 @@ bt_library_window_new(BtApp *app)
                 G_CALLBACK(on_delete_task));
 
     /* Expanding blank separator pushes the About button to the right
-     * edge (the Blue Notes layout).                                         */
+     * edge (the Records layout).                                            */
     GtkToolItem *spacer = gtk_separator_tool_item_new();
     gtk_separator_tool_item_set_draw(GTK_SEPARATOR_TOOL_ITEM(spacer),
                                      FALSE);
@@ -4229,7 +4229,7 @@ bt_library_window_new(BtApp *app)
 
     bt_app_register_toolbar(app, toolbar);
     gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
-    /* Thin rule between the toolbar and the panes (Blue Notes look).        */
+    /* Thin rule between the toolbar and the panes (Records look).           */
     lw->toolbar_rule = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
     gtk_box_pack_start(GTK_BOX(vbox), lw->toolbar_rule, FALSE, FALSE, 0);
 
@@ -4258,7 +4258,7 @@ bt_library_window_new(BtApp *app)
     gtk_tree_view_append_column(GTK_TREE_VIEW(lw->sb_view),
         gtk_tree_view_column_new_with_attributes("Lists", sb_cell,
             "text", SB_LABEL, "weight", SB_WEIGHT, NULL));
-    /* Sidebar palette (Blue Notes): light grey backdrop (rows and the
+    /* Sidebar palette (Records): light grey backdrop (rows and the
      * empty area below them — the tree view paints the whole widget),
      * muted grey text, and a blue selection bar with white text.            */
     bt_app_widget_add_css(lw->sb_view,
@@ -4439,7 +4439,7 @@ bt_library_window_new(BtApp *app)
     gtk_paned_pack2(GTK_PANED(paned), task_pane, TRUE, FALSE);
 
     /* --- Status bar -------------------------------------------------------- */
-    /* Same geometry as the Blue Notes status bar: 8 px side margins,
+    /* Same geometry as the Records status bar: 8 px side margins,
      * 3 px top/bottom (a border_width would add a pixel more on every
      * edge and read visibly taller).                                        */
     GtkWidget *status = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
@@ -4457,7 +4457,7 @@ bt_library_window_new(BtApp *app)
                             PANGO_ELLIPSIZE_END);
     gtk_widget_set_halign(lw->status_right, GTK_ALIGN_END);
     gtk_box_pack_end(GTK_BOX(status), lw->status_right, FALSE, FALSE, 0);
-    /* Both labels 85% of the UI font (Blue Notes size).  CSS font-size: 85%
+    /* Both labels 85% of the UI font (Records size).  CSS font-size: 85%
      * can resolve to zero on Linux when the per-widget provider has no
      * explicit base size in scope; Pango scale attributes are always
      * relative to the actual rendered font and work on every platform.      */

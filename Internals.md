@@ -13,11 +13,11 @@ and the sync engine. For everyday use see the
 | `src/app.[ch]`             | Shared `BtApp` context: ini config, dialogs, toolbar styles, icon loading, date helpers |
 | `src/db.[ch]`              | SQLite layer: lists, tasks, subtasks, attachments; tombstones and `updated_at` for sync |
 | `src/library_window.[ch]`  | Sidebar (virtual views, list groups), tall task rows, toolbar, Compact Layout + floating button bar, Weekly Forecast panel, context menus, status bar |
-| `src/editor_window.[ch]`   | Per-task editor (and the reduced Blue Notes variant); debounced write-through saves; Advanced fold for Subtasks/Attachments |
+| `src/editor_window.[ch]`   | Per-task editor (and the reduced Records variant); debounced write-through saves; Advanced fold for Subtasks/Attachments |
 | `src/settings_window.[ch]` | The Settings window                                |
 | `src/oauth.[ch]`           | OAuth 2.0 installed-app flow: PKCE, loopback redirect |
 | `src/gtasks.[ch]`          | Two-way Google Tasks sync engine + move/clear jobs |
-| `src/bnotes.[ch]`          | Blue Notes integration (via its CLI, never its database) |
+| `src/bnotes.[ch]`          | Records integration (via its CLI, never its database) |
 | `src/http.[ch]`            | Small libcurl wrapper (blocking; worker threads only) |
 | `src/json.[ch]`            | Minimal JSON parser/serializer (no external JSON dependency) |
 | `icons/`                   | Bundled PNG toolbar icons + app logo; `icons/theme/hicolor/` holds SVG arrows for crisp HiDPI tree expanders |
@@ -75,7 +75,7 @@ CREATE TABLE attachments (
 );
 
 CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE bn_pins     (ref TEXT PRIMARY KEY);  -- pinned Blue Notes items
+CREATE TABLE bn_pins     (ref TEXT PRIMARY KEY);  -- pinned Records items
 CREATE TABLE bn_priority (ref TEXT PRIMARY KEY);  -- high-priority BN items
 
 CREATE INDEX idx_tasks_list ON tasks(list_id, parent_id, position);
@@ -112,9 +112,9 @@ Semantics worth knowing when querying directly:
   the last successful pass), `default_list_gid` (Google's undeletable
   default tasklist), `lists_custom_order` (set once the user
   drag-reorders lists).
-- `bn_pins` and `bn_priority` keys are Blue Notes `NOTEID:ORD` refs —
+- `bn_pins` and `bn_priority` keys are Records `NOTEID:ORD` refs —
   pinning and high-priority for action items live entirely on this side
-  (Blue Notes knows neither concept).
+  (Records knows neither concept).
 
 Two practical cautions: the app sets a 5-second busy timeout (the GUI
 and the sync worker share the file), so brief external readers coexist

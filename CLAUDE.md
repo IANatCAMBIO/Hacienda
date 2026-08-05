@@ -1,19 +1,33 @@
 # Lists — project guide
 
-Task-list app in **plain C + GTK3 + SQLite**, the companion app to Blue
-Notes.  Two window types: a Library (lists sidebar + tall task rows) and
-one editor window per task.  Two-way Google Tasks sync.  No GNOME
+Task-list app in **plain C + GTK3 + SQLite**, the companion app to
+Records.  Two window types: a Library (lists sidebar + tall task rows)
+and one editor window per task.  Two-way Google Tasks sync.  No GNOME
 HeaderBars anywhere — plain `GtkWindow` titlebars, formatted
 `"Lists - <thing>"`.
 
-**Where Blue Notes actually is** (it was renamed too, and the old paths
-still exist as leftovers — verify before believing any of them):
-`~/salt_development/records`, whose git remote is still `orange_notes.git`.
-The live CLI binary is **`records`**, not `blue_notes` — the `blue_notes`
-binary sitting beside it is the stale pre-rename build and answers
-`action list` with an EMPTY result and exit 0, so pointing
-`blue_notes_cli` at it produces an empty Action Items list and no error
-at all.  There is no `~/salt_development/orange_notes` directory any more.
+**Records was called Blue Notes**, and the old names survive in three
+places that are NOT typos — do not "fix" them:
+
+- the config keys `blue_notes_sync` / `blue_notes_cli` /
+  `blue_notes_embed_list` (they sit in users' ini files, so renaming
+  one silently discards that setting);
+- the source names `src/bnotes.[ch]`, `bt_bnotes_*`, `bn_*`,
+  `SB_KIND_BN_ACTIONS`, and the `bn_pins` / `bn_priority` tables
+  (renaming the tables would need a schema migration for no gain);
+- `blue_notes` as a fallback program name in `bt_bnotes_cli_path`.
+
+Everything a USER reads says Records.
+
+**Where Records actually is** (the old paths survive as leftovers —
+verify before believing any of them): `~/salt_development/records`, whose
+git remote is still `orange_notes.git` (all three GitHub names redirect;
+the canonical one is `IANatCAMBIO/records`).  The live CLI binary is
+**`records`** — the `blue_notes` binary sitting beside it is the stale
+pre-rename build and answers `action list` with an EMPTY result and
+exit 0, so pointing `blue_notes_cli` at it yields an empty Action Items
+list and no error at all.  There is no `~/salt_development/orange_notes`
+directory any more.
 
 ## Build & run
 
@@ -50,11 +64,11 @@ the user).  A logic test harness lives in the session scratchpad
 | `src/app.[ch]` | Shared `BtApp` context; ini config; dialogs; toolbar style system (icons/both/text + right-click menu); HiDPI icon loader; CSS helper; date helpers |
 | `src/db.[ch]` | SQLite schema (user_version 5) + CRUD; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
 | `src/library_window.[ch]` | Sidebar (virtual lists + collapsible Lists section with list groups), tall task rows, toolbar, multi-select context menu, status bar |
-| `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); reduced Blue Notes variant; read-only "From Google" section |
-| `src/settings_window.[ch]` | Singleton settings: sync master switch, sign in/out, auto-sync interval, Blue Notes integration, toolbar style, native menubar |
+| `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); reduced Records variant; read-only "From Google" section |
+| `src/settings_window.[ch]` | Singleton settings: sync master switch, sign in/out, auto-sync interval, Records integration, toolbar style, native menubar |
 | `src/oauth.[ch]` | OAuth 2.0 installed-app flow: PKCE + loopback listener; refresh token in ini; access tokens in memory |
 | `src/gtasks.[ch]` | Two-way sync engine + move/clear worker jobs |
-| `src/bnotes.[ch]` | Blue Notes integration — CLI ONLY, never its database |
+| `src/bnotes.[ch]` | Records integration — CLI ONLY, never its database |
 | `src/http.[ch]` | libcurl wrapper (blocking; worker threads only) |
 | `src/json.[ch]` | Minimal JSON parser/serializer (no external JSON dep) |
 | `icons/` | Curated toolbar images directly in icons/ (icon names are extension-less basenames — the loader tries `.png` then `.svg`, case-exact for Linux; spares live in `icons/Unused/`) |
@@ -108,7 +122,7 @@ the user).  A logic test harness lives in the session scratchpad
 - Notify hooks on BtApp: `notify_changed` = FULL refresh (sidebar +
   tasks + reload all editors) for structural changes; `notify_tasks` =
   task pane only — editor saves and subtask/attachment edits use this
-  (the full path would re-run the Blue Notes CLI per autosave).
+  (the full path would re-run the Records CLI per autosave).
   `bt_app_status()` for events.  Teardown: NULL the hooks BEFORE
   `bt_editor_close_all` (a closing editor's flush otherwise cascades
   refreshes into destroyed windows).
@@ -117,7 +131,7 @@ the user).  A logic test harness lives in the session scratchpad
   NULL (the window may close mid-flight).  The settings window guards
   the same way (`settings != sw`).
 
-## GUI rules (visual parity with Blue Notes)
+## GUI rules (visual parity with Records)
 
 - Toolbar: `GTK_ICON_SIZE_SMALL_TOOLBAR` metrics; buttons via
   `bt_app_tool_item_new` (local PNG at 24 px logical, Pango-markup glyph
@@ -130,7 +144,7 @@ the user).  A logic test harness lives in the session scratchpad
   hidden.png while completed tasks are visible and visible.png while
   hidden (the icon names the ACTION), swapped live via
   `hide_done_icon_refresh`; the filter applies to every task-pane view
-  including Blue Notes rows.  The Manual Sort toggle
+  including Records rows.  The Manual Sort toggle
   (`task_list_manual_sort`, default 0) enables drag-reorder of the task
   pane: a ⠿ drag-handle column (26 px wide, `cdrag`) appears; order is
   persisted per view in config keys `manual_order_list_<id>` (built by
@@ -154,8 +168,8 @@ the user).  A logic test harness lives in the session scratchpad
   Far right (after an expanding blank
   separator): the About button — document.png logo in every style
   except text-only, which swaps in an "About" label
-  (`about_button_fit_style` on "style-changed"); it opens the Blue
-  Notes-style about dialog (`on_menu_about`: HiDPI logo, compile
+  (`about_button_fit_style` on "style-changed"); it opens the
+  Records-style about dialog (`on_menu_about`: HiDPI logo, compile
   stamp, `bt_db_totals` vitals), shared with File → About Lists.
   document.png is also the .app bundle icon (Makefile `app` target).
 - View menu: Show Completed, Manual Sort, then Show Sidebar and Compact
@@ -184,7 +198,7 @@ the user).  A logic test harness lives in the session scratchpad
 - Thin `gtk_separator_new` rules under the toolbar and above the status
   bar.  Status bar: margins 8/8/3/3 (NOT border_width) and
   `label { font-size: 85%; }` on both labels — measured pixel-identical
-  to Blue Notes.  Event messages posted via `bt_app_status()` hold for
+  to Records.  Event messages posted via `bt_app_status()` hold for
   3 s then fade out over 1 s (20 × 50 ms alpha steps via Pango markup);
   a new message resets the timer.
 - Task list: alternating white/`ROW_TINT` (#e8f2fb) stripes via a
@@ -263,7 +277,7 @@ the user).  A logic test harness lives in the session scratchpad
   The row exists only while `weekly_forecast`=1 (Settings →
   Appearance; default on).  The Favorites row exists ONLY while
   something is pinned (`bt_db_has_pinned`, counting bn_pins when the
-  Blue Notes integration is on); editor pin flips arrive via
+  Records integration is on); editor pin flips arrive via
   notify_tasks, so `notify_tasks_hook` rebuilds the sidebar on the
   0 ↔ nonzero transition (tracked in `pinned_row_shown`) — the
   context-menu pin actions already full_refresh.  There is NO pinned
@@ -289,13 +303,13 @@ the user).  A logic test harness lives in the session scratchpad
   `bt_db_lists_reorder`, which writes position = display index; order
   is LOCAL-ONLY — Google tasklists have none — so reorders never dirty
   rows for sync).  The DnD dest protocol is fully custom, copied from
-  Blue Notes' quirk #13: GtkTreeView's default drag-motion handler
+  Records' quirk #13: GtkTreeView's default drag-motion handler
   requests row data per motion, and on quartz the replies land before
   the release, finishing the drag mid-air — so on_sb_drag_motion
   answers gdk_drag_status itself (returning TRUE), only
   on_sb_drag_drop requests the data, and on_sb_drag_received stops the
   default emission and performs the move.  Only SB_KIND_LIST rows may
-  drag or anchor a drop (never the metas, header, group, or Blue Notes
+  drag or anchor a drop (never the metas, header, group, or Records
   row).
 - Window size: tracked via configure-event, persisted as `win_w/win_h`
   on clean close, restored at launch (980×640 fallback).
@@ -318,7 +332,7 @@ the user).  A logic test harness lives in the session scratchpad
   immediately.  NEVER rewrite the due entry while it has focus, and a
   save must not clobber the stored date when the entry holds partial/
   invalid text (`editor_due_entry_parse`).  Editors are singletons per
-  task (`app->editors` gint64 keys) / per Blue Notes ref
+  task (`app->editors` gint64 keys) / per Records ref
   (`app->bn_editors` string keys).
 - Editor foot row (packed LAST so it stays at the window's bottom in both
   fold states): an "Advanced ▾/▴" link at the left, then Save at the
@@ -427,13 +441,13 @@ the user).  A logic test harness lives in the session scratchpad
   late exchange result.  The consent screen's app name comes from the
   Google Cloud OAuth registration, not from this app.
 
-## Blue Notes integration
+## Records integration
 
-- ALL access via the `blue_notes` CLI (`action list/done/undone/due`),
-  NEVER its database file — Blue Notes' GUI/CLI coexistence is a
+- ALL access via the `records` CLI (`action list/done/undone/due`),
+  NEVER its database file — Records' GUI/CLI coexistence is a
   single-writer design (CLI routes through the running GUI's socket).
   Row format: `NOTEID:ORD \t [x]|[ ] \t YYYY-MM-DD|- \t text`.
-- Shown as "Action Items (from Blue Notes)" under Lists while
+- Shown as "Action Items (from Records)" under Lists while
   `blue_notes_sync=1` — unless `blue_notes_embed_list` (Settings'
   "Show action items in" combo) names a real list: then the sidebar
   row disappears and the items ride in that list's view instead,
@@ -443,18 +457,18 @@ the user).  A logic test harness lives in the session scratchpad
   due writable via CLI; title/notes/subtasks/attachments insensitive
   — no CLI verbs for them).  PINNING and HIGH PRIORITY work: both are
   local-only state (`bn_pins` / `bn_priority` tables) keyed by the
-  item's "NOTEID:ORD" ref (Blue Notes knows neither concept); pinned
+  item's "NOTEID:ORD" ref (Records knows neither concept); pinned
   action items also appear in the Favorites view.  BN rows are
   fetched ONCE per refresh (`bn_rows_fetch` — the CLI is expensive)
   and appended via `append_bn_items` in a priority-then-rest pass
   pair; in the embedded list the priority pass lands ABOVE the tasks,
   the rest after them.  BN rows are detected by TL_REF != NULL
   (id 0), NOT by the selected sidebar kind — they can appear in
-  Pinned and the embed list too.  The Blue
-  Notes editor tracks loaded done/due and only shells the CLI for
-  fields that actually changed.  The Settings CLI-path entry persists
-  per keystroke but only refreshes on Enter/focus-out (a per-keystroke
-  refresh would spawn the half-typed command).
+  Pinned and the embed list too.  The Records editor tracks loaded
+  done/due and only shells the CLI for fields that actually changed.
+  The Settings CLI-path entry persists per keystroke but only refreshes
+  on Enter/focus-out (a per-keystroke refresh would spawn the
+  half-typed command).
 
 ## Hard-won gotchas (do not re-learn)
 
@@ -464,7 +478,7 @@ the user).  A logic test harness lives in the session scratchpad
    an expression.
 3. A `GtkMenu` built per right-click and attached to a widget leaks
    until that widget dies unless destroyed on "selection-done".
-4. blue_notes gotcha inherited: clearing a tree/list store zeroes the
+4. Records gotcha inherited: clearing a tree/list store zeroes the
    view's scrollbar (restore idle-deferred) and collapses expansion
    state (snapshot before clear).
 5. `gtk_tree_view_set_enable_search(view, FALSE)` on every tree view —
@@ -501,7 +515,7 @@ the user).  A logic test harness lives in the session scratchpad
     push).  Handled ACCURATELY (no hidden state): every sync GETs
     `…/lists/@default` and stores its id as
     `sync_state.default_list_gid`; on_delete_list refuses that list up
-    front (like the Blue Notes list), and if a stale tombstone for it
+    front (like the Records list), and if a stale tombstone for it
     exists anyway, sync_lists RESTORES the list + its same-moment task
     tombstones (`bt_db_list_restore`) instead of deleting or hiding
     anything.  sync_lists also seeds the default list's emoji to 🔴

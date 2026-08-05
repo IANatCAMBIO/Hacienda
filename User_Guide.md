@@ -1,7 +1,7 @@
 # Lists — User Guide
 
 Everyday use of Lists: the library, the task editor, settings,
-storage, Google Tasks sync, and the Blue Notes integration. For build
+storage, Google Tasks sync, and the Records integration. For build
 instructions and OAuth client setup see the [README](README.md); for
 the database schema and the sync engine see [Internals](Internals.md).
 
@@ -56,9 +56,9 @@ the database schema and the sync engine see [Internals](Internals.md).
   Sort*) switches the task pane to hand ordering: a ⠿ handle column
   appears and you drag rows into the order you want. The order is
   remembered per view — each list, All Tasks, Favorites, Due Today and
-  the Blue Notes section keep their own — and is local to Lists.
+  the Records section keep their own — and is local to Lists.
 - **Toolbar** — the Sidebar toggle, then Sync, a visibility toggle that
-  shows or hides completed tasks (it applies to every view, Blue Notes
+  shows or hides completed tasks (it applies to every view, Records
   items included), the Manual Sort toggle, then New Task and Delete
   Task. At the far right, the logo button opens the About dialog
   (program info plus live database statistics). Button style —
@@ -140,8 +140,8 @@ window per task: opening it again focuses the one you already have.
   file: if the target folder is empty the current database is copied
   there; if it already contains a database you choose whether to use
   the existing one or overwrite it with your current data.
-- **Blue Notes** — enable the Action Items list, point the app at
-  the `blue_notes` command (a path or a name on PATH), and choose
+- **Records** — enable the Action Items list, point the app at
+  the `records` command (a path or a name on PATH), and choose
   where the items appear (their own section or embedded in a list).
 - **Google Tasks** — the sync master switch, Sign In / Sign Out, the
   auto-sync interval in minutes (default 5; 0 turns the timer off while
@@ -205,12 +205,12 @@ How it behaves:
 Signing out drops the tokens; the grant can also be revoked at
 myaccount.google.com/permissions at any time.
 
-## Blue Notes action items
+## Records action items
 
 If you keep meeting notes in
-[Blue Notes](https://github.com/IANatCAMBIO/blue_notes), its `!`
+[Records](https://github.com/IANatCAMBIO/records), its `!`
 action items can show up here: enable the integration in Settings and
-an **Action Items (from Blue Notes)** section appears under Lists
+an **Action Items (from Records)** section appears under Lists
 while it's on.
 
 - **Embedding** — Settings' "Show action items in" can place the
@@ -218,18 +218,18 @@ while it's on.
   actually work from). The separate Action Items section disappears
   and the items ride along in that list, each wearing a dimmed
   "❗ Action Items · note N" tag so it's clear where they really
-  live. They stay Blue Notes items: the same reduced editor, the
+  live. They stay Records items: the same reduced editor, the
   same CLI write-through.
 - Tick the checkbox to mark an item done — the line strikes through
   in the note itself. Double-click to open the reduced editor: done
   and due date are editable; the text lives in the note, so title,
   notes, subtasks and attachments are shown but locked.
-- **Favoriting works** and is Lists-local (Blue Notes has no such
+- **Favoriting works** and is Lists-local (Records has no such
   concept); favorited action items appear in the Favorites view
   alongside your tasks. **High Priority works the same way** —
-  Lists-local, never written to Blue Notes — and floats the item
+  Lists-local, never written to Records — and floats the item
   to the top of whichever Lists view shows it.
-- Everything goes through the `blue_notes` command-line interface —
-  never its database file — so a running Blue Notes GUI and Lists
+- Everything goes through the `records` command-line interface —
+  never its database file — so a running Records GUI and Lists
   cooperate safely (the CLI forwards to the GUI over its socket).
   Action items are not part of Google Tasks sync.

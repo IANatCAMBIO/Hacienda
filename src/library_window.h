@@ -1,7 +1,7 @@
 /* ===========================================================================
  * library_window.h — the main Lists window
  *
- * Layout (Blue Notes design language: plain GtkWindow, one unified
+ * Layout (Records design language: plain GtkWindow, one unified
  * toolbar, sidebar | content pane, bottom status bar):
  *
  *   ┌──────────────────────────────────────────────────────────────┐

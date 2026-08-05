@@ -3,7 +3,7 @@
 Make lists of things. If your things are tasks, you can give them a due date. If the task is too big, break it down into subtasks.
 
 Lists is written in classic C with GTK3 and SQLite. It is a companion app to
-[Blue Notes](https://github.com/IANatCAMBIO/blue_notes), built the same way and **with the help
+[Records](https://github.com/IANatCAMBIO/records), built the same way and **with the help
 of Claude Code for edits, testing, and code organization**. 
 No Electron or interpreted code. 
 Low resource usage, and runs on macOS and Linux.
@@ -13,13 +13,13 @@ Low resource usage, and runs on macOS and Linux.
 TLDR; Your tasks live in a single SQLite file you can take anywhere.
 You organize them in a Library window — lists in the sidebar, tasks in a listview. 
 Add subtasks and a color-coded due date to each item. Lists also syncs both ways with
-Google Tasks and Blue Notes action items. 
+Google Tasks and Records action items. 
 
 Want more detail?
 
 - **[User Guide](User_Guide.md)** — everything in depth: the library,
-  the task editor, settings, storage, Google Tasks sync, and the Blue
-  Notes integration.
+  the task editor, settings, storage, Google Tasks sync, and the
+  Records integration.
 - **[Internals](Internals.md)** — for the curious: code layout, the
   database schema, and how the sync engine thinks.
 
@@ -28,10 +28,10 @@ Want more detail?
 Open the Settings window to enable Google Tasks sync and login. Once authenticated,
 Lists will automatically sync on the interval specified in settings. 
 
-## Syncing with Blue Notes
+## Syncing with Records
 
-You can also enable sync with Blue Notes in the Settings window. Just specify the path to 
-your Blue Notes binary, and tell Lists where to put the Action Items. 
+You can also enable sync with Records in the Settings window. Just specify the path to 
+your Records binary, and tell Lists where to put the Action Items. 
 
 
 ## Building

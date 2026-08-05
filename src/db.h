@@ -16,9 +16,9 @@
  *                completed_at, etag, web_link, glinks, assigned
  *   attachments  id, task_id, path, added_at   (local-only; never synced)
  *   sync_state   key, value                    (e.g. "last_sync")
- *   bn_pins      ref                           (pinned Blue Notes action
+ *   bn_pins      ref                           (pinned Records action
  *                                               items; local-only)
- *   bn_priority  ref                           (high-priority Blue Notes
+ *   bn_priority  ref                           (high-priority Records
  *                                               action items; local-only)
  *
  * Deletion is a SOFT flag everywhere (`deleted` = tombstone): the Google
@@ -180,7 +180,7 @@ GPtrArray *bt_db_subtasks_all_visible(BtDatabase *db);
 GPtrArray *bt_db_tasks_pinned(BtDatabase *db);
 
 /* TRUE when any non-tombstoned task is pinned; with `with_bn_pins`,
- * pinned Blue Notes action items (bn_pins rows, which may be stale —
+ * pinned Records action items (bn_pins rows, which may be stale —
  * refs whose items vanished still count) do too.  Drives the sidebar's
  * Pinned Tasks row visibility.                                              */
 gboolean bt_db_has_pinned(BtDatabase *db, gboolean with_bn_pins);
@@ -257,10 +257,10 @@ GHashTable *bt_db_attachment_counts(BtDatabase *db);
  * Either out-pointer may be NULL; a failed query leaves 0.                  */
 void bt_db_totals(BtDatabase *db, gint *n_tasks, gint *n_lists);
 
-/* -------------------- Blue Notes pins and priorities --------------------- */
+/* -------------------- Records pins and priorities ------------------------ */
 
-/* Pinned state for Blue Notes action items (pinning is a Lists
- * concept; Blue Notes has none, so membership lives in the local
+/* Pinned state for Records action items (pinning is a Lists
+ * concept; Records has none, so membership lives in the local
  * bn_pins table keyed by the item's "NOTEID:ORD" address).                  */
 gboolean    bt_db_bn_pin_get(BtDatabase *db, const gchar *ref);
 void        bt_db_bn_pin_set(BtDatabase *db, const gchar *ref,
@@ -270,8 +270,8 @@ void        bt_db_bn_pin_set(BtDatabase *db, const gchar *ref,
  * g_hash_table_destroy.                                                     */
 GHashTable *bt_db_bn_pins(BtDatabase *db);
 
-/* High-priority state for Blue Notes action items — the same local
- * design as pins (bn_priority table, "NOTEID:ORD" keys): Blue Notes
+/* High-priority state for Records action items — the same local
+ * design as pins (bn_priority table, "NOTEID:ORD" keys): Records
  * has no priority concept, so the flag only affects where the items
  * appear in Lists' views.                                                   */
 gboolean    bt_db_bn_priority_get(BtDatabase *db, const gchar *ref);

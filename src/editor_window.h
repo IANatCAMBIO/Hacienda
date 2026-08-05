@@ -7,7 +7,7 @@
  * top-level tasks) its subtasks.  Subtasks cannot have subtasks: editing
  * a subtask shows a "part of" note instead of a subtask section.
  *
- * Saves are write-through with a short debounce (like the Blue Notes
+ * Saves are write-through with a short debounce (like the Records
  * editor autosave): every change lands in the database within ~600 ms
  * and the library refreshes.  Closing the window flushes a pending save.
  *
@@ -42,11 +42,11 @@ void bt_editor_open(BtApp *app, gint64 task_id);
 void bt_editor_open_new(BtApp *app, gint64 task_id);
 
 /* ---------------------------------------------------------------------------
- * bt_editor_open_bnote() — open (or raise) the reduced editor for a Blue
- * Notes action item addressed by `ref` ("NOTEID:ORD").  Done and due
- * date are editable (written back through the blue_notes CLI), and
+ * bt_editor_open_bnote() — open (or raise) the reduced editor for a
+ * Records action item addressed by `ref` ("NOTEID:ORD").  Done and due
+ * date are editable (written back through the records CLI), and
  * pinned works too — it is local-only state in the bn_pins table; title,
- * notes, subtasks and attachments are disabled — the note in Blue Notes
+ * notes, subtasks and attachments are disabled — the note in Records
  * owns those and the CLI has no verbs for them.
  * ------------------------------------------------------------------------- */
 void bt_editor_open_bnote(BtApp *app, const gchar *ref);

@@ -22,8 +22,8 @@ typedef struct {
     GtkWidget *signin_btn;
     GtkWidget *signout_btn;
     GtkWidget *state_label;          /* "Signed in" / "Not signed in"       */
-    GtkWidget *bn_check;             /* Blue Notes action items toggle      */
-    GtkWidget *bn_cli_entry;         /* blue_notes command path             */
+    GtkWidget *bn_check;             /* Records action items toggle         */
+    GtkWidget *bn_cli_entry;         /* Records command path             */
     GtkWidget *bn_embed_combo;       /* where action items appear           */
     GArray    *bn_embed_ids;         /* combo index → list id (0 = own)     */
     gboolean   loading;              /* suppress write-through on load      */
@@ -137,7 +137,7 @@ on_signout(GtkWidget *w, gpointer data)
                   "was removed and syncing stopped");
 }
 
-/* on_bn_toggled() — the Blue Notes enable checkbox: persist + refresh
+/* on_bn_toggled() — the Records enable checkbox: persist + refresh
  * (the Action Items row appears/disappears immediately).                    */
 static void
 on_bn_toggled(GtkWidget *w, gpointer data)
@@ -152,7 +152,7 @@ on_bn_toggled(GtkWidget *w, gpointer data)
     bt_app_notify_changed(sw->app);
 }
 
-/* on_bn_embed_changed() — where Blue Notes action items appear: their
+/* on_bn_embed_changed() — where Records action items appear: their
  * own sidebar list (index 0) or embedded inside a chosen real list.
  * Persist the list id and refresh (the sidebar row and the target
  * list's view both change).                                                 */
@@ -179,7 +179,7 @@ on_bn_embed_changed(GtkComboBox *combo, gpointer data)
 /* on_bn_cli_changed() — the CLI path entry: persist ONLY.  The library
  * refresh happens on commit (focus-out/Enter) — refreshing per
  * keystroke would synchronously spawn the half-typed command with the
- * Blue Notes view visible.                                                  */
+ * Records view visible.                                                     */
 static void
 on_bn_cli_changed(GtkWidget *w, gpointer data)
 {
@@ -478,7 +478,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
 
     /* Toolbar style: icons / text below icons / text only.  Applies live
      * to every registered toolbar; also reachable by right-clicking any
-     * toolbar (like Blue Notes).                                            */
+     * toolbar (like Records).                                               */
     GtkWidget *style_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_box_pack_start(GTK_BOX(style_row),
                        gtk_label_new("Toolbar style:"), FALSE, FALSE, 0);
@@ -568,26 +568,26 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
                        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
                        FALSE, FALSE, 2);
 
-    /* --- Blue Notes --------------------------------------------------------- */
-    gtk_box_pack_start(GTK_BOX(vbox), section_label("Blue Notes"),
+    /* --- Records ------------------------------------------------------------ */
+    gtk_box_pack_start(GTK_BOX(vbox), section_label("Records"),
                        FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), wrapped_label(
-        "Two-way sync the Action Items list from Blue Notes here. "
+        "Two-way sync the Action Items list from Records here. "
         "Note that Action Items cannot have attachments, subtasks, or "
         "notes."), FALSE, FALSE, 0);
     sw->bn_check = gtk_check_button_new_with_label(
-        "Show Blue Notes action items");
+        "Show Records action items");
     g_signal_connect(sw->bn_check, "toggled",
                      G_CALLBACK(on_bn_toggled), sw);
     gtk_box_pack_start(GTK_BOX(vbox), sw->bn_check, FALSE, FALSE, 0);
 
     GtkWidget *bn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_box_pack_start(GTK_BOX(bn_row),
-                       gtk_label_new("blue_notes command:"),
+                       gtk_label_new("Records command:"),
                        FALSE, FALSE, 0);
     sw->bn_cli_entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(sw->bn_cli_entry),
-                                   "blue_notes (searched on PATH)");
+                                   "records (searched on PATH)");
     gtk_widget_set_hexpand(sw->bn_cli_entry, TRUE);
     g_signal_connect(sw->bn_cli_entry, "changed",
                      G_CALLBACK(on_bn_cli_changed), sw);
@@ -633,7 +633,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
                              embed_active);
     gtk_widget_set_tooltip_text(sw->bn_embed_combo,
         "Embedded items keep an \xe2\x9d\x97 Action Items tag and stay "
-        "editable only through Blue Notes");
+        "editable only through Records");
     g_signal_connect(sw->bn_embed_combo, "changed",
                      G_CALLBACK(on_bn_embed_changed), sw);
     gtk_box_pack_start(GTK_BOX(embed_row), sw->bn_embed_combo,

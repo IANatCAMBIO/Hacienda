@@ -2,7 +2,7 @@
  * main.c — Lists entry point
  *
  * A GTK3 + SQLite task-list application in plain C — the companion app to
- * Blue Notes.  Boot order: config (needs argv[0] for the portable ini) →
+ * Records.  Boot order: config (needs argv[0] for the portable ini) →
  * database → OAuth credential snapshot → GtkApplication → library window
  * → periodic Google Tasks auto-sync.
  * =========================================================================== */
@@ -216,7 +216,7 @@ on_activate(GtkApplication *gtk_app, gpointer data)
     /* Bundled scalable theme icons (icons/theme/hicolor/...): provides
      * SVG pan-*-symbolic arrows so tree expanders render crisply on
      * HiDPI displays instead of GTK's built-in 1x raster fallbacks
-     * (same set Blue Notes ships; needs the librsvg pixbuf loader).        */
+     * (same set Records ships; needs the librsvg pixbuf loader).           */
     gchar *theme_dir = g_build_filename(boot->app->icons_dir, "theme",
                                         NULL);
     gtk_icon_theme_prepend_search_path(gtk_icon_theme_get_default(),

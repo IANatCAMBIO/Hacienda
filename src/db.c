@@ -254,10 +254,10 @@ bt_db_open(const gchar *path, GError **err)
         "  value TEXT)");
     exec(db,
         "CREATE TABLE IF NOT EXISTS bn_pins ("
-        "  ref TEXT PRIMARY KEY)");   /* pinned Blue Notes items          */
+        "  ref TEXT PRIMARY KEY)");   /* pinned Records items             */
     exec(db,
         "CREATE TABLE IF NOT EXISTS bn_priority ("
-        "  ref TEXT PRIMARY KEY)");   /* high-priority Blue Notes items   */
+        "  ref TEXT PRIMARY KEY)");   /* high-priority Records items      */
     exec(db,
         "CREATE TABLE IF NOT EXISTS list_groups ("
         "  id       INTEGER PRIMARY KEY,"
@@ -1265,7 +1265,7 @@ bn_load_ref_set(BtDatabase *db, const gchar *sql, const gchar *ctx)
     return set;
 }
 
-/* bt_db_bn_pin_get() — is this Blue Notes item pinned (see db.h)?           */
+/* bt_db_bn_pin_get() — is this Records item pinned (see db.h)?              */
 gboolean
 bt_db_bn_pin_get(BtDatabase *db, const gchar *ref)
 {
@@ -1273,7 +1273,7 @@ bt_db_bn_pin_get(BtDatabase *db, const gchar *ref)
         "SELECT 1 FROM bn_pins WHERE ref = ?", "bn pin get");
 }
 
-/* bt_db_bn_pin_set() — pin/unpin a Blue Notes item (see db.h).              */
+/* bt_db_bn_pin_set() — pin/unpin a Records item (see db.h).                 */
 void
 bt_db_bn_pin_set(BtDatabase *db, const gchar *ref, gboolean pinned)
 {
@@ -1289,7 +1289,7 @@ bt_db_bn_pins(BtDatabase *db)
     return bn_load_ref_set(db, "SELECT ref FROM bn_pins", "bn pins query");
 }
 
-/* bt_db_bn_priority_get() — is this Blue Notes item high-priority (see
+/* bt_db_bn_priority_get() — is this Records item high-priority (see
  * db.h)?                                                                    */
 gboolean
 bt_db_bn_priority_get(BtDatabase *db, const gchar *ref)
@@ -1298,7 +1298,7 @@ bt_db_bn_priority_get(BtDatabase *db, const gchar *ref)
         "SELECT 1 FROM bn_priority WHERE ref = ?", "bn priority get");
 }
 
-/* bt_db_bn_priority_set() — flag/unflag a Blue Notes item (see db.h).       */
+/* bt_db_bn_priority_set() — flag/unflag a Records item (see db.h).          */
 void
 bt_db_bn_priority_set(BtDatabase *db, const gchar *ref, gboolean priority)
 {

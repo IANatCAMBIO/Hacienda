@@ -228,7 +228,7 @@ bt_app_init_icons_dir(BtApp *app)
  * (see app.h).  Rasterizes at the display's scale factor: `size` is the
  * LOGICAL size, the backing pixels are size × sf, and the cairo
  * surface's device scale maps between the two (raw pixbufs render
- * 1 buffer-pixel = 1 logical px and blur on Retina — Blue Notes
+ * 1 buffer-pixel = 1 logical px and blur on Retina — Records
  * gotcha #5).
  * ------------------------------------------------------------------------- */
 GtkWidget *
@@ -358,7 +358,7 @@ style_menu_toggled(GtkCheckMenuItem *item, gpointer data)
 /* ---------------------------------------------------------------------------
  * toolbar_context_menu() — "popup-context-menu": right-clicking a
  * toolbar offers the icons/both/text radio choices (fires on empty
- * toolbar area only, like Blue Notes).
+ * toolbar area only, like Records).
  * ------------------------------------------------------------------------- */
 static gboolean
 toolbar_context_menu(GtkToolbar *toolbar, gint x, gint y, gint button,
@@ -482,7 +482,7 @@ bt_app_exe_dir(void)
 static const gchar *const LEGACY_KEYS[] = {
     /* sync */
     "google_sync_enabled", "sync_interval_min", "sync_toolbar_button",
-    /* Blue Notes */
+    /* Records */
     "blue_notes_sync", "blue_notes_cli", "blue_notes_embed_list",
     /* database */
     "db_dir", "db_integrity_check",

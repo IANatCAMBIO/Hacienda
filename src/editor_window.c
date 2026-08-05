@@ -28,14 +28,14 @@ enum {
  * ------------------------------------------------------------------------- */
 typedef struct {
     BtApp        *app;
-    gint64        task_id;           /* 0 for Blue Notes item editors       */
-    gchar        *bn_ref;            /* Blue Notes "NOTEID:ORD", or NULL    */
+    gint64        task_id;           /* 0 for Records item editors          */
+    gchar        *bn_ref;            /* Records "NOTEID:ORD", or NULL       */
     gint64        parent_id;         /* 0 when the task is top-level        */
     GtkWidget    *window;
     GtkWidget    *title_entry;
     GtkWidget    *done_check;
     GtkWidget    *pinned_check;
-    GtkWidget    *priority_check;    /* insensitive in Blue Notes editors   */
+    GtkWidget    *priority_check;    /* insensitive in Records editors      */
     GtkWidget    *due_entry;
     GtkTextBuffer *notes_buf;
     GtkListStore *sub_store;         /* NULL for subtask editors            */
@@ -53,7 +53,7 @@ typedef struct {
                                       * given back on collapse             */
     guint         save_source;       /* pending debounce save, or 0         */
     gboolean      loading;           /* suppress change handlers            */
-    gboolean      bn_done;           /* Blue Notes editors: last loaded     */
+    gboolean      bn_done;           /* Records editors: last loaded        */
     gint64        bn_due;            /* state, so saves only shell the CLI  */
                                      /* for fields that actually changed    */
 } BtEditor;
@@ -61,7 +61,7 @@ typedef struct {
 /* editor_notify() — tell the library something changed.  Editor saves
  * use the LIGHT hook (task pane only): they can never change the
  * sidebar, and the saving editor is itself the source of truth — the
- * full notify would reload every open editor (and re-run the Blue Notes
+ * full notify would reload every open editor (and re-run the Records
  * CLI) per autosave.                                                        */
 static void
 editor_notify(BtEditor *ed)
@@ -107,8 +107,8 @@ editor_title_refresh(BtEditor *ed)
 
 /* ---------------------------------------------------------------------------
  * editor_save_now() — write every editable field through to the row and
- * notify the library.  The debounce timer funnels here.  Blue Notes
- * items write done + due through the blue_notes CLI (the only fields it
+ * notify the library.  The debounce timer funnels here.  Records
+ * items write done + due through the records CLI (the only fields it
  * can change); everything else in that editor is insensitive.
  * ------------------------------------------------------------------------- */
 static void
@@ -137,7 +137,7 @@ editor_save_now(BtEditor *ed)
         }
         if (!ok)
             bt_app_status(ed->app, "%s",
-                          err != NULL ? err : "Blue Notes update failed");
+                          err != NULL ? err : "Records update failed");
         g_free(err);
         /* The pin and priority are LOCAL (bn_pins / bn_priority tables)
          * — no CLI involved.                                                */
@@ -624,7 +624,7 @@ due_entry_refresh(BtEditor *ed, gint64 due)
     g_free(text);
 }
 
-/* editor_load_bnote() — (re)load a Blue Notes item editor from the CLI
+/* editor_load_bnote() — (re)load a Records item editor from the CLI
  * listing.  Returns FALSE when the item disappeared (or the CLI failed)
  * and the window was therefore destroyed — `ed` is gone then.              */
 static gboolean
@@ -917,7 +917,7 @@ editor_has_advanced_content(BtEditor *ed)
 
 /* ---------------------------------------------------------------------------
  * editor_open_common() — build an editor window for a task (bn_ref NULL)
- * or a Blue Notes action item (task_id 0).  The Blue Notes variant uses
+ * or a Records action item (task_id 0).  The Records variant uses
  * the same layout with title/notes/subtasks/attachments disabled — done
  * and due write through the CLI, and pinned is local-only (bn_pins).
  *
@@ -950,7 +950,7 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref,
     ed->task_id   = task_id;
     ed->bn_ref    = g_strdup(bn_ref);
     ed->parent_id = t != NULL ? t->parent_id : 0;
-    gboolean bn   = bn_ref != NULL;  /* the reduced Blue Notes editor       */
+    gboolean bn   = bn_ref != NULL;  /* the reduced Records editor          */
 
     ed->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     /* Height -1 = the layout's NATURAL height, which with the Advanced
@@ -975,7 +975,7 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref,
                                       * note — no CLI rename verb           */
         gtk_widget_set_sensitive(ed->title_entry, FALSE);
         gtk_widget_set_tooltip_text(ed->title_entry,
-            "Edit the item text in its Blue Notes note");
+            "Edit the item text in its Records note");
     }
     gtk_box_pack_start(GTK_BOX(vbox), ed->title_entry, FALSE, FALSE, 0);
 
@@ -996,7 +996,7 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref,
                                       * bn_priority table)                   */
         gtk_widget_set_tooltip_text(ed->priority_check,
             "Kept in Lists only \xe2\x80\x94 affects ordering here, "
-            "not Blue Notes");
+            "not Records");
     gtk_box_pack_start(GTK_BOX(row), ed->priority_check,
                        FALSE, FALSE, 0);
 
@@ -1242,7 +1242,7 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref,
     }
     g_object_set_data(G_OBJECT(ed->window), "bt-editor", ed);
     bt_task_free(t);
-    /* The Blue Notes load can destroy the window (item gone / CLI
+    /* The Records load can destroy the window (item gone / CLI
      * failure) — `ed` is freed then, so bail before touching it.            */
     if (!editor_load(ed))
         return;
@@ -1276,7 +1276,7 @@ bt_editor_open_bnote(BtApp *app, const gchar *ref)
     editor_open_common(app, 0, ref, FALSE);
 }
 
-/* editor_windows() — every open editor window, task and Blue Notes
+/* editor_windows() — every open editor window, task and Records
  * alike (new list; g_list_free it).                                         */
 static GList *
 editor_windows(BtApp *app)

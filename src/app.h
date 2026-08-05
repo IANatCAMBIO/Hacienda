@@ -4,7 +4,7 @@
  * A single BtApp instance is created in main() and passed to every window.
  * It owns the database handle, tracks open task-editor windows, and hosts
  * the notification hooks the library window installs.  Companion app to
- * Blue Notes — same design language: plain C + GTK3 + SQLite, no
+ * Records — same design language: plain C + GTK3 + SQLite, no
  * HeaderBars, window titles "Lists - <thing>".
  * =========================================================================== */
 
@@ -27,7 +27,7 @@
  *   db             — open tasks database (owned; closed at shutdown).
  *   editors        — map of open editor windows keyed by task id
  *                    (gint64* keys, GtkWindow* values).
- *   bn_editors     — map of open Blue Notes action-item editors keyed
+ *   bn_editors     — map of open Records action-item editors keyed
  *                    by their "NOTEID:ORD" address (owned gchar* keys,
  *                    GtkWindow* values).
  *   library_window — the (single) library window, or NULL before startup.
@@ -40,7 +40,7 @@
  *                    subtask/attachment edits use this — they can never
  *                    change the sidebar, and the saving editor is itself
  *                    the source of truth (reloading every editor per
- *                    autosave would also re-run the Blue Notes CLI).
+ *                    autosave would also re-run the Records CLI).
  *                    May be NULL.
  *   notify_status  — hook installed by the library window: shows an event
  *                    message on its status bar.  Post through
@@ -169,14 +169,14 @@ gboolean bt_app_confirm(GtkWindow *parent, const gchar *title,
                         const gchar *fmt, ...) G_GNUC_PRINTF(3, 4);
 
 /* ---------------------------------------------------------------------------
- * Config — same model as Blue Notes: lists.ini next to the binary
+ * Config — same model as Records: lists.ini next to the binary
  * (portable mode) falling back to ~/.config/lists/lists.ini when that
  * directory is unwritable.  Loaded ONCE into memory; written through on
  * every change.  Keys used (see lists.ini.defaults):
  *   sync       — google_sync_enabled, google_client_id,
  *                google_client_secret, gtasks_refresh_token,
  *                sync_interval_min, sync_toolbar_button
- *   Blue Notes — blue_notes_sync, blue_notes_cli, blue_notes_embed_list
+ *   Records — blue_notes_sync, blue_notes_cli, blue_notes_embed_list
  *   database   — db_dir (custom directory for lists.db; absent = default
  *                location), db_integrity_check
  *   UI         — toolbar_style, bold_task_titles, native_menubar,
@@ -217,7 +217,7 @@ gchar *bt_due_format(gint64 due);
 gchar *bt_due_format_iso(gint64 due);
 
 /* bt_due_color() — urgency tint for a due timestamp: overdue red, today
- * gold, ahead green (the Blue Notes action-item palette), or NULL for no
+ * gold, ahead green (the Records action-item palette), or NULL for no
  * tint (due == 0).  Static string; do not free.                             */
 const gchar *bt_due_color(gint64 due);
 
