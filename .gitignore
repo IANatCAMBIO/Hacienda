@@ -1,7 +1,25 @@
 build/
 dist/
+
+# The compiled binary: a build artifact, and it BAKES the Google OAuth
+# client id/secret in from client_credentials.mk — committing it
+# publishes them (GitHub push protection caught exactly that).
+lists
+# `make app` builds into dist/ (ignored above); this only guards a stray
+# bundle left at the repo root.
+Lists.app/
+
+# The LIVE config: per-machine values, and it holds the OAuth refresh
+# token.  Only lists.ini.defaults belongs in git (see the "Config"
+# convention in CLAUDE.md).  Kept as an anchored pattern so it cannot
+# match lists.ini.defaults.
+/lists.ini
+
+# Pre-rename names, still ignored so an old build/config left in a
+# working copy cannot be committed.
 hacienda
 hacienda.ini
+
 client_credentials.mk
 .DS_Store
 
