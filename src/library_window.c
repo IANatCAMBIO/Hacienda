@@ -329,6 +329,13 @@ markup_escape_db(const gchar *text)
  * done), an "in <list>" line in the virtual views, a dimmed notes
  * preview, an attachment count, and up to four subtask lines.  This is
  * what makes the rows "extra tall".
+ *
+ * Prefix glyphs stack outwards from the title: ❗ marks a mirrored
+ * Records action item, then ⭐️ a favorite, then 🚨 high priority, then
+ * ↳ a subtask shown in a virtual view.  The ❗ sits INNERMOST (nearest
+ * the title) because it describes what the row IS, not how it is
+ * flagged — and unlike the pre-mirror tag it shows in every view,
+ * including the item's own list.
  *   list_name  — the owning list's name, or NULL when the view IS that
  *                list (no need to repeat it).
  *   att_count  — the task's attachment count.
@@ -348,6 +355,11 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
     gchar *line = t->done
         ? g_strdup_printf("%s<s>%s</s>%s", open, title, close)
         : g_strdup_printf("%s%s%s", open, title, close);
+    if (t->bn_uid != 0) {            /* mirrored Records action item        */
+        gchar *p = g_strdup_printf("\xe2\x9d\x97  %s", line);
+        g_free(line);
+        line = p;
+    }
     if (t->pinned) {                  /* favorite task wears a star           */
         gchar *p = g_strdup_printf("\xe2\xad\x90\xef\xb8\x8f  %s", line);
         g_free(line);

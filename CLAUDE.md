@@ -414,6 +414,9 @@ the user).  A logic test harness lives in the session scratchpad
 - LOCAL-ONLY fields (never sent): `pinned`, task `priority` (binary
   high-priority flag; every view query sorts `priority DESC` first so
   flagged tasks top any list they appear in, 🚨 (siren emoji) in the task cell,
+  which also carries ❗ on every mirrored Records item (innermost prefix,
+  nearest the title — see `task_desc_markup`; the glyphs stack outwards
+  ↳ 🚨 ⭐️ ❗ Title),
   "High Priority" editor checkbox), list `emoji`, attachments.
   A write to a local-only field must NOT bump `updated_at`
   (`bt_db_task_set_pinned` / `_set_priority` deliberately don't): the

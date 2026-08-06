@@ -44,7 +44,9 @@ the database schema and the sync engine see [Internals](Internals.md).
   Priority** (a checkbox in the editor, or the right-click menu) sort
   to the top of every list they appear in and wear a 🚨 beside the
   title. The flag is local to Lists — Google Tasks has no priority, so
-  it never syncs. Columns: a done checkbox, the task, and the due date;
+  it never syncs. A task mirrored from a Records action item wears a
+  ❗ beside its title in every view, so it is always clear which tasks
+  came from your notes. Columns: a done checkbox, the task, and the due date;
   right-click any column header to hide or show the Done and Due Date
   columns (the Task column always stays). Favoriting is done from the
   editor window's **Favorite** checkbox or the task's right-click menu.
