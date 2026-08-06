@@ -94,6 +94,8 @@ typedef struct {
     gboolean      pinned_row_shown;  /* Pinned Tasks row exists (hidden
                                       * while nothing is pinned)            */
     GHashTable   *group_expanded;    /* group id (ptr) → expanded gboolean  */
+    gint          sb_width;          /* live divider position (persisted
+                                      * at close as sidebar_width)          */
     gint          win_w, win_h;      /* live client size (persisted at
                                       * close as the next launch's size)    */
     gboolean             manual_sort;    /* task_list_manual_sort, cached:
@@ -3269,6 +3271,22 @@ forecast_day_section(BtLibrary *lw, gint d)
     return box;
 }
 
+/* on_paned_position() — track the divider for persistence.  Fires on
+ * every step of a drag, so it only caches; on_library_destroy does the
+ * single config write.                                                      */
+static void
+on_paned_position(GObject *paned, GParamSpec *pspec, gpointer data)
+{
+    (void)pspec;
+    BtLibrary *lw = data;
+    gint pos = gtk_paned_get_position(GTK_PANED(paned));
+    /* Ignore the collapse the Sidebar toggle causes: hiding the pane
+     * drives the position to 0, and storing that would reopen the next
+     * session with an invisible sidebar and no obvious way back.           */
+    if (pos > 0)
+        lw->sb_width = pos;
+}
+
 /* on_library_configure() — track the live client size for persistence.      */
 static gboolean
 on_library_configure(GtkWidget *w, GdkEventConfigure *event, gpointer data)
@@ -3292,6 +3310,15 @@ on_library_destroy(GtkWidget *w, gpointer data)
         g_free(v);
         v = g_strdup_printf("%d", lw->win_h);
         bt_app_config_set("win_h", v);
+        g_free(v);
+    }
+    /* Likewise the divider: a sidebar narrowed by hand has to come back
+     * that width, or every launch undoes the adjustment.  Written here,
+     * not per drag step — "notify::position" fires continuously while
+     * the handle moves and each write rewrites the ini.                    */
+    if (lw->sb_width > 0) {
+        gchar *v = g_strdup_printf("%d", lw->sb_width);
+        bt_app_config_set("sidebar_width", v);
         g_free(v);
     }
     /* Hooks come down BEFORE the editors: a closing editor's final save
@@ -3892,7 +3919,14 @@ bt_library_window_new(BtApp *app)
     GtkWidget *overlay = gtk_overlay_new();
     gtk_box_pack_start(GTK_BOX(vbox), overlay, TRUE, TRUE, 0);
     GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
-    gtk_paned_set_position(GTK_PANED(paned), 220);
+    gchar *sbw = bt_app_config_get("sidebar_width");
+    lw->sb_width = sbw != NULL ? atoi(sbw) : 220;
+    g_free(sbw);
+    if (lw->sb_width <= 0)
+        lw->sb_width = 220;
+    gtk_paned_set_position(GTK_PANED(paned), lw->sb_width);
+    g_signal_connect(paned, "notify::position",
+                     G_CALLBACK(on_paned_position), lw);
     gtk_container_add(GTK_CONTAINER(overlay), paned);
     gtk_overlay_add_overlay(GTK_OVERLAY(overlay), compact_bar_new(lw));
 
@@ -3906,9 +3940,24 @@ bt_library_window_new(BtApp *app)
     gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(lw->sb_view), FALSE);
     gtk_tree_view_set_enable_search(GTK_TREE_VIEW(lw->sb_view), FALSE);
     GtkCellRenderer *sb_cell = gtk_cell_renderer_text_new();
-    gtk_tree_view_append_column(GTK_TREE_VIEW(lw->sb_view),
+    /* Ellipsize so a narrowed sidebar reads "Weekly Fore…" rather than
+     * slicing a label mid-glyph; the renderer needs a width to ellipsize
+     * against, which the FIXED column below gives it.                      */
+    g_object_set(sb_cell, "ellipsize", PANGO_ELLIPSIZE_END, NULL);
+    GtkTreeViewColumn *sb_col =
         gtk_tree_view_column_new_with_attributes("Lists", sb_cell,
-            "text", SB_LABEL, "weight", SB_WEIGHT, NULL));
+            "text", SB_LABEL, "weight", SB_WEIGHT, NULL);
+    /* FIXED, not the default GROW_ONLY: GROW_ONLY ratchets — once a long
+     * name has been shown the column keeps that width even after the row
+     * is gone, so the floor only ever went up.                             */
+    gtk_tree_view_column_set_sizing(sb_col, GTK_TREE_VIEW_COLUMN_FIXED);
+    /* FIXED sizing needs an explicit width or the column has none; keep
+     * it small and let expand=TRUE fill whatever the pane actually is.
+     * The 40 px is a floor on the TREE VIEW's request only — the
+     * EXTERNAL scroller does not pass that up to the pane.                 */
+    gtk_tree_view_column_set_fixed_width(sb_col, 40);
+    gtk_tree_view_column_set_expand(sb_col, TRUE);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(lw->sb_view), sb_col);
     /* Sidebar palette (Records): light grey backdrop (rows and the
      * empty area below them — the tree view paints the whole widget),
      * muted grey text, and a blue selection bar with white text.            */
@@ -3933,11 +3982,20 @@ bt_library_window_new(BtApp *app)
     g_signal_connect(lw->sb_view, "button-press-event",
                      G_CALLBACK(on_sb_button_press), lw);
     GtkWidget *sb_scroll = gtk_scrolled_window_new(NULL, NULL);
+    /* EXTERNAL, not NEVER, horizontally: NEVER makes the scroller demand
+     * its child's FULL width as a minimum, so the widest row (a long
+     * list name) became a floor the divider could not be dragged past.
+     * EXTERNAL scrolls without ever showing a scrollbar, which is what
+     * lets the pane go narrower than the content.                          */
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sb_scroll),
-                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+                                   GTK_POLICY_EXTERNAL,
+                                   GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(sb_scroll), lw->sb_view);
 
-    gtk_paned_pack1(GTK_PANED(paned), sb_scroll, FALSE, FALSE);
+    /* shrink=TRUE (4th arg): the pane may allocate the sidebar LESS than
+     * its minimum.  With shrink=FALSE the divider stops at that minimum
+     * no matter what the scroll policy says — both are needed.            */
+    gtk_paned_pack1(GTK_PANED(paned), sb_scroll, FALSE, TRUE);
     lw->sidebar_box = sb_scroll;     /* for the toolbar show/hide toggle    */
 
     /* Task pane.                                                            */
