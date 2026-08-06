@@ -12,7 +12,7 @@
 #     make          — build the `lists` binary
 #     make clean    — remove build artifacts (including dist/)
 #     make run      — build and launch the app
-#     make app      — macOS .app bundle → dist/Lists-<version>.app
+#     make app      — macOS .app bundle → dist/Lists.app
 #                     (needs the macOS sips/iconutil tools; the bundle
 #                     still depends on the MacPorts GTK libraries)
 # =============================================================================
@@ -157,7 +157,12 @@ DIST     := dist
 # the bundle (installed-app client secrets are not confidential — the
 # same rationale as the baked client_credentials.mk defaults).
 
-APP_DIR  := $(DIST)/Lists-$(VERSION).app
+# The bundle name carries no version: the path stays stable across
+# releases, so a Dock/Launchpad entry or an alias pointing at it keeps
+# working after a VERSION bump.  The version still ships INSIDE, in
+# CFBundleShortVersionString/CFBundleVersion below and in the binary's
+# baked-in BT_VERSION (the About dialog).
+APP_DIR  := $(DIST)/Lists.app
 ICONSET  := $(DIST)/document.iconset
 
 app: $(BIN)

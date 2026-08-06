@@ -74,7 +74,7 @@ sudo dpkg -i fonts-apple-color-emoji.deb
 The Makefile auto-detects `gtk-mac-integration-gtk3`; if you install
 it later, rebuild from clean (`make clean && make`) so every file sees
 it. On macOS, `make app` wraps the binary into
-`dist/Lists-<version>.app` (it still links against the MacPorts GTK
+`dist/Lists.app` (it still links against the MacPorts GTK
 libraries, so the bundle runs on the machine that built it).
 
 One more step if you want Google sync: set up `client_credentials.mk`
