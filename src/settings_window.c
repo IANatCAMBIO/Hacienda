@@ -34,6 +34,9 @@ typedef struct {
 
 static BtSettings *settings = NULL;  /* the singleton, or NULL              */
 
+#define SETTINGS_WIDTH 470           /* window width AND the width the      */
+                                     /* column's height is measured at      */
+
 /* ---------------------------------------------------------------------------
  * state_refresh() — reflect the master switch + sign-in state: with the
  * switch off, Sign In / Sign Out / the auto-sync interval all grey out.
@@ -465,6 +468,69 @@ wrapped_label(const gchar *text)
 }
 
 /* ---------------------------------------------------------------------------
+ * settings_height_cap() — the tallest the settings column may open, in
+ * pixels: the work area of the monitor the parent window is on, less room
+ * for the titlebar and the dock/panel.  Falls back to a conservative
+ * 900-px screen when the parent is not realized yet (no GdkWindow, so no
+ * monitor to ask).
+ * ------------------------------------------------------------------------- */
+static gint
+settings_height_cap(GtkWindow *parent)
+{
+    GdkRectangle area = { 0, 0, 0, 900 };     /* fallback screen height   */
+    GdkWindow   *ref  = parent != NULL
+                        ? gtk_widget_get_window(GTK_WIDGET(parent)) : NULL;
+    if (ref != NULL) {
+        GdkMonitor *mon = gdk_display_get_monitor_at_window(
+                              gdk_window_get_display(ref), ref);
+        if (mon != NULL)
+            gdk_monitor_get_workarea(mon, &area);
+    }
+    return MAX(320, area.height - 140);
+}
+
+/* ---------------------------------------------------------------------------
+ * settings_scroller_new() — wrap the settings column in a vertical
+ * scroller.  Both of the window's size problems come from the column
+ * having been the window's DIRECT child: a plain GtkBox propagates its
+ * whole content height as the toplevel's MINIMUM height, and GTK refuses
+ * to size a window below its minimum — so the window could only ever be
+ * grown, which reads as "it can't be resized" — and a column taller than
+ * the screen ran off the bottom with no way to reach the last section.
+ *
+ * `propagate_natural_height` keeps the "opens at exactly the height it
+ * needs" behaviour the -1 default size asks for; `max_content_height`
+ * caps that at the monitor's work area, so a short screen opens scrolled
+ * instead of oversized; `min_content_height` is what makes shrinking
+ * possible at all.  Horizontal policy is NEVER — the column wraps its own
+ * explanatory labels, so it must never scroll sideways.
+ *
+ * The child carries a SETTINGS_WIDTH width request because of those
+ * wrapping labels: with NEVER, the scroller measures its natural height
+ * for the child's MINIMUM width, and a label wrapped that narrow is
+ * several lines taller than the same label at 470 px — the window would
+ * open with a band of empty space under the last section.  Requesting the
+ * real width makes the measurement match what is drawn.
+ * ------------------------------------------------------------------------- */
+static GtkWidget *
+settings_scroller_new(GtkWidget *child, GtkWindow *parent)
+{
+    GtkWidget *sc = gtk_scrolled_window_new(NULL, NULL);
+    gtk_widget_set_size_request(child, SETTINGS_WIDTH, -1);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sc),
+                                   GTK_POLICY_NEVER,
+                                   GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_propagate_natural_height(
+        GTK_SCROLLED_WINDOW(sc), TRUE);
+    gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(sc),
+                                               240);
+    gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(sc),
+                                               settings_height_cap(parent));
+    gtk_container_add(GTK_CONTAINER(sc), child);
+    return sc;
+}
+
+/* ---------------------------------------------------------------------------
  * bt_settings_window_open() — show (or raise) the window (see header).
  * ------------------------------------------------------------------------- */
 void
@@ -484,11 +550,13 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     sw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(sw->window), "Lists - Settings");
     gtk_window_set_transient_for(GTK_WINDOW(sw->window), parent);
-    gtk_window_set_default_size(GTK_WINDOW(sw->window), 470, -1);
+    gtk_window_set_default_size(GTK_WINDOW(sw->window),
+                                SETTINGS_WIDTH, -1);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 14);
-    gtk_container_add(GTK_CONTAINER(sw->window), vbox);
+    gtk_container_add(GTK_CONTAINER(sw->window),
+                      settings_scroller_new(vbox, parent));
 
     /* --- Appearance --------------------------------------------------------- */
     gtk_box_pack_start(GTK_BOX(vbox), section_label("Appearance"),
