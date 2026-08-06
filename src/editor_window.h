@@ -10,6 +10,9 @@
  * Saves are write-through with a short debounce (like the Records
  * editor autosave): every change lands in the database within ~600 ms
  * and the library refreshes.  Closing the window flushes a pending save.
+ * A task mirroring a Records action item is no different here — its
+ * done and due reach Records with the next mirror pass (bnsync.h),
+ * never from this window.
  *
  * Subtasks and Attachments are folded away behind an "Advanced" link at
  * the foot of the window: collapsed for a task that has neither, expanded
@@ -40,16 +43,6 @@ void bt_editor_open(BtApp *app, gint64 task_id);
  * Opens folded even if the row somehow has subtasks or attachments.
  * ------------------------------------------------------------------------- */
 void bt_editor_open_new(BtApp *app, gint64 task_id);
-
-/* ---------------------------------------------------------------------------
- * bt_editor_open_bnote() — open (or raise) the reduced editor for a
- * Records action item addressed by `ref` ("NOTEID:ORD").  Done and due
- * date are editable (written back through the records CLI), and
- * pinned works too — it is local-only state in the bn_pins table; title,
- * notes, subtasks and attachments are disabled — the note in Records
- * owns those and the CLI has no verbs for them.
- * ------------------------------------------------------------------------- */
-void bt_editor_open_bnote(BtApp *app, const gchar *ref);
 
 /* ---------------------------------------------------------------------------
  * bt_editor_refresh_all() — reload every open editor from the database

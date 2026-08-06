@@ -259,6 +259,9 @@ bt_db_open(const gchar *path, GError **err)
         "CREATE TABLE IF NOT EXISTS bn_priority ("
         "  ref TEXT PRIMARY KEY)");   /* high-priority Records items      */
     exec(db,
+        "CREATE TABLE IF NOT EXISTS bn_deleted ("
+        "  uid INTEGER PRIMARY KEY)");  /* mirror tasks deleted in Lists   */
+    exec(db,
         "CREATE TABLE IF NOT EXISTS list_groups ("
         "  id       INTEGER PRIMARY KEY,"
         "  name     TEXT    NOT NULL DEFAULT '',"
@@ -297,7 +300,25 @@ bt_db_open(const gchar *path, GError **err)
         sqlite3_exec(sq,
             "ALTER TABLE lists ADD COLUMN group_id INTEGER "
             "REFERENCES list_groups(id)", NULL, NULL, NULL);
-    exec(db, "PRAGMA user_version = 5");
+    if (uv < 6) {
+        /* v6 = the Records mirror: bn_uid is the item's STABLE identity
+         * from `records action list --uid` (0 = an ordinary task), and
+         * bn_done/bn_due are the last state Records was known to hold —
+         * the baseline the bulk push diffs against.                        */
+        sqlite3_exec(sq, "ALTER TABLE tasks ADD COLUMN bn_uid "
+                     "INTEGER NOT NULL DEFAULT 0", NULL, NULL, NULL);
+        sqlite3_exec(sq, "ALTER TABLE tasks ADD COLUMN bn_done "
+                     "INTEGER NOT NULL DEFAULT 0", NULL, NULL, NULL);
+        sqlite3_exec(sq, "ALTER TABLE tasks ADD COLUMN bn_due "
+                     "INTEGER NOT NULL DEFAULT 0", NULL, NULL, NULL);
+    }
+    /* AFTER the migrations, never in the schema block above: on an
+     * existing file the column does not exist until the ALTER has run,
+     * and a CREATE INDEX naming it fails the whole batch — which would
+     * leave the database unopenable.                                       */
+    exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_bn_uid "
+             "ON tasks(bn_uid)");
+    exec(db, "PRAGMA user_version = 6");
     return db;
 }
 
@@ -606,7 +627,8 @@ bt_db_list_emoji_if_empty(BtDatabase *db, const gchar *gtasks_id,
  * ------------------------------------------------------------------------- */
 #define TASK_COLS "id, list_id, COALESCE(parent_id, 0), title, notes, due, " \
                   "done, pinned, position, gtasks_id, updated_at, deleted, " \
-                  "completed_at, etag, web_link, glinks, assigned, priority"
+                  "completed_at, etag, web_link, glinks, assigned, priority, "\
+                  "bn_uid, bn_done, bn_due"
 
 static BtTask *
 read_task(sqlite3_stmt *st)
@@ -630,6 +652,9 @@ read_task(sqlite3_stmt *st)
     t->glinks       = column_text_dup(st, 15);
     t->assigned     = column_text_dup(st, 16);
     t->priority     = sqlite3_column_int(st, 17) != 0;
+    t->bn_uid       = sqlite3_column_int64(st, 18);
+    t->bn_done      = sqlite3_column_int(st, 19) != 0;
+    t->bn_due       = sqlite3_column_int64(st, 20);
     if (t->title == NULL) t->title = g_strdup("");
     if (t->notes == NULL) t->notes = g_strdup("");
     return t;
@@ -944,14 +969,25 @@ bt_db_subtask_move(BtDatabase *db, gint64 id, gint direction)
 
 /* ---------------------------------------------------------------------------
  * bt_db_task_delete() — tombstone the task and its subtasks.
+ *
+ * A mirror task also records its bn_uid in bn_deleted, in the SAME
+ * transaction: Records has no CLI verb that deletes an action item, so
+ * the item survives there, and without this the very next mirror pass
+ * would see a uid with no task and helpfully re-create the row the user
+ * just deleted.  bt_bnsync clears the suppression once the item leaves
+ * Records for real.  Subtasks never carry a uid (Records has no
+ * subtasks), so only the task's own row is consulted.
  * ------------------------------------------------------------------------- */
 void
 bt_db_task_delete(BtDatabase *db, gint64 id)
 {
     gchar *sql = sqlite3_mprintf(
+        "INSERT OR IGNORE INTO bn_deleted (uid) "
+        "  SELECT bn_uid FROM tasks WHERE id = %lld AND bn_uid > 0;"
         "UPDATE tasks SET deleted = 1, updated_at = %lld "
         "  WHERE parent_id = %lld;"
         "UPDATE tasks SET deleted = 1, updated_at = %lld WHERE id = %lld;",
+        (long long)id,
         (long long)now(), (long long)id, (long long)now(), (long long)id);
     exec_txn(db, sql);
     sqlite3_free(sql);
@@ -1313,6 +1349,118 @@ bt_db_bn_priorities(BtDatabase *db)
 {
     return bn_load_ref_set(db, "SELECT ref FROM bn_priority",
                            "bn priorities query");
+}
+
+/* ---------------------------------------------------------------------------
+ * Records mirror — tasks carrying a stable action-item uid.
+ * ------------------------------------------------------------------------- */
+
+/* bt_db_tasks_bn_mirror() — every visible mirror task (see db.h).           */
+GPtrArray *
+bt_db_tasks_bn_mirror(BtDatabase *db)
+{
+    return task_query(db,
+        "SELECT " TASK_COLS " FROM tasks WHERE bn_uid > 0 AND deleted = 0 "
+        "ORDER BY priority DESC, list_id, position, id", 0, 0, 0);
+}
+
+/* bt_db_task_by_bn_uid() — the visible mirror task for `uid` (see db.h).    */
+BtTask *
+bt_db_task_by_bn_uid(BtDatabase *db, gint64 uid)
+{
+    GPtrArray *a = task_query(db,
+        "SELECT " TASK_COLS " FROM tasks WHERE bn_uid = ? AND deleted = 0 "
+        "LIMIT 1", 1, uid, 0);
+    BtTask *t = a->len > 0 ? g_ptr_array_index(a, 0) : NULL;
+    g_ptr_array_free(a, TRUE);
+    return t;
+}
+
+/* ---------------------------------------------------------------------------
+ * bt_db_task_set_bn() — bind a task to a Records item and record the
+ * push baseline (see db.h).  NO updated_at bump: the binding is local
+ * bookkeeping, and dirtying the row here would buy a no-op Google PATCH
+ * on every mirror pass (the same reasoning as set_pinned).
+ * ------------------------------------------------------------------------- */
+void
+bt_db_task_set_bn(BtDatabase *db, gint64 id, gint64 uid, gboolean done,
+                  gint64 due)
+{
+    gchar *sql = sqlite3_mprintf(
+        "UPDATE tasks SET bn_uid = %lld, bn_done = %d, bn_due = %lld "
+        "WHERE id = %lld", (long long)uid, done ? 1 : 0, (long long)due,
+        (long long)id);
+    exec(db, sql);
+    sqlite3_free(sql);
+}
+
+/* ---------------------------------------------------------------------------
+ * bt_db_task_apply_records() — overwrite the Records-owned fields and
+ * re-baseline in ONE statement (see db.h).  updated_at IS stamped: the
+ * change came from outside Lists and has to reach Google too.  The
+ * completed_at CASE repeats set_done's transition rule, which relies on
+ * SET expressions reading the OLD row (gotcha 8).
+ *
+ * The baselines are passed SEPARATELY from the applied values because
+ * the two diverge on a failed push: the task keeps the user's local
+ * done/due, while bn_done/bn_due must stay at what Records still holds
+ * so the delta is retried instead of being silently swallowed.
+ * ------------------------------------------------------------------------- */
+void
+bt_db_task_apply_records(BtDatabase *db, gint64 id, const gchar *title,
+                         gboolean done, gint64 due, gboolean bn_done,
+                         gint64 bn_due)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db->sq,
+            "UPDATE tasks SET completed_at = CASE "
+            "                     WHEN ?1 = 1 AND done = 0 THEN ?2 "
+            "                     WHEN ?1 = 0 THEN 0 "
+            "                     ELSE completed_at END, "
+            "title = ?3, done = ?1, due = ?4, bn_done = ?5, bn_due = ?6, "
+            "updated_at = ?2 WHERE id = ?7", -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(st, 1, done ? 1 : 0);
+        sqlite3_bind_int64(st, 2, now());
+        sqlite3_bind_text(st, 3, title != NULL ? title : "", -1,
+                          SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 4, due);
+        sqlite3_bind_int(st, 5, bn_done ? 1 : 0);
+        sqlite3_bind_int64(st, 6, bn_due);
+        sqlite3_bind_int64(st, 7, id);
+        step_done(db, st, "task apply records");
+    } else {
+        step_done(db, NULL, "task apply records");
+    }
+    sqlite3_finalize(st);
+}
+
+/* bt_db_bn_deleted() — the suppressed-uid set (see db.h).  Keys are the
+ * packed uids; the table owns nothing.                                      */
+GHashTable *
+bt_db_bn_deleted(BtDatabase *db)
+{
+    GHashTable *set = g_hash_table_new(g_direct_hash, g_direct_equal);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db->sq, "SELECT uid FROM bn_deleted", -1,
+                           &st, NULL) == SQLITE_OK) {
+        while (sqlite3_step(st) == SQLITE_ROW)
+            g_hash_table_add(set,
+                GSIZE_TO_POINTER(sqlite3_column_int64(st, 0)));
+    } else {
+        step_done(db, NULL, "bn deleted query");
+    }
+    sqlite3_finalize(st);
+    return set;
+}
+
+/* bt_db_bn_deleted_forget() — drop one suppression (see db.h).              */
+void
+bt_db_bn_deleted_forget(BtDatabase *db, gint64 uid)
+{
+    gchar *sql = sqlite3_mprintf("DELETE FROM bn_deleted WHERE uid = %lld",
+                                 (long long)uid);
+    exec(db, sql);
+    sqlite3_free(sql);
 }
 
 /* bt_db_tasks_clear_gtasks_ids() — unbind one list's tasks (see db.h).      */

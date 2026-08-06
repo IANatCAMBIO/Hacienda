@@ -80,6 +80,7 @@ endif
 SRCS     := src/main.c \
             src/app.c \
             src/bnotes.c \
+            src/bnsync.c \
             src/db.c \
             src/json.c \
             src/http.c \

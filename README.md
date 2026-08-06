@@ -30,8 +30,12 @@ Lists will automatically sync on the interval specified in settings.
 
 ## Syncing with Records
 
-You can also enable sync with Records in the Settings window. Just specify the path to 
-your Records binary, and tell Lists where to put the Action Items. 
+You can also enable sync with Records in the Settings window. Specify the path to your
+Records binary and tell Lists which list to file the Action Items into. Each `!` action
+item becomes an ordinary task — with notes, subtasks, attachments and Google Tasks sync
+like any other — while ticking it done or changing its due date is batched back to
+Records on its own interval. The item's text belongs to the note, so edit that in
+Records.
 
 
 ## Building

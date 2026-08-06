@@ -26,10 +26,9 @@
  *   gtk_app        — the GtkApplication driving the main loop.
  *   db             — open tasks database (owned; closed at shutdown).
  *   editors        — map of open editor windows keyed by task id
- *                    (gint64* keys, GtkWindow* values).
- *   bn_editors     — map of open Records action-item editors keyed
- *                    by their "NOTEID:ORD" address (owned gchar* keys,
- *                    GtkWindow* values).
+ *                    (gint64* keys, GtkWindow* values).  Records action
+ *                    items are ordinary tasks (see bnsync.h), so they
+ *                    live in this map like everything else.
  *   library_window — the (single) library window, or NULL before startup.
  *   notify_changed — hook installed by the library window: FULL refresh
  *                    (sidebar + task pane + open editors).  For
@@ -48,6 +47,9 @@
  *   sync_running   — TRUE while the Google Tasks sync worker is running
  *                    (main-thread flag; blocks a second concurrent sync).
  *   sync_timer     — the periodic auto-sync GSource id, or 0.
+ *   bn_sync_running— the same guard for the Records mirror pass, which
+ *                    is a separate worker on its own schedule.
+ *   bn_sync_timer  — the periodic Records-mirror GSource id, or 0.
  *   toolbar_style  — how toolbar buttons render (icons only, text below
  *                    icons, or text only); persisted as "toolbar_style".
  *   toolbars       — every live toolbar, so a style change can be
@@ -63,13 +65,14 @@ typedef struct BtApp {
     GtkApplication  *gtk_app;
     BtDatabase      *db;
     GHashTable      *editors;
-    GHashTable      *bn_editors;
     GtkWidget       *library_window;
     void           (*notify_changed)(struct BtApp *app);
     void           (*notify_tasks)(struct BtApp *app);
     void           (*notify_status)(struct BtApp *app, const gchar *message);
     gboolean         sync_running;
     guint            sync_timer;
+    gboolean         bn_sync_running;
+    guint            bn_sync_timer;
     GtkToolbarStyle  toolbar_style;
     GPtrArray       *toolbars;
     gchar           *icons_dir;
@@ -176,7 +179,8 @@ gboolean bt_app_confirm(GtkWindow *parent, const gchar *title,
  *   sync       — google_sync_enabled, google_client_id,
  *                google_client_secret, gtasks_refresh_token,
  *                sync_interval_min, sync_toolbar_button
- *   Records — blue_notes_sync, blue_notes_cli, blue_notes_embed_list
+ *   Records — blue_notes_sync, blue_notes_cli, blue_notes_embed_list,
+ *                records_sync_interval_min, records_meta_row
  *   database   — db_dir (custom directory for lists.db; absent = default
  *                location), db_integrity_check
  *   UI         — toolbar_style, bold_task_titles, native_menubar,

@@ -1,9 +1,9 @@
 /* ===========================================================================
  * db.h — SQLite storage for Lists
  *
- * Schema (PRAGMA user_version = 5; v2 added lists.emoji, v3 the five
+ * Schema (PRAGMA user_version = 6; v2 added lists.emoji, v3 the five
  * Google-mirror task columns, v4 tasks.priority, v5 list_groups +
- * lists.group_id):
+ * lists.group_id, v6 the three Records-mirror task columns):
  *
  *   list_groups  id, name, position              (local-only; never synced)
  *   lists        id, name, emoji, position, gtasks_id, updated_at, deleted,
@@ -13,13 +13,20 @@
  *                title, notes, due (unix local midnight; 0 = none), done,
  *                pinned, priority (local-only; sorts first in every
  *                view), position, gtasks_id, updated_at, deleted,
- *                completed_at, etag, web_link, glinks, assigned
+ *                completed_at, etag, web_link, glinks, assigned,
+ *                bn_uid (Records action-item identity; 0 = ordinary
+ *                task), bn_done, bn_due (the last state Records held —
+ *                the baseline the bulk push diffs against)
  *   attachments  id, task_id, path, added_at   (local-only; never synced)
  *   sync_state   key, value                    (e.g. "last_sync")
- *   bn_pins      ref                           (pinned Records action
- *                                               items; local-only)
- *   bn_priority  ref                           (high-priority Records
- *                                               action items; local-only)
+ *   bn_deleted   uid                           (mirror tasks deleted in
+ *                                               Lists; suppresses the
+ *                                               re-create, see
+ *                                               bt_db_task_delete)
+ *   bn_pins      ref                           (LEGACY pre-mirror pins,
+ *                                               drained by the first
+ *                                               mirror pass)
+ *   bn_priority  ref                           (LEGACY, as bn_pins)
  *
  * Deletion is a SOFT flag everywhere (`deleted` = tombstone): the Google
  * Tasks sync needs to see "this existed and was deleted locally" to
@@ -86,6 +93,10 @@ typedef struct {
     gchar    *gtasks_id;             /* Google task id, or NULL             */
     gint64    updated_at;
     gboolean  deleted;
+    gint64    bn_uid;                /* Records action-item identity;
+                                      * 0 = an ordinary task               */
+    gboolean  bn_done;               /* last state Records was known to    */
+    gint64    bn_due;                /* hold — the bulk push's baseline    */
     gint64    completed_at;          /* unix; 0 = never / not done         */
     gchar    *etag;                  /* Google etag, or NULL                */
     gchar    *web_link;              /* Google Tasks UI URL, or NULL        */
@@ -257,11 +268,50 @@ GHashTable *bt_db_attachment_counts(BtDatabase *db);
  * Either out-pointer may be NULL; a failed query leaves 0.                  */
 void bt_db_totals(BtDatabase *db, gint *n_tasks, gint *n_lists);
 
-/* -------------------- Records pins and priorities ------------------------ */
+/* --------------------------- Records mirror ------------------------------ */
 
-/* Pinned state for Records action items (pinning is a Lists
- * concept; Records has none, so membership lives in the local
- * bn_pins table keyed by the item's "NOTEID:ORD" address).                  */
+/* Every visible task bound to a Records action item, across all lists,
+ * high-priority first (the "Action Items" meta view).  Returns BtTask*
+ * elements; free with bt_ptr_array_free_tasks.                              */
+GPtrArray *bt_db_tasks_bn_mirror(BtDatabase *db);
+
+/* The visible mirror task carrying `uid`, or NULL.  Free with
+ * bt_task_free.                                                             */
+BtTask *bt_db_task_by_bn_uid(BtDatabase *db, gint64 uid);
+
+/* Bind a task to Records item `uid` and record the push baseline
+ * (bn_done/bn_due = what Records currently holds).  LOCAL bookkeeping:
+ * deliberately no updated_at bump, so binding never dirties the row for
+ * the Google sync.                                                          */
+void bt_db_task_set_bn(BtDatabase *db, gint64 id, gint64 uid,
+                       gboolean done, gint64 due);
+
+/* Overwrite the Records-owned fields (title/done/due) from a listing and
+ * re-baseline in one statement.  DOES stamp updated_at — the change
+ * originated outside Lists and must propagate to Google.  bn_done/bn_due
+ * are passed separately from done/due because a FAILED push keeps the
+ * user's local value on the task while leaving the baseline at what
+ * Records still holds, so the delta is retried next pass.               */
+void bt_db_task_apply_records(BtDatabase *db, gint64 id, const gchar *title,
+                              gboolean done, gint64 due, gboolean bn_done,
+                              gint64 bn_due);
+
+/* Uids the user deleted in Lists.  Records cannot delete an action item
+ * from the CLI, so the item survives there; without this set the next
+ * mirror pass would re-create the task.  Keys are GSIZE_TO_POINTER'd
+ * uids (a uid is 64-bit, so packing it into a gint could collide);
+ * free with g_hash_table_destroy.                                           */
+GHashTable *bt_db_bn_deleted(BtDatabase *db);
+
+/* Drop one suppression — called when the item finally leaves Records.       */
+void bt_db_bn_deleted_forget(BtDatabase *db, gint64 uid);
+
+/* ---------------- LEGACY Records pins and priorities --------------------- */
+
+/* Pre-mirror local state for Records action items, keyed by the old
+ * "NOTEID:ORD" address.  Mirror tasks carry `pinned`/`priority` on the
+ * task row instead; these tables survive only so the first mirror pass
+ * can drain them onto the tasks it creates (bt_bnsync).                     */
 gboolean    bt_db_bn_pin_get(BtDatabase *db, const gchar *ref);
 void        bt_db_bn_pin_set(BtDatabase *db, const gchar *ref,
                              gboolean pinned);

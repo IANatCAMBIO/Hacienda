@@ -103,14 +103,14 @@ bt_bnotes_actions_free(GPtrArray *a)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_bnotes_actions() — `action list` → parsed rows (see bnotes.h).
+ * bt_bnotes_actions() — `action list --uid` → parsed rows (see bnotes.h).
  * ------------------------------------------------------------------------- */
 GPtrArray *
 bt_bnotes_actions(gchar **err)
 {
     *err = NULL;
     gchar *out = NULL;               /* the CLI's stdout                    */
-    if (!run_cli("action", "list", NULL, NULL, &out, err))
+    if (!run_cli("action", "list", "--uid", NULL, &out, err))
         return NULL;
 
     GPtrArray *items = g_ptr_array_new();
@@ -118,16 +118,25 @@ bt_bnotes_actions(gchar **err)
     for (gint i = 0; lines[i] != NULL; i++) {
         if (*lines[i] == '\0')
             continue;
-        /* NOTEID:ORD \t [x]|[ ] \t due|- \t text — the text may itself
-         * contain tabs, so split into at most four fields.                  */
-        gchar **f = g_strsplit(lines[i], "\t", 4);
-        if (f[0] != NULL && f[1] != NULL && f[2] != NULL &&
-            f[3] != NULL && strchr(f[0], ':') != NULL) {
+        /* UID \t NOTEID:ORD \t [x]|[ ] \t due|- \t text — the text may
+         * itself contain tabs, so split into at most five fields.           */
+        gchar **f = g_strsplit(lines[i], "\t", 5);
+        gchar  *endp = NULL;         /* end of the parsed uid               */
+        gint64  uid  = f[0] != NULL
+                     ? g_ascii_strtoll(f[0], &endp, 10) : 0;
+        /* A row counts only with a well-formed uid and the legacy
+         * positional address still in field 2 — anything else is a
+         * format we do not understand, and silently mirroring it would
+         * bind a task to the wrong item.                                    */
+        if (uid > 0 && endp != NULL && *endp == '\0' &&
+            f[1] != NULL && f[2] != NULL && f[3] != NULL &&
+            f[4] != NULL && strchr(f[1], ':') != NULL) {
             BtNoteAction *na = g_new0(BtNoteAction, 1);
-            na->ref  = g_strdup(f[0]);
-            na->done = strcmp(f[1], "[x]") == 0;
-            na->due  = bt_due_parse(f[2]);     /* "-" parses to 0           */
-            na->text = g_strdup(f[3]);
+            na->uid  = uid;
+            na->ref  = g_strdup(f[1]);
+            na->done = strcmp(f[2], "[x]") == 0;
+            na->due  = bt_due_parse(f[3]);     /* "-" parses to 0           */
+            na->text = g_strdup(f[4]);
             g_ptr_array_add(items, na);
         }
         g_strfreev(f);
@@ -138,26 +147,44 @@ bt_bnotes_actions(gchar **err)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_bnotes_action_set_done() — `action done|undone REF` (see bnotes.h).
+ * bt_bnotes_supports_uid() — is --uid understood (see bnotes.h)?
  * ------------------------------------------------------------------------- */
 gboolean
-bt_bnotes_action_set_done(const gchar *ref, gboolean done, gchar **err)
+bt_bnotes_supports_uid(void)
 {
-    *err = NULL;
-    return run_cli("action", done ? "done" : "undone", ref, NULL,
-                   NULL, err);
+    gchar *err = NULL;               /* discarded — the verdict is the
+                                      * exit status alone                   */
+    gboolean ok = run_cli("action", "list", "--uid", NULL, NULL, &err);
+    g_free(err);
+    return ok;
 }
 
 /* ---------------------------------------------------------------------------
- * bt_bnotes_action_set_due() — `action due REF DATE|-` (see bnotes.h).
+ * bt_bnotes_action_set_done() — `action done|undone UID` (see bnotes.h).
  * ------------------------------------------------------------------------- */
 gboolean
-bt_bnotes_action_set_due(const gchar *ref, gint64 due, gchar **err)
+bt_bnotes_action_set_done(gint64 uid, gboolean done, gchar **err)
 {
     *err = NULL;
+    gchar *tok = g_strdup_printf("%" G_GINT64_FORMAT, uid);
+    gboolean ok = run_cli("action", done ? "done" : "undone", tok, NULL,
+                          NULL, err);
+    g_free(tok);
+    return ok;
+}
+
+/* ---------------------------------------------------------------------------
+ * bt_bnotes_action_set_due() — `action due UID DATE|-` (see bnotes.h).
+ * ------------------------------------------------------------------------- */
+gboolean
+bt_bnotes_action_set_due(gint64 uid, gint64 due, gchar **err)
+{
+    *err = NULL;
+    gchar *tok  = g_strdup_printf("%" G_GINT64_FORMAT, uid);
     /* ISO date, or "-" to clear.                                            */
     gchar *date = due == 0 ? g_strdup("-") : bt_due_format_iso(due);
-    gboolean ok = run_cli("action", "due", ref, date, NULL, err);
+    gboolean ok = run_cli("action", "due", tok, date, NULL, err);
     g_free(date);
+    g_free(tok);
     return ok;
 }

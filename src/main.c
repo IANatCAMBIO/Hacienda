@@ -14,6 +14,7 @@
 #include "db.h"
 #include "oauth.h"
 #include "gtasks.h"
+#include "bnsync.h"
 #include "library_window.h"
 #ifdef HAVE_GTKOSX
 #include <gtkosxapplication.h>
@@ -241,6 +242,7 @@ on_activate(GtkApplication *gtk_app, gpointer data)
 
     bt_library_window_new(boot->app);
     bt_sync_auto_start(boot->app, boot->db_path);
+    bt_bnsync_auto_start(boot->app, boot->db_path);
 
     if (boot->app->db_integrity_check && db_ok)
         bt_app_status(boot->app, "DB at %s loaded, integrity check passed",
@@ -310,8 +312,6 @@ main(int argc, char **argv)
                   ? g_strdup(db_dir) : NULL;
     app->editors = g_hash_table_new_full(g_int64_hash, g_int64_equal,
                                          g_free, NULL);
-    app->bn_editors = g_hash_table_new_full(g_str_hash, g_str_equal,
-                                            g_free, NULL);
     app->toolbars = g_ptr_array_new();
     bt_app_init_icons_dir(app);
     bt_app_load_toolbar_style(app);
@@ -328,7 +328,6 @@ main(int argc, char **argv)
 
     g_object_unref(app->gtk_app);
     g_hash_table_destroy(app->editors);
-    g_hash_table_destroy(app->bn_editors);
     g_ptr_array_free(app->toolbars, TRUE);
     bt_db_close(app->db);
     g_free(app->db_dir);

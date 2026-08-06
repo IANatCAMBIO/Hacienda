@@ -13,11 +13,12 @@ and the sync engine. For everyday use see the
 | `src/app.[ch]`             | Shared `BtApp` context: ini config, dialogs, toolbar styles, icon loading, date helpers |
 | `src/db.[ch]`              | SQLite layer: lists, tasks, subtasks, attachments; tombstones and `updated_at` for sync |
 | `src/library_window.[ch]`  | Sidebar (virtual views, list groups), tall task rows, toolbar, Compact Layout + floating button bar, Weekly Forecast panel, context menus, status bar |
-| `src/editor_window.[ch]`   | Per-task editor (and the reduced Records variant); debounced write-through saves; Advanced fold for Subtasks/Attachments |
+| `src/editor_window.[ch]`   | Per-task editor; debounced write-through saves; Advanced fold for Subtasks/Attachments |
 | `src/settings_window.[ch]` | The Settings window                                |
 | `src/oauth.[ch]`           | OAuth 2.0 installed-app flow: PKCE, loopback redirect |
 | `src/gtasks.[ch]`          | Two-way Google Tasks sync engine + move/clear jobs |
-| `src/bnotes.[ch]`          | Records integration (via its CLI, never its database) |
+| `src/bnotes.[ch]`          | Records CLI wrapper (never its database) |
+| `src/bnsync.[ch]`          | Records action-item mirror: worker pass, uid identity, bulk write-back |
 | `src/http.[ch]`            | Small libcurl wrapper (blocking; worker threads only) |
 | `src/json.[ch]`            | Minimal JSON parser/serializer (no external JSON dependency) |
 | `icons/`                   | Bundled PNG toolbar icons + app logo; `icons/theme/hicolor/` holds SVG arrows for crisp HiDPI tree expanders |
@@ -64,7 +65,10 @@ CREATE TABLE tasks (
   etag         TEXT,                          -- push guard (If-Match)
   web_link     TEXT,                          -- Google mirror fields...
   glinks       TEXT,                          --   links[] as JSON
-  assigned     TEXT                           --   assignmentInfo origin
+  assigned     TEXT,                          --   assignmentInfo origin
+  bn_uid       INTEGER NOT NULL DEFAULT 0,    -- Records item identity
+  bn_done      INTEGER NOT NULL DEFAULT 0,    -- what Records last held:
+  bn_due       INTEGER NOT NULL DEFAULT 0     --   the bulk-push baseline
 );
 
 CREATE TABLE attachments (
@@ -75,17 +79,26 @@ CREATE TABLE attachments (
 );
 
 CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE bn_pins     (ref TEXT PRIMARY KEY);  -- pinned Records items
-CREATE TABLE bn_priority (ref TEXT PRIMARY KEY);  -- high-priority BN items
+CREATE TABLE bn_deleted  (uid INTEGER PRIMARY KEY); -- mirror tasks the
+                                                    -- user deleted here
+CREATE TABLE bn_pins     (ref TEXT PRIMARY KEY);  -- LEGACY pre-mirror
+CREATE TABLE bn_priority (ref TEXT PRIMARY KEY);  -- LEGACY pre-mirror
 
-CREATE INDEX idx_tasks_list ON tasks(list_id, parent_id, position);
+CREATE INDEX idx_tasks_list   ON tasks(list_id, parent_id, position);
+CREATE INDEX idx_tasks_bn_uid ON tasks(bn_uid);
 ```
 
-The schema version rides in `PRAGMA user_version` (currently **5**);
+`idx_tasks_bn_uid` is created AFTER the guarded migrations, not with the
+schema above: on an existing file `bn_uid` does not exist until the
+`ALTER` has run, and a failing `CREATE INDEX` in that batch would take
+the rest of the schema setup down with it.
+
+The schema version rides in `PRAGMA user_version` (currently **6**);
 older files are migrated in place at open.  Migration history: v2 adds
 `lists.emoji`; v3 adds five Google-mirror task columns (`completed_at`,
 `etag`, `web_link`, `glinks`, `assigned`); v4 adds `tasks.priority`;
-v5 adds `lists.group_id`.
+v5 adds `lists.group_id`; v6 adds the three Records-mirror task columns
+(`bn_uid`, `bn_done`, `bn_due`).
 
 Semantics worth knowing when querying directly:
 

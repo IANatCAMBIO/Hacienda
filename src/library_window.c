@@ -3,7 +3,7 @@
  * =========================================================================== */
 
 #include "library_window.h"
-#include "bnotes.h"
+#include "bnsync.h"
 #include "editor_window.h"
 #include "gtasks.h"
 #include "oauth.h"
@@ -24,7 +24,8 @@
 enum {
     SB_KIND_PINNED = 0,              /* "Pinned Tasks" virtual list         */
     SB_KIND_ALL,                     /* "All Tasks" virtual list            */
-    SB_KIND_BN_ACTIONS,              /* Records "Action Items" list         */
+    SB_KIND_BN_ACTIONS,              /* "Action Items" — a filtered view
+                                      * of every mirrored Records item      */
     SB_KIND_TODAY,                   /* "Due Today" virtual list            */
     SB_KIND_FORECAST,                /* "Weekly Forecast" virtual list      */
     SB_KIND_HEADER,                  /* the "Lists" section header          */
@@ -43,14 +44,12 @@ enum {
 
 /* Task pane store columns.                                                  */
 enum {
-    TL_ID = 0,                       /* gint64: task id (0 for Records
-                                      * action rows)                        */
+    TL_ID = 0,                       /* gint64: task id (0 only for the
+                                      * forecast's placeholder rows)        */
     TL_DONE,                         /* gboolean                            */
     TL_DESC,                         /* gchar*: the tall markup cell        */
     TL_DUE,                          /* gchar*: formatted due date ("")     */
     TL_DUE_RAW,                      /* gint64: due timestamp (sort/tint)   */
-    TL_REF,                          /* gchar*: Records "NOTEID:ORD"
-                                      * address, NULL for real tasks        */
     TL_TITLE,                        /* gchar*: raw task title (sort key)   */
     TL_N_COLS
 };
@@ -525,7 +524,6 @@ scroll_keep_queue(GtkWidget *view)
  * refresh_sidebar() — rebuild the sidebar and restore the selection.
  * ------------------------------------------------------------------------- */
 
-static gint64   bn_embed_list(BtLibrary *lw);
 static void     task_view_apply_manual_order(BtLibrary *lw);
 static void     task_manual_sort_apply(BtLibrary *lw);
 static gchar   *list_order_key(gint64 list_id);
@@ -535,13 +533,24 @@ static void     on_menu_toggle_manual_sort(GtkWidget *, gpointer);
 static void     on_menu_toggle_sidebar(GtkWidget *, gpointer);
 
 /* sidebar_show_pinned() — whether the Pinned Tasks meta row should
- * exist: any pinned task, or (while the integration is on) any pinned
- * Records action item.                                                      */
+ * exist: any pinned task.  Mirrored Records items are ordinary tasks
+ * carrying the ordinary `pinned` flag, so no separate check remains.       */
 static gboolean
 sidebar_show_pinned(BtLibrary *lw)
 {
-    return bt_db_has_pinned(lw->app->db,
-        bt_app_config_get_bool("blue_notes_sync", FALSE));
+    return bt_db_has_pinned(lw->app->db, FALSE);
+}
+
+/* sidebar_show_actions() — whether the "Action Items" meta row should
+ * exist: the Records integration on, and the row not switched off in
+ * Settings.  It is a FILTERED VIEW over every mirrored task, wherever
+ * each one actually lives, which is why it sits with the other meta
+ * rows instead of among the real lists.                                    */
+static gboolean
+sidebar_show_actions(void)
+{
+    return bt_app_config_get_bool("blue_notes_sync", FALSE) &&
+           bt_app_config_get_bool("records_meta_row", TRUE);
 }
 
 static void
@@ -597,15 +606,18 @@ refresh_sidebar(BtLibrary *lw)
         gint kind;
         const gchar *label;
     } metas[] = {                    /* emoji + two spaces, like lists      */
-        { SB_KIND_PINNED,   "\xe2\xad\x90\xef\xb8\x8f  Favorites" },
-        { SB_KIND_ALL,      "\xf0\x9f\x94\xae  All Tasks" },
-        { SB_KIND_TODAY,    "\xe2\x98\x80\xef\xb8\x8f  Due Today" },
+        { SB_KIND_PINNED,     "\xe2\xad\x90\xef\xb8\x8f  Favorites" },
+        { SB_KIND_ALL,        "\xf0\x9f\x94\xae  All Tasks" },
+        { SB_KIND_BN_ACTIONS, "\xe2\x9d\x97\xef\xb8\x8f  Action Items" },
+        { SB_KIND_TODAY,      "\xe2\x98\x80\xef\xb8\x8f  Due Today" },
         { SB_KIND_FORECAST, "\xf0\x9f\x8c\xa4\xef\xb8\x8f  Weekly Forecast" },
     };
     lw->pinned_row_shown = sidebar_show_pinned(lw);
     for (gsize i = 0; i < G_N_ELEMENTS(metas); i++) {
         if (metas[i].kind == SB_KIND_PINNED && !lw->pinned_row_shown)
             continue;                /* hidden while nothing is pinned      */
+        if (metas[i].kind == SB_KIND_BN_ACTIONS && !sidebar_show_actions())
+            continue;                /* integration or row off in Settings  */
         if (metas[i].kind == SB_KIND_FORECAST &&
             !bt_app_config_get_bool("weekly_forecast", TRUE))
             continue;                /* disabled in Settings                */
@@ -709,26 +721,6 @@ refresh_sidebar(BtLibrary *lw)
     bt_ptr_array_free_groups(groups);
     bt_ptr_array_free_lists(lists);
 
-    /* The Records Action Items list sits among the real lists (but
-     * cannot be deleted or hold new tasks); it exists only while the
-     * integration is enabled in Settings AND the items are not embedded
-     * in a regular list (blue_notes_embed_list).                            */
-    if (bt_app_config_get_bool("blue_notes_sync", FALSE) &&
-        bn_embed_list(lw) == 0) {
-        gtk_tree_store_append(lw->sb_store, &iter, &header);
-        gtk_tree_store_set(lw->sb_store, &iter,
-                           SB_KIND, SB_KIND_BN_ACTIONS,
-                           SB_ID, (gint64)0,
-                           SB_LABEL, "\xe2\x9d\x97\xef\xb8\x8f  "
-                                     "Action Items (from Records)",
-                           SB_WEIGHT, PANGO_WEIGHT_NORMAL,
-                           -1);
-        if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
-            selected = iter;
-            have_selected = TRUE;
-        }
-    }
-
     /* Reselect: same list/group, or same meta row, or the first list.      */
     GtkTreeSelection *sel =
         gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->sb_view));
@@ -763,8 +755,7 @@ refresh_sidebar(BtLibrary *lw)
      * selection lives inside (a selection must be visible).                 */
     if (lists_expanded ||
         (have_selected && (lw->sel_kind == SB_KIND_LIST ||
-                           lw->sel_kind == SB_KIND_GROUP ||
-                           lw->sel_kind == SB_KIND_BN_ACTIONS))) {
+                           lw->sel_kind == SB_KIND_GROUP))) {
         GtkTreePath *p = gtk_tree_model_get_path(model, &header);
         gtk_tree_view_expand_row(GTK_TREE_VIEW(lw->sb_view), p, FALSE);
         gtk_tree_path_free(p);
@@ -778,161 +769,6 @@ refresh_sidebar(BtLibrary *lw)
     }
     lw->sb_populated = TRUE;
     lw->populating = FALSE;
-}
-
-/* ---------------------------------------------------------------------------
- * Records rows — fetched ONCE per refresh through the records CLI
- * (see bnotes.h) and appended in filtered passes, so high-priority
- * items can float above other rows without spawning the CLI twice.
- * ------------------------------------------------------------------------- */
-typedef struct {
-    GPtrArray  *acts;                /* BtNoteAction* items (NULL until
-                                      * bn_rows_fetch succeeds)             */
-    GHashTable *pins;                /* pinned refs (local bn_pins)         */
-    GHashTable *prios;               /* high-priority refs (bn_priority)    */
-} BnRows;
-
-/* bn_rows_fetch() — run the CLI and load the local pin/priority sets.
- * FALSE on CLI failure (the error is posted to the status bar).             */
-static gboolean
-bn_rows_fetch(BtLibrary *lw, BnRows *br)
-{
-    gchar *err = NULL;
-    br->acts = bt_bnotes_actions(&err);
-    if (br->acts == NULL) {
-        bt_app_status(lw->app, "%s", err);
-        g_free(err);
-        return FALSE;
-    }
-    br->pins  = bt_db_bn_pins(lw->app->db);
-    br->prios = bt_db_bn_priorities(lw->app->db);
-    return TRUE;
-}
-
-static void
-bn_rows_clear(BnRows *br)
-{
-    if (br->acts == NULL)
-        return;
-    g_hash_table_destroy(br->pins);
-    g_hash_table_destroy(br->prios);
-    bt_bnotes_actions_free(br->acts);
-    br->acts = NULL;
-}
-
-/* ---------------------------------------------------------------------------
- * append_bn_items() — append fetched Records action items to the
- * task pane.  Rows carry their "NOTEID:ORD" address in TL_REF and 0 in
- * TL_ID; pin and priority state are Lists-local (bn_pins /
- * bn_priority — Records knows neither concept).  The dimmed
- * "❗ Action Items · note N" line marks where the item really lives.
- *   only_pinned      — skip unpinned items (the Pinned Tasks view).
- *   priority_filter  — 1 = only high-priority items, 0 = only normal,
- *                      -1 = everything (callers make a 1-then-0 pass
- *                      pair to float priority items).
- * Returns the number of rows appended.
- * ------------------------------------------------------------------------- */
-static gint
-append_bn_items(BtLibrary *lw, const BnRows *br, gboolean only_pinned,
-                gint priority_filter)
-{
-    gboolean bold = bt_app_config_get_bool("bold_task_titles", FALSE);
-    gboolean show_done = bt_app_config_get_bool("show_completed", TRUE);
-    gint shown = 0;
-    for (guint i = 0; i < br->acts->len; i++) {
-        BtNoteAction *na = g_ptr_array_index(br->acts, i);
-        gboolean pinned = g_hash_table_contains(br->pins, na->ref);
-        gboolean prio   = g_hash_table_contains(br->prios, na->ref);
-        if (only_pinned && !pinned)
-            continue;
-        if (priority_filter >= 0 && prio != (priority_filter != 0))
-            continue;
-        if (!show_done && na->done)
-            continue;
-        /* CLI output, so its UTF-8 is no more guaranteed than the DB's —
-         * same blank-row failure mode if a bad byte reaches Pango.          */
-        gchar *esc = markup_escape_db(
-            *na->text != '\0' ? na->text : "(empty item)");
-        gchar *note = g_strndup(na->ref, strcspn(na->ref, ":"));
-        const gchar *open  = bold ? (na->done ? "<b><s>" : "<b>")
-                                  : (na->done ? "<s>" : "");
-        const gchar *close = bold ? (na->done ? "</s></b>" : "</b>")
-                                  : (na->done ? "</s>" : "");
-        const gchar *prio_pfx   = prio   ? "\xf0\x9f\x9a\xa8  " : "";
-        const gchar *pinned_pfx = pinned ? "\xe2\xad\x90\xef\xb8\x8f  " : "";
-        gchar *desc = g_strdup_printf(
-            "%s%s%s%s%s\n<small><span alpha=\"60%%\">\xe2\x9d\x97 Action "
-            "Items \xc2\xb7 note %s</span></small>",
-            prio_pfx, pinned_pfx, open, esc, close, note);
-        gchar *due = bt_due_format(na->due);
-        GtkTreeIter iter;
-        gtk_list_store_append(lw->task_store, &iter);
-        gtk_list_store_set(lw->task_store, &iter,
-                           TL_ID, (gint64)0,
-                           TL_DONE, na->done,
-                           TL_DESC, desc,
-                           TL_DUE, due,
-                           TL_DUE_RAW, na->due,
-                           TL_REF, na->ref,
-                           TL_TITLE, na->text,
-                           -1);
-        g_free(desc);
-        g_free(due);
-        g_free(esc);
-        g_free(note);
-        shown++;
-    }
-    return shown;
-}
-
-/* bn_embed_list() — the list id Records action items are embedded in
- * ("blue_notes_embed_list", Settings), or 0 when they live in their own
- * sidebar list.  0 while the integration is off; a stale id (the list
- * was deleted) also reads as 0, so the Action Items row comes back
- * rather than the items vanishing.                                          */
-static gint64
-bn_embed_list(BtLibrary *lw)
-{
-    if (!bt_app_config_get_bool("blue_notes_sync", FALSE))
-        return 0;
-    gchar *v = bt_app_config_get("blue_notes_embed_list");
-    gint64 id = v != NULL ? g_ascii_strtoll(v, NULL, 10) : 0;
-    g_free(v);
-    if (id != 0) {
-        BtList *l = bt_db_list_get(lw->app->db, id);
-        if (l == NULL || l->deleted)
-            id = 0;
-        bt_list_free(l);
-    }
-    return id;
-}
-
-/* refresh_bn_actions() — the Action Items list view: every item, high
- * priority first, plus the status-bar location line.                        */
-static void
-refresh_bn_actions(BtLibrary *lw)
-{
-    BnRows br = { NULL, NULL, NULL };
-    if (!bn_rows_fetch(lw, &br)) {
-        gtk_label_set_text(GTK_LABEL(lw->status_left),
-                           "Action Items (Records)");
-        return;
-    }
-    gint n = append_bn_items(lw, &br, FALSE, 1)
-           + append_bn_items(lw, &br, FALSE, 0);
-    bn_rows_clear(&br);
-    /* Same manual-order restore refresh_tasks does for the other views —
-     * this one reaches refresh_bn_actions and returns before getting
-     * there, so without this the drag order written to
-     * manual_order_bn_actions was never read back and every refresh
-     * (a ticked checkbox is enough) threw the order away.                   */
-    if (lw->manual_sort)
-        task_view_apply_manual_order(lw);
-    gchar *loc = g_strdup_printf(
-        "Action Items (from Records) - %d item%s",
-        n, n == 1 ? "" : "s");
-    gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
-    g_free(loc);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1134,11 +970,6 @@ refresh_tasks(BtLibrary *lw)
     scroll_keep_queue(lw->task_view);
     gtk_list_store_clear(lw->task_store);
 
-    if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
-        refresh_bn_actions(lw);
-        return;
-    }
-
     /* Collect the tasks of the current view.                                */
     GPtrArray *tasks;                /* BtTask* rows to show                */
     gboolean virtual_view = TRUE;    /* show the "in <list>" line           */
@@ -1151,6 +982,14 @@ refresh_tasks(BtLibrary *lw)
     case SB_KIND_ALL:
         tasks = bt_db_tasks_all_visible(lw->app->db);
         view_name = "All Tasks";
+        break;
+    case SB_KIND_BN_ACTIONS:
+        /* A FILTERED view over the mirrored Records items, wherever
+         * each one lives — not a list of its own.  virtual_view stays
+         * TRUE so every row keeps its "in <list>" line, the only thing
+         * that says where the task actually sits.                          */
+        tasks = bt_db_tasks_bn_mirror(lw->app->db);
+        view_name = "Action Items";
         break;
     case SB_KIND_TODAY: {
         gint64 lo, hi;
@@ -1168,37 +1007,10 @@ refresh_tasks(BtLibrary *lw)
         break;
     }
 
-    /* Records action items embedded in THIS list (Settings'
-     * blue_notes_embed_list): high-priority items go above the tasks,
-     * the rest come after them.                                             */
-    BnRows br = { NULL, NULL, NULL };
-    gboolean embed = lw->sel_kind == SB_KIND_LIST &&
-                     lw->sel_id == bn_embed_list(lw) &&
-                     bn_rows_fetch(lw, &br);
-    gint bn_shown = 0;               /* embedded action items appended      */
-    if (embed)
-        bn_shown += append_bn_items(lw, &br, FALSE, 1);
-
     TaskRowCtx ctx;                  /* shared lookups (see above)          */
     task_row_ctx_init(lw, &ctx, virtual_view);
-    guint appended = append_task_rows(lw->task_store, tasks, &ctx);
+    guint shown = append_task_rows(lw->task_store, tasks, &ctx);
     task_row_ctx_clear(&ctx);
-
-    if (embed) {
-        bn_shown += append_bn_items(lw, &br, FALSE, 0);
-        bn_rows_clear(&br);
-    }
-
-    /* Pinned Tasks also gathers pinned Records action items (their
-     * pin state is local — the bn_pins table), high priority first.         */
-    guint shown = appended;          /* rows in the pane (for the status)   */
-    if (lw->sel_kind == SB_KIND_PINNED &&
-        bt_app_config_get_bool("blue_notes_sync", FALSE) &&
-        bn_rows_fetch(lw, &br)) {
-        shown += (guint)(append_bn_items(lw, &br, TRUE, 1) +
-                         append_bn_items(lw, &br, TRUE, 0));
-        bn_rows_clear(&br);
-    }
 
     /* Reorder to match the saved manual order (no-op when mode is off).       */
     if (lw->manual_sort)
@@ -1209,10 +1021,9 @@ refresh_tasks(BtLibrary *lw)
                        : bt_db_list_get(lw->app->db, lw->sel_id);
     const gchar *where = virtual_view    ? view_name
                        : sel_list != NULL ? sel_list->name : "?";
-    gchar *loc = bn_shown > 0
-        ? g_strdup_printf("%s - %u task%s + %d action item%s",
-                          where, appended, appended == 1 ? "" : "s",
-                          bn_shown, bn_shown == 1 ? "" : "s")
+    gchar *loc = lw->sel_kind == SB_KIND_BN_ACTIONS
+        ? g_strdup_printf("%s - %u action item%s",
+                          where, shown, shown == 1 ? "" : "s")
         : g_strdup_printf("%s - %u task%s",
                           where, shown, shown == 1 ? "" : "s");
     gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
@@ -1497,8 +1308,8 @@ selected_task_ids(BtLibrary *lw)
     return ids;
 }
 
-/* on_task_activated() — double-click opens the editor window; Records
- * rows open the reduced editor (done + due editable).                       */
+/* on_task_activated() — double-click opens the editor window.  Mirrored
+ * Records items are ordinary tasks, so they open the ordinary editor.      */
 static void
 on_task_activated(GtkTreeView *view, GtkTreePath *path,
                   GtkTreeViewColumn *col, gpointer data)
@@ -1509,16 +1320,6 @@ on_task_activated(GtkTreeView *view, GtkTreePath *path,
     GtkTreeIter iter;
     if (!gtk_tree_model_get_iter(model, &iter, path))
         return;
-    /* A Records row (they carry a ref and id 0 — the Action Items
-     * list AND pinned items in the Pinned Tasks view) opens the reduced
-     * Records editor.                                                       */
-    gchar *ref = NULL;
-    gtk_tree_model_get(model, &iter, TL_REF, &ref, -1);
-    if (ref != NULL) {
-        bt_editor_open_bnote(lw->app, ref);
-        g_free(ref);
-        return;
-    }
     gint64 id;
     gtk_tree_model_get(model, &iter, TL_ID, &id, -1);
     if (id == 0)                     /* the forecast's "No tasks due"
@@ -1674,25 +1475,10 @@ on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
     gtk_tree_model_get(model, &iter,
                        TL_ID, &id, TL_DONE, &done, TL_TITLE, &title, -1);
 
-    /* Records rows (any view they appear in) write back through the
-     * records CLI, which strikes/un-strikes the '!' line in the note
-     * itself.                                                               */
-    gchar *ref = NULL;
-    gtk_tree_model_get(model, &iter, TL_REF, &ref, -1);
-    if (ref != NULL) {
-        gchar *err = NULL;
-        if (bt_bnotes_action_set_done(ref, !done, &err)) {
-            bt_app_status(lw->app, "Updated in Records");
-            full_refresh(lw);        /* incl. an open editor of this ref    */
-        } else {
-            bt_app_status(lw->app, "%s",
-                          err != NULL ? err : "update failed");
-        }
-        g_free(err);
-        g_free(ref);
-        g_free(title);
-        return;
-    }
+    /* A mirrored Records item is written like any other task: the tick
+     * lands in the database now and rides to Records with the next
+     * mirror pass (bnsync.h) — that is what makes the write-back bulk
+     * rather than one CLI spawn per click.                                 */
     bt_db_task_set_done(lw->app->db, id, !done);
 
     /* When hiding completed tasks and a task is just being ticked done,
@@ -2320,8 +2106,8 @@ on_edit_list(GtkWidget *w, gpointer data)
     (void)w;
     BtLibrary *lw = data;
     if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
-        bt_app_status(lw->app,
-                      "This list mirrors Records and cannot be edited");
+        bt_app_status(lw->app, "Action Items is a view, not a list \xe2\x80\x94 "
+                      "edit the list each item lives in");
         return;
     }
     gint64 id = selected_list_id(lw);
@@ -2389,9 +2175,8 @@ on_delete_list(GtkWidget *w, gpointer data)
         return;
     }
     if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
-        bt_app_status(lw->app, "This list mirrors Records and cannot "
-                      "be deleted \xe2\x80\x94 disable it in File \xe2\x86"
-                      "\x92 Settings\xe2\x80\xa6");
+        bt_app_status(lw->app, "Action Items is a view, not a list \xe2\x80\x94 "
+                      "hide it in File \xe2\x86\x92 Settings\xe2\x80\xa6");
         return;
     }
     gint64 id = selected_list_id(lw);
@@ -2464,11 +2249,9 @@ on_delete_task(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtLibrary *lw = data;
-    if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
-        bt_app_status(lw->app, "Records items are deleted by editing "
-                      "the note in Records");
-        return;
-    }
+    /* Mirrored Records items delete like any other task: the row is
+     * tombstoned and its uid parked in bn_deleted, so the next mirror
+     * pass does not helpfully re-create what was just deleted.             */
     GArray *ids = selected_task_ids(lw);
     if (ids->len == 0) {
         bt_app_status(lw->app, "Select a task to delete");
@@ -2668,58 +2451,11 @@ on_ctx_move(GtkWidget *item, gpointer data)
     }
 }
 
-/* on_ctx_bn_set_pinned() / on_ctx_bn_set_priority() — pin/priority actions
- * for embedded Records rows; the ref rides on the item as "bt-ref",
- * the boolean as "bt-flag".                                                  */
-static void
-on_ctx_bn_set_done(GtkWidget *item, gpointer data)
-{
-    BtLibrary *lw = data;
-    const gchar *ref = g_object_get_data(G_OBJECT(item), "bt-ref");
-    gboolean done = GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(item), "bt-flag"));
-    gchar *err = NULL;
-    if (bt_bnotes_action_set_done(ref, done, &err)) {
-        bt_app_status(lw->app, "Updated in Records");
-        full_refresh(lw);
-    } else {
-        bt_app_status(lw->app, "%s",
-                      err != NULL ? err : "update failed");
-    }
-    g_free(err);
-}
-
-static void
-on_ctx_bn_set_pinned(GtkWidget *item, gpointer data)
-{
-    BtLibrary *lw = data;
-    const gchar *ref = g_object_get_data(G_OBJECT(item), "bt-ref");
-    gboolean pinned = GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(item), "bt-flag"));
-    bt_db_bn_pin_set(lw->app->db, ref, pinned);
-    full_refresh(lw);
-    bt_app_status(lw->app, "%s action item",
-                  pinned ? "Added to Favorites" : "Removed from Favorites");
-}
-
-static void
-on_ctx_bn_set_priority(GtkWidget *item, gpointer data)
-{
-    BtLibrary *lw = data;
-    const gchar *ref = g_object_get_data(G_OBJECT(item), "bt-ref");
-    gboolean priority = GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(item), "bt-flag"));
-    bt_db_bn_priority_set(lw->app->db, ref, priority);
-    full_refresh(lw);
-    bt_app_status(lw->app, "%s high priority on action item",
-                  priority ? "Set" : "Cleared");
-}
-
 /* ---------------------------------------------------------------------------
  * on_task_button_press() — right-click on a task row: keep an existing
  * multi-selection when clicked inside it (else select just that row)
  * and show the context menu, whose actions apply to the whole
- * selection.  Not offered in the Records view.
+ * selection.
  * ------------------------------------------------------------------------- */
 static gboolean
 on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
@@ -2738,13 +2474,9 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
                 GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
                 GtkTreeIter it;
                 gint64 id = 0;
-                gchar *ref = NULL;
                 if (gtk_tree_model_get_iter(model, &it, path))
-                    gtk_tree_model_get(model, &it,
-                                       TL_ID, &id, TL_REF, &ref, -1);
-                gboolean is_bn = (ref != NULL);
-                g_free(ref);
-                if (id != 0 || is_bn) {
+                    gtk_tree_model_get(model, &it, TL_ID, &id, -1);
+                if (id != 0) {
                     lw->drag_active = TRUE;
                     if (lw->drag_row_ref != NULL)
                         gtk_tree_row_reference_free(lw->drag_row_ref);
@@ -2766,7 +2498,7 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
         event->window != gtk_tree_view_get_bin_window(GTK_TREE_VIEW(view)))
         return on_column_header_press(view, event, lw);
 
-    if (event->button != 3 || lw->sel_kind == SB_KIND_BN_ACTIONS)
+    if (event->button != 3)
         return FALSE;
 
     GtkTreePath *path = NULL;
@@ -2785,63 +2517,7 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
     GArray *ids = selected_task_ids(lw);
     if (ids->len == 0) {
         g_array_unref(ids);
-        /* The row may be an embedded Records item (TL_REF set, id 0).
-         * Those are excluded from selected_task_ids; show a limited menu
-         * with just Pin/Unpin and High Priority (both local-only).          */
-        GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
-        GtkTreeSelection *sel2 =
-            gtk_tree_view_get_selection(GTK_TREE_VIEW(view));
-        GList *rows = gtk_tree_selection_get_selected_rows(sel2, &model);
-        if (rows == NULL)
-            return FALSE;
-        GtkTreeIter iter;
-        gchar *ref = NULL;
-        gboolean row_done = FALSE;
-        if (gtk_tree_model_get_iter(model, &iter, rows->data))
-            gtk_tree_model_get(model, &iter,
-                               TL_REF, &ref, TL_DONE, &row_done, -1);
-        g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
-        if (ref == NULL)
-            return FALSE;
-        gboolean pinned   = bt_db_bn_pin_get(lw->app->db, ref);
-        gboolean priority = bt_db_bn_priority_get(lw->app->db, ref);
-        GtkWidget *bn_menu = gtk_menu_new();
-        gtk_menu_attach_to_widget(GTK_MENU(bn_menu), view, NULL);
-        g_signal_connect(bn_menu, "selection-done",
-                         G_CALLBACK(gtk_widget_destroy), NULL);
-        GtkWidget *done_item = gtk_menu_item_new_with_label(
-            row_done ? "Mark Incomplete" : "Mark Complete");
-        g_object_set_data_full(G_OBJECT(done_item), "bt-ref",
-                               g_strdup(ref), g_free);
-        g_object_set_data(G_OBJECT(done_item), "bt-flag",
-                          GINT_TO_POINTER(!row_done));
-        g_signal_connect(done_item, "activate",
-                         G_CALLBACK(on_ctx_bn_set_done), lw);
-        gtk_menu_shell_append(GTK_MENU_SHELL(bn_menu), done_item);
-        gtk_menu_shell_append(GTK_MENU_SHELL(bn_menu),
-                              gtk_separator_menu_item_new());
-        GtkWidget *pin_item = gtk_menu_item_new_with_label(
-            pinned ? "Remove from Favorites" : "Add to Favorites");
-        g_object_set_data_full(G_OBJECT(pin_item), "bt-ref",
-                               g_strdup(ref), g_free);
-        g_object_set_data(G_OBJECT(pin_item), "bt-flag",
-                          GINT_TO_POINTER(!pinned));
-        g_signal_connect(pin_item, "activate",
-                         G_CALLBACK(on_ctx_bn_set_pinned), lw);
-        gtk_menu_shell_append(GTK_MENU_SHELL(bn_menu), pin_item);
-        GtkWidget *pri_item = gtk_menu_item_new_with_label(
-            priority ? "Clear High Priority" : "Set High Priority");
-        g_object_set_data_full(G_OBJECT(pri_item), "bt-ref",
-                               g_strdup(ref), g_free);
-        g_object_set_data(G_OBJECT(pri_item), "bt-flag",
-                          GINT_TO_POINTER(!priority));
-        g_signal_connect(pri_item, "activate",
-                         G_CALLBACK(on_ctx_bn_set_priority), lw);
-        gtk_menu_shell_append(GTK_MENU_SHELL(bn_menu), pri_item);
-        gtk_widget_show_all(bn_menu);
-        gtk_menu_popup_at_pointer(GTK_MENU(bn_menu), (GdkEvent *)event);
-        g_free(ref);
-        return TRUE;
+        return FALSE;
     }
     gboolean single = ids->len == 1;
     BtTask *t = single
@@ -2993,12 +2669,19 @@ sync_after_signin(gboolean ok, const gchar *error, gpointer data)
 
 /* on_sync() — the toolbar Sync button.  Sign-in is per session: when the
  * in-memory token is missing/expired this re-runs the browser flow first
- * (usually a silent redirect), then syncs.                                  */
+ * (usually a silent redirect), then syncs.
+ *
+ * The Records mirror runs FIRST and on its own worker: it is the cheap
+ * local pass, and going first means anything it pulls in from Records
+ * is already in the database when the Google pass reads it, so a new
+ * action item reaches Google in one press rather than two.                 */
 static void
 on_sync(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtLibrary *lw = data;
+    if (bt_app_config_get_bool("blue_notes_sync", FALSE))
+        bt_bnsync_start(lw->app, lw->app->db->path, NULL, NULL);
     if (!bt_app_config_get_bool("google_sync_enabled", TRUE)) {
         bt_app_status(lw->app, "Google Tasks sync is disabled \xe2\x80\x94 "
                       "enable it in File \xe2\x86\x92 Settings\xe2\x80\xa6");
@@ -3167,7 +2850,10 @@ on_open_db(GtkWidget *widget, gpointer user_data)
     g_free(old_path);
     g_free(file_path);
 
+    /* Both timers carry the db path they were armed with, so a switch
+     * must re-arm BOTH or the mirror keeps writing to the old file.       */
     bt_sync_auto_start(app, app->db->path);
+    bt_bnsync_auto_start(app, app->db->path);
     bt_app_notify_changed(app);
     bt_app_status(app, "Opened %s", app->db->path);
 }
@@ -3519,7 +3205,7 @@ forecast_day_section(BtLibrary *lw, gint d)
     lw->day_stores[d] = gtk_list_store_new(TL_N_COLS, G_TYPE_INT64,
                                            G_TYPE_BOOLEAN, G_TYPE_STRING,
                                            G_TYPE_STRING, G_TYPE_INT64,
-                                           G_TYPE_STRING, G_TYPE_STRING);
+                                           G_TYPE_STRING);
     lw->day_views[d] = gtk_tree_view_new_with_model(
         GTK_TREE_MODEL(lw->day_stores[d]));
     g_object_unref(lw->day_stores[d]);
@@ -3652,9 +3338,10 @@ view_order_key(BtLibrary *lw)
 }
 
 /* task_view_save_manual_order() — serialize the task pane's current row
- * order to config as a comma-separated list.  Real task rows are encoded as
- * their numeric id; BN rows as their "NOTEID:ORD" ref (which contains a
- * colon, making the two forms unambiguous on reload).                         */
+ * order to config as a comma-separated list of task ids.  Every row is a
+ * real task now (mirrored Records items included), so the old
+ * "NOTEID:ORD" token form is gone; a saved order still holding those
+ * tokens simply finds no match and those entries drop out.                  */
 static void
 task_view_save_manual_order(BtLibrary *lw)
 {
@@ -3666,17 +3353,11 @@ task_view_save_manual_order(BtLibrary *lw)
     if (gtk_tree_model_get_iter_first(model, &iter)) {
         do {
             gint64 id;
-            gchar *ref;
-            gtk_tree_model_get(model, &iter,
-                               TL_ID, &id, TL_REF, &ref, -1);
+            gtk_tree_model_get(model, &iter, TL_ID, &id, -1);
             if (id != 0) {
                 if (s->len > 0) g_string_append_c(s, ',');
                 g_string_append_printf(s, "%" G_GINT64_FORMAT, id);
-            } else if (ref != NULL) {
-                if (s->len > 0) g_string_append_c(s, ',');
-                g_string_append(s, ref);
             }
-            g_free(ref);
         } while (gtk_tree_model_iter_next(model, &iter));
     }
     bt_app_config_set(key, s->str);
@@ -3699,45 +3380,33 @@ task_view_apply_manual_order(BtLibrary *lw)
     gint n = gtk_tree_model_iter_n_children(model, NULL);
     if (n <= 1) { g_free(saved); return; }
 
-    /* Snapshot current row IDs and BN refs (in display order). */
+    /* Snapshot current row IDs (in display order). */
     gint64  *ids  = g_new(gint64, n);
-    gchar  **refs = g_new0(gchar *, n);
     GtkTreeIter  iter;
     gtk_tree_model_get_iter_first(model, &iter);
     for (gint i = 0; i < n; i++) {
-        gtk_tree_model_get(model, &iter,
-                           TL_ID, &ids[i], TL_REF, &refs[i], -1);
+        gtk_tree_model_get(model, &iter, TL_ID, &ids[i], -1);
         gtk_tree_model_iter_next(model, &iter);
     }
 
     /* Build new_order: saved entries first (in saved sequence), remainder
-     * (new rows not yet in saved list) appended at tail.  Tokens containing
-     * a colon are BN refs (NOTEID:ORD); pure-digit tokens are task ids.      */
+     * (new rows not yet in saved list) appended at tail.  A pre-mirror
+     * order may still hold "NOTEID:ORD" tokens; they parse to 0, match
+     * nothing, and are skipped.                                             */
     gint     *new_order = g_new(gint, n);
     gboolean *placed    = g_new0(gboolean, n);
     gint      fill      = 0;
     gchar   **parts     = g_strsplit(saved, ",", -1);
     g_free(saved);
     for (gint i = 0; parts[i] != NULL; i++) {
-        if (strchr(parts[i], ':') != NULL) {
-            /* BN ref token — match by ref string. */
-            for (gint j = 0; j < n; j++) {
-                if (!placed[j] && refs[j] != NULL &&
-                    strcmp(refs[j], parts[i]) == 0) {
-                    new_order[fill++] = j;
-                    placed[j]         = TRUE;
-                    break;
-                }
-            }
-        } else {
-            /* Integer task id token. */
-            gint64 id = g_ascii_strtoll(parts[i], NULL, 10);
-            for (gint j = 0; j < n; j++) {
-                if (ids[j] == id && !placed[j]) {
-                    new_order[fill++] = j;
-                    placed[j]         = TRUE;
-                    break;
-                }
+        gint64 id = g_ascii_strtoll(parts[i], NULL, 10);
+        if (id == 0)
+            continue;
+        for (gint j = 0; j < n; j++) {
+            if (ids[j] == id && !placed[j]) {
+                new_order[fill++] = j;
+                placed[j]         = TRUE;
+                break;
             }
         }
     }
@@ -3749,8 +3418,6 @@ task_view_apply_manual_order(BtLibrary *lw)
     g_free(new_order);
     g_free(placed);
     g_free(ids);
-    for (gint i = 0; i < n; i++) g_free(refs[i]);
-    g_free(refs);
 }
 
 /* drag_handle_func() — cell data func for the drag handle column.  The row
@@ -3855,40 +3522,12 @@ on_task_drag_motion(GtkWidget *widget, GdkEventMotion *ev, gpointer data)
             if (gtk_tree_model_get_iter(model, &at_it,   at_path) &&
                 gtk_tree_model_get_iter(model, &drag_it, drag_path)) {
                 gint64 at_id;
-                gchar *at_ref = NULL;
-                gtk_tree_model_get(model, &at_it,
-                                   TL_ID, &at_id, TL_REF, &at_ref, -1);
-                gboolean at_is_bn = (at_ref != NULL);
-                g_free(at_ref);
+                gtk_tree_model_get(model, &at_it, TL_ID, &at_id, -1);
 
-                gint64 drag_id;
-                gtk_tree_model_get(model, &drag_it, TL_ID, &drag_id, -1);
-
-                /* When a real task is dragged over a BN row, skip past the
-                 * entire contiguous BN section to the nearest real task so
-                 * real tasks move past them in one step.  When a BN item is
-                 * dragged, every row (real or BN) is a valid swap target.   */
-                if (at_is_bn && drag_id != 0) {
-                    gint drag_idx0 = gtk_tree_path_get_indices(drag_path)[0];
-                    gint at_idx0   = gtk_tree_path_get_indices(at_path)[0];
-                    gboolean going_dn = at_idx0 > drag_idx0;
-                    GtkTreeIter scan = at_it;
-                    while (going_dn ? gtk_tree_model_iter_next(model, &scan)
-                                    : gtk_tree_model_iter_previous(model, &scan)) {
-                        gint64 sid;
-                        gtk_tree_model_get(model, &scan, TL_ID, &sid, -1);
-                        if (sid != 0) {
-                            at_id = sid;
-                            at_is_bn = FALSE;
-                            at_it = scan;
-                            gtk_tree_path_free(at_path);
-                            at_path = gtk_tree_model_get_path(model, &at_it);
-                            break;
-                        }
-                    }
-                }
-
-                if (at_id != 0 || (at_is_bn && drag_id == 0)) {
+                /* Every row carries a real id now — mirrored Records
+                 * items included — so the old "skip past the contiguous
+                 * BN section" dance is gone: any row is a swap target.    */
+                if (at_id != 0) {
                     gint drag_idx = gtk_tree_path_get_indices(drag_path)[0];
                     gint at_idx   = gtk_tree_path_get_indices(at_path)[0];
                     /* Lock the target BEFORE the move; the row ref will
@@ -4293,7 +3932,7 @@ bt_library_window_new(BtApp *app)
     lw->task_store = gtk_list_store_new(TL_N_COLS, G_TYPE_INT64,
                                         G_TYPE_BOOLEAN, G_TYPE_STRING,
                                         G_TYPE_STRING, G_TYPE_INT64,
-                                        G_TYPE_STRING, G_TYPE_STRING);
+                                        G_TYPE_STRING);
     lw->task_view = gtk_tree_view_new_with_model(
         GTK_TREE_MODEL(lw->task_store));
     g_object_unref(lw->task_store);

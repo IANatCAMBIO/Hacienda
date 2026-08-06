@@ -3,7 +3,6 @@
  * =========================================================================== */
 
 #include "editor_window.h"
-#include "bnotes.h"
 #include "json.h"
 #include <string.h>
 
@@ -28,14 +27,13 @@ enum {
  * ------------------------------------------------------------------------- */
 typedef struct {
     BtApp        *app;
-    gint64        task_id;           /* 0 for Records item editors          */
-    gchar        *bn_ref;            /* Records "NOTEID:ORD", or NULL       */
+    gint64        task_id;
     gint64        parent_id;         /* 0 when the task is top-level        */
     GtkWidget    *window;
     GtkWidget    *title_entry;
     GtkWidget    *done_check;
     GtkWidget    *pinned_check;
-    GtkWidget    *priority_check;    /* insensitive in Records editors      */
+    GtkWidget    *priority_check;
     GtkWidget    *due_entry;
     GtkTextBuffer *notes_buf;
     GtkListStore *sub_store;         /* NULL for subtask editors            */
@@ -53,9 +51,6 @@ typedef struct {
                                       * given back on collapse             */
     guint         save_source;       /* pending debounce save, or 0         */
     gboolean      loading;           /* suppress change handlers            */
-    gboolean      bn_done;           /* Records editors: last loaded        */
-    gint64        bn_due;            /* state, so saves only shell the CLI  */
-                                     /* for fields that actually changed    */
 } BtEditor;
 
 /* editor_notify() — tell the library something changed.  Editor saves
@@ -107,9 +102,13 @@ editor_title_refresh(BtEditor *ed)
 
 /* ---------------------------------------------------------------------------
  * editor_save_now() — write every editable field through to the row and
- * notify the library.  The debounce timer funnels here.  Records
- * items write done + due through the records CLI (the only fields it
- * can change); everything else in that editor is insensitive.
+ * notify the library.  The debounce timer funnels here.
+ *
+ * A mirrored Records item saves exactly like any other task: its done
+ * and due land in the database, and the next mirror pass carries them
+ * to Records in bulk (bnsync.h).  The editor no longer shells the CLI
+ * per keystroke-debounce, which is what made every autosave wait on a
+ * process spawn.
  * ------------------------------------------------------------------------- */
 static void
 editor_save_now(BtEditor *ed)
@@ -117,39 +116,6 @@ editor_save_now(BtEditor *ed)
     if (ed->save_source != 0) {
         g_source_remove(ed->save_source);
         ed->save_source = 0;
-    }
-    if (ed->bn_ref != NULL) {
-        gboolean done = gtk_toggle_button_get_active(
-                            GTK_TOGGLE_BUTTON(ed->done_check));
-        gint64 due = editor_due_entry_parse(ed, ed->bn_due);
-        gchar *err = NULL;
-        gboolean ok = TRUE;
-        if (done != ed->bn_done) {   /* only shell the CLI for real changes */
-            ok = bt_bnotes_action_set_done(ed->bn_ref, done, &err);
-            if (ok)
-                ed->bn_done = done;
-        }
-        if (ok && due != ed->bn_due) {
-            g_clear_pointer(&err, g_free);
-            ok = bt_bnotes_action_set_due(ed->bn_ref, due, &err);
-            if (ok)
-                ed->bn_due = due;
-        }
-        if (!ok)
-            bt_app_status(ed->app, "%s",
-                          err != NULL ? err : "Records update failed");
-        g_free(err);
-        /* The pin and priority are LOCAL (bn_pins / bn_priority tables)
-         * — no CLI involved.                                                */
-        bt_db_bn_pin_set(ed->app->db, ed->bn_ref,
-                         gtk_toggle_button_get_active(
-                             GTK_TOGGLE_BUTTON(ed->pinned_check)));
-        bt_db_bn_priority_set(ed->app->db, ed->bn_ref,
-                              gtk_toggle_button_get_active(
-                                  GTK_TOGGLE_BUTTON(ed->priority_check)));
-        editor_title_refresh(ed);
-        editor_notify(ed);
-        return;
     }
     BtTask *t = bt_db_task_get(ed->app->db, ed->task_id);
     if (t == NULL)
@@ -624,47 +590,6 @@ due_entry_refresh(BtEditor *ed, gint64 due)
     g_free(text);
 }
 
-/* editor_load_bnote() — (re)load a Records item editor from the CLI
- * listing.  Returns FALSE when the item disappeared (or the CLI failed)
- * and the window was therefore destroyed — `ed` is gone then.              */
-static gboolean
-editor_load_bnote(BtEditor *ed)
-{
-    gchar *err = NULL;
-    GPtrArray *acts = bt_bnotes_actions(&err);
-    g_free(err);
-    BtNoteAction *found = NULL;      /* our item in the fresh listing       */
-    for (guint i = 0; acts != NULL && i < acts->len; i++) {
-        BtNoteAction *na = g_ptr_array_index(acts, i);
-        if (strcmp(na->ref, ed->bn_ref) == 0) {
-            found = na;
-            break;
-        }
-    }
-    if (found == NULL) {             /* CLI failed or item gone             */
-        bt_bnotes_actions_free(acts);
-        gtk_widget_destroy(ed->window);
-        return FALSE;
-    }
-    ed->loading = TRUE;
-    set_entry_if_differs(ed->title_entry, found->text);
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->done_check),
-                                 found->done);
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->pinned_check),
-                                 bt_db_bn_pin_get(ed->app->db,
-                                                  ed->bn_ref));
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->priority_check),
-                                 bt_db_bn_priority_get(ed->app->db,
-                                                       ed->bn_ref));
-    due_entry_refresh(ed, found->due);
-    ed->bn_done = found->done;       /* the change-detection baseline       */
-    ed->bn_due  = found->due;
-    editor_title_refresh(ed);
-    ed->loading = FALSE;
-    bt_bnotes_actions_free(acts);
-    return TRUE;
-}
-
 /* clear_children() — empty a container.                                     */
 static void
 clear_children(GtkWidget *box)
@@ -761,8 +686,6 @@ google_section_load(BtEditor *ed, const BtTask *t)
 static gboolean
 editor_load(BtEditor *ed)
 {
-    if (ed->bn_ref != NULL)
-        return editor_load_bnote(ed);
     BtTask *t = bt_db_task_get(ed->app->db, ed->task_id);
     if (t == NULL || t->deleted) {
         bt_task_free(t);
@@ -803,11 +726,7 @@ on_editor_destroy(GtkWidget *w, gpointer data)
     BtEditor *ed = data;
     if (ed->save_source != 0)
         editor_save_now(ed);         /* also clears the source              */
-    if (ed->bn_ref != NULL)
-        g_hash_table_remove(ed->app->bn_editors, ed->bn_ref);
-    else
-        g_hash_table_remove(ed->app->editors, &ed->task_id);
-    g_free(ed->bn_ref);
+    g_hash_table_remove(ed->app->editors, &ed->task_id);
     g_free(ed);
 }
 
@@ -916,41 +835,32 @@ editor_has_advanced_content(BtEditor *ed)
 }
 
 /* ---------------------------------------------------------------------------
- * editor_open_common() — build an editor window for a task (bn_ref NULL)
- * or a Records action item (task_id 0).  The Records variant uses
- * the same layout with title/notes/subtasks/attachments disabled — done
- * and due write through the CLI, and pinned is local-only (bn_pins).
+ * editor_open_common() — build an editor window for a task.  Mirrored
+ * Records items are ordinary tasks, so there is no longer a reduced
+ * variant: they get notes, subtasks and attachments like anything else.
  *
  * Every editor gets a Save button under the notes box; `is_new` marks the
  * window as the one the New Task action just opened and adds Cancel beside
  * it, meaning "throw the row away again".
  * ------------------------------------------------------------------------- */
 static void
-editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref,
-                   gboolean is_new)
+editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
 {
-    GtkWindow *existing = bn_ref != NULL
-        ? g_hash_table_lookup(app->bn_editors, bn_ref)
-        : g_hash_table_lookup(app->editors, &task_id);
+    GtkWindow *existing = g_hash_table_lookup(app->editors, &task_id);
     if (existing != NULL) {
         gtk_window_present(existing);
         return;
     }
-    BtTask *t = NULL;                /* the task row (task editors only)    */
-    if (bn_ref == NULL) {
-        t = bt_db_task_get(app->db, task_id);
-        if (t == NULL || t->deleted) {
-            bt_task_free(t);
-            return;
-        }
+    BtTask *t = bt_db_task_get(app->db, task_id);
+    if (t == NULL || t->deleted) {
+        bt_task_free(t);
+        return;
     }
 
     BtEditor *ed = g_new0(BtEditor, 1);
     ed->app       = app;
     ed->task_id   = task_id;
-    ed->bn_ref    = g_strdup(bn_ref);
-    ed->parent_id = t != NULL ? t->parent_id : 0;
-    gboolean bn   = bn_ref != NULL;  /* the reduced Records editor          */
+    ed->parent_id = t->parent_id;
 
     ed->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     /* Height -1 = the layout's NATURAL height, which with the Advanced
@@ -971,12 +881,6 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref,
                                    "Task title");
     g_signal_connect(ed->title_entry, "changed",
                      G_CALLBACK(on_field_changed), ed);
-    if (bn) {                        /* the '!' line's text lives in the
-                                      * note — no CLI rename verb           */
-        gtk_widget_set_sensitive(ed->title_entry, FALSE);
-        gtk_widget_set_tooltip_text(ed->title_entry,
-            "Edit the item text in its Records note");
-    }
     gtk_box_pack_start(GTK_BOX(vbox), ed->title_entry, FALSE, FALSE, 0);
 
     /* Done / Pinned / Due row.                                              */
@@ -992,11 +896,6 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref,
     ed->priority_check = gtk_check_button_new_with_label("High Priority");
     g_signal_connect(ed->priority_check, "toggled",
                      G_CALLBACK(on_toggle_changed), ed);
-    if (bn)                          /* Lists-local, like the pin (the
-                                      * bn_priority table)                   */
-        gtk_widget_set_tooltip_text(ed->priority_check,
-            "Kept in Lists only \xe2\x80\x94 affects ordering here, "
-            "not Records");
     gtk_box_pack_start(GTK_BOX(row), ed->priority_check,
                        FALSE, FALSE, 0);
 
@@ -1062,8 +961,6 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref,
         gtk_scrolled_window_set_max_content_height(
             GTK_SCROLLED_WINDOW(notes_scroll), content);
     }
-    if (bn)
-        gtk_widget_set_sensitive(notes_scroll, FALSE);
     gtk_box_pack_start(GTK_BOX(vbox), notes_scroll, TRUE, TRUE, 0);
 
     /* Subtasks and Attachments live inside the Advanced disclosure — both
@@ -1122,8 +1019,6 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref,
         gtk_box_pack_start(GTK_BOX(btns), move_box, FALSE, FALSE, 0);
         GtkWidget *sub_section =
             make_list_section("Subtasks", ed->sub_view, btns);
-        if (bn)
-            gtk_widget_set_sensitive(sub_section, FALSE);
         gtk_box_pack_start(GTK_BOX(ed->adv_box), sub_section,
                            FALSE, FALSE, 0);
     } else {
@@ -1168,35 +1063,28 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref,
         FALSE, FALSE, 0);
     GtkWidget *att_section =
         make_list_section("Attachments", ed->att_view, att_btns);
-    if (bn)
-        gtk_widget_set_sensitive(att_section, FALSE);
     gtk_box_pack_start(GTK_BOX(ed->adv_box), att_section, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), ed->adv_box, FALSE, FALSE, 0);
 
     /* "From Google" — read-only metadata pulled by the sync (completed
      * time, Docs/Chat assignment, Google-attached links, the deep link
-     * into Google Tasks).  Task editors only; shown only when present.      */
-    if (!bn) {
-        ed->google_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-        GtkWidget *heading = gtk_label_new(NULL);
-        gtk_label_set_markup(GTK_LABEL(heading), "<b>From Google</b>");
-        gtk_widget_set_halign(heading, GTK_ALIGN_START);
-        gtk_box_pack_start(GTK_BOX(ed->google_box), heading,
-                           FALSE, FALSE, 0);
-        ed->google_info = gtk_label_new("");
-        gtk_label_set_line_wrap(GTK_LABEL(ed->google_info), TRUE);
-        gtk_widget_set_halign(ed->google_info, GTK_ALIGN_START);
-        bt_app_widget_add_css(ed->google_info,
-                              "label { font-size: 85%; }");
-        gtk_box_pack_start(GTK_BOX(ed->google_box), ed->google_info,
-                           FALSE, FALSE, 0);
-        ed->glinks_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-        gtk_box_pack_start(GTK_BOX(ed->google_box), ed->glinks_box,
-                           FALSE, FALSE, 0);
-        gtk_widget_set_no_show_all(ed->google_box, TRUE);
-        gtk_box_pack_start(GTK_BOX(vbox), ed->google_box,
-                           FALSE, FALSE, 0);
-    }
+     * into Google Tasks).  Shown only when the sync actually filled it.     */
+    ed->google_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *heading = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(heading), "<b>From Google</b>");
+    gtk_widget_set_halign(heading, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(ed->google_box), heading, FALSE, FALSE, 0);
+    ed->google_info = gtk_label_new("");
+    gtk_label_set_line_wrap(GTK_LABEL(ed->google_info), TRUE);
+    gtk_widget_set_halign(ed->google_info, GTK_ALIGN_START);
+    bt_app_widget_add_css(ed->google_info, "label { font-size: 85%; }");
+    gtk_box_pack_start(GTK_BOX(ed->google_box), ed->google_info,
+                       FALSE, FALSE, 0);
+    ed->glinks_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(ed->google_box), ed->glinks_box,
+                       FALSE, FALSE, 0);
+    gtk_widget_set_no_show_all(ed->google_box, TRUE);
+    gtk_box_pack_start(GTK_BOX(vbox), ed->google_box, FALSE, FALSE, 0);
 
     /* Bottom row: the Advanced disclosure link at the left, Save at the
      * right (every editor) and Cancel to ITS right in the New Task variant
@@ -1232,14 +1120,9 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref,
                      G_CALLBACK(on_editor_destroy), ed);
 
     /* Register + load.                                                      */
-    if (bn) {
-        g_hash_table_insert(app->bn_editors, g_strdup(bn_ref),
-                            ed->window);
-    } else {
-        gint64 *key = g_new(gint64, 1);
-        *key = task_id;
-        g_hash_table_insert(app->editors, key, ed->window);
-    }
+    gint64 *key = g_new(gint64, 1);
+    *key = task_id;
+    g_hash_table_insert(app->editors, key, ed->window);
     g_object_set_data(G_OBJECT(ed->window), "bt-editor", ed);
     bt_task_free(t);
     /* The Records load can destroy the window (item gone / CLI
@@ -1255,34 +1138,26 @@ editor_open_common(BtApp *app, gint64 task_id, const gchar *bn_ref,
 }
 
 /* ---------------------------------------------------------------------------
- * bt_editor_open() / bt_editor_open_new() / bt_editor_open_bnote() — the
- * public entry points (see header).
+ * bt_editor_open() / bt_editor_open_new() — the public entry points
+ * (see header).
  * ------------------------------------------------------------------------- */
 void
 bt_editor_open(BtApp *app, gint64 task_id)
 {
-    editor_open_common(app, task_id, NULL, FALSE);
+    editor_open_common(app, task_id, FALSE);
 }
 
 void
 bt_editor_open_new(BtApp *app, gint64 task_id)
 {
-    editor_open_common(app, task_id, NULL, TRUE);
+    editor_open_common(app, task_id, TRUE);
 }
 
-void
-bt_editor_open_bnote(BtApp *app, const gchar *ref)
-{
-    editor_open_common(app, 0, ref, FALSE);
-}
-
-/* editor_windows() — every open editor window, task and Records
- * alike (new list; g_list_free it).                                         */
+/* editor_windows() — every open editor window (new list; g_list_free).      */
 static GList *
 editor_windows(BtApp *app)
 {
-    return g_list_concat(g_hash_table_get_values(app->editors),
-                         g_hash_table_get_values(app->bn_editors));
+    return g_hash_table_get_values(app->editors);
 }
 
 /* ---------------------------------------------------------------------------

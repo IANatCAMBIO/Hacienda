@@ -6,6 +6,7 @@
 #include "db.h"
 #include "oauth.h"
 #include "gtasks.h"
+#include "bnsync.h"
 #include "library_window.h"
 #include <string.h>
 
@@ -22,10 +23,12 @@ typedef struct {
     GtkWidget *signin_btn;
     GtkWidget *signout_btn;
     GtkWidget *state_label;          /* "Signed in" / "Not signed in"       */
-    GtkWidget *bn_check;             /* Records action items toggle         */
-    GtkWidget *bn_cli_entry;         /* Records command path             */
-    GtkWidget *bn_embed_combo;       /* where action items appear           */
-    GArray    *bn_embed_ids;         /* combo index → list id (0 = own)     */
+    GtkWidget *bn_check;             /* Records mirror master switch        */
+    GtkWidget *bn_cli_entry;         /* Records command path                */
+    GtkWidget *bn_embed_combo;       /* list mirrored items are filed into  */
+    GArray    *bn_embed_ids;         /* combo index → list id (0 = managed) */
+    GtkWidget *bn_interval_spin;     /* mirror pass interval, minutes       */
+    GtkWidget *bn_meta_check;        /* sidebar Action Items view toggle    */
     gboolean   loading;              /* suppress write-through on load      */
 } BtSettings;
 
@@ -137,8 +140,9 @@ on_signout(GtkWidget *w, gpointer data)
                   "was removed and syncing stopped");
 }
 
-/* on_bn_toggled() — the Records enable checkbox: persist + refresh
- * (the Action Items row appears/disappears immediately).                    */
+/* on_bn_toggled() — the Records enable checkbox: persist, then re-arm
+ * the mirror timer (switching ON runs a pass immediately, which is what
+ * populates the mirror; switching OFF stops the timer).                     */
 static void
 on_bn_toggled(GtkWidget *w, gpointer data)
 {
@@ -149,6 +153,36 @@ on_bn_toggled(GtkWidget *w, gpointer data)
     gboolean on = gtk_toggle_button_get_active(
         GTK_TOGGLE_BUTTON(sw->bn_check));
     bt_app_config_set("blue_notes_sync", on ? "1" : "0");
+    bt_bnsync_auto_start(sw->app, sw->db_path);
+    bt_app_notify_changed(sw->app);
+}
+
+/* on_bn_interval_changed() — write-through + re-arm the mirror timer.       */
+static void
+on_bn_interval_changed(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    BtSettings *sw = data;
+    if (sw->loading)
+        return;
+    gchar *v = g_strdup_printf("%d", gtk_spin_button_get_value_as_int(
+        GTK_SPIN_BUTTON(sw->bn_interval_spin)));
+    bt_app_config_set("records_sync_interval_min", v);
+    g_free(v);
+    bt_bnsync_auto_start(sw->app, sw->db_path);
+}
+
+/* on_bn_meta_toggled() — show/hide the sidebar's Action Items view.         */
+static void
+on_bn_meta_toggled(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    BtSettings *sw = data;
+    if (sw->loading)
+        return;
+    bt_app_config_set("records_meta_row",
+        gtk_toggle_button_get_active(
+            GTK_TOGGLE_BUTTON(sw->bn_meta_check)) ? "1" : "0");
     bt_app_notify_changed(sw->app);
 }
 
@@ -176,10 +210,9 @@ on_bn_embed_changed(GtkComboBox *combo, gpointer data)
     bt_app_notify_changed(sw->app);
 }
 
-/* on_bn_cli_changed() — the CLI path entry: persist ONLY.  The library
- * refresh happens on commit (focus-out/Enter) — refreshing per
- * keystroke would synchronously spawn the half-typed command with the
- * Records view visible.                                                     */
+/* on_bn_cli_changed() — the CLI path entry: persist ONLY.  The mirror
+ * pass happens on commit (focus-out/Enter) — running it per keystroke
+ * would spawn the half-typed command over and over.                        */
 static void
 on_bn_cli_changed(GtkWidget *w, gpointer data)
 {
@@ -191,17 +224,22 @@ on_bn_cli_changed(GtkWidget *w, gpointer data)
     bt_app_config_set("blue_notes_cli", *cli != '\0' ? cli : NULL);
 }
 
-/* on_bn_cli_commit() — Enter in the CLI path entry: refresh now.            */
+/* on_bn_cli_commit() — Enter in the CLI path entry: run a mirror pass
+ * against the newly named binary so a wrong path reports itself now
+ * rather than at the next tick.                                             */
 static void
 on_bn_cli_commit(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtSettings *sw = data;
-    if (!sw->loading)
-        bt_app_notify_changed(sw->app);
+    if (sw->loading)
+        return;
+    if (bt_app_config_get_bool("blue_notes_sync", FALSE))
+        bt_bnsync_start(sw->app, sw->db_path, NULL, NULL);
+    bt_app_notify_changed(sw->app);
 }
 
-/* on_bn_cli_focus_out() — leaving the CLI path entry: refresh now.          */
+/* on_bn_cli_focus_out() — leaving the CLI path entry: commit now.           */
 static gboolean
 on_bn_cli_focus_out(GtkWidget *w, GdkEventFocus *event, gpointer data)
 {
@@ -572,11 +610,13 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     gtk_box_pack_start(GTK_BOX(vbox), section_label("Records"),
                        FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), wrapped_label(
-        "Two-way sync the Action Items list from Records here. "
-        "Note that Action Items cannot have attachments, subtasks, or "
-        "notes."), FALSE, FALSE, 0);
+        "Mirror the action items from Records as ordinary tasks, with "
+        "their own notes, subtasks and attachments. Ticking one off or "
+        "changing its due date is sent back to Records on the interval "
+        "below; the item's text is owned by the note in Records."),
+        FALSE, FALSE, 0);
     sw->bn_check = gtk_check_button_new_with_label(
-        "Show Records action items");
+        "Mirror Records action items");
     g_signal_connect(sw->bn_check, "toggled",
                      G_CALLBACK(on_bn_toggled), sw);
     gtk_box_pack_start(GTK_BOX(vbox), sw->bn_check, FALSE, FALSE, 0);
@@ -598,18 +638,18 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     gtk_box_pack_start(GTK_BOX(bn_row), sw->bn_cli_entry, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), bn_row, FALSE, FALSE, 0);
 
-    /* Where the action items appear: their own sidebar list, or
-     * embedded (tagged) inside one of the real lists.                       */
+    /* Which real list the mirrored tasks are filed into.  0 = let the
+     * mirror manage its own "Action Items" list, created on first use.     */
     GtkWidget *embed_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_box_pack_start(GTK_BOX(embed_row),
-                       gtk_label_new("Show action items in:"),
+                       gtk_label_new("Mirror action items into:"),
                        FALSE, FALSE, 0);
     sw->bn_embed_combo = gtk_combo_box_text_new();
     sw->bn_embed_ids = g_array_new(FALSE, FALSE, sizeof(gint64));
     gint64 own = 0;
     g_array_append_val(sw->bn_embed_ids, own);
     gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(sw->bn_embed_combo),
-                                   "Their own list");
+                                   "Action Items (managed list)");
     gchar *embed_v = bt_app_config_get("blue_notes_embed_list");
     gint64 embed_id = embed_v != NULL
                       ? g_ascii_strtoll(embed_v, NULL, 10) : 0;
@@ -632,13 +672,39 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     gtk_combo_box_set_active(GTK_COMBO_BOX(sw->bn_embed_combo),
                              embed_active);
     gtk_widget_set_tooltip_text(sw->bn_embed_combo,
-        "Embedded items keep an \xe2\x9d\x97 Action Items tag and stay "
-        "editable only through Records");
+        "New action items are filed here; moving one to another list "
+        "afterwards is fine and sticks");
     g_signal_connect(sw->bn_embed_combo, "changed",
                      G_CALLBACK(on_bn_embed_changed), sw);
     gtk_box_pack_start(GTK_BOX(embed_row), sw->bn_embed_combo,
                        FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), embed_row, FALSE, FALSE, 0);
+
+    /* How often the mirror runs — the same shape as the Google interval
+     * (0 = only when Sync is pressed).                                     */
+    GtkWidget *bn_iv_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_pack_start(GTK_BOX(bn_iv_row),
+                       gtk_label_new("Sync action items every"),
+                       FALSE, FALSE, 0);
+    sw->bn_interval_spin = gtk_spin_button_new_with_range(0, 720, 1);
+    gtk_widget_set_tooltip_text(sw->bn_interval_spin,
+        "0 = only when you press Sync");
+    g_signal_connect(sw->bn_interval_spin, "value-changed",
+                     G_CALLBACK(on_bn_interval_changed), sw);
+    gtk_box_pack_start(GTK_BOX(bn_iv_row), sw->bn_interval_spin,
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bn_iv_row), gtk_label_new("minutes"),
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), bn_iv_row, FALSE, FALSE, 0);
+
+    sw->bn_meta_check = gtk_check_button_new_with_label(
+        "Show the Action Items view in the sidebar");
+    gtk_widget_set_tooltip_text(sw->bn_meta_check,
+        "Lists every mirrored action item in one place, whichever list "
+        "each one lives in");
+    g_signal_connect(sw->bn_meta_check, "toggled",
+                     G_CALLBACK(on_bn_meta_toggled), sw);
+    gtk_box_pack_start(GTK_BOX(vbox), sw->bn_meta_check, FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(vbox),
                        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
@@ -707,6 +773,12 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
                               iv != NULL ? g_ascii_strtod(iv, NULL) : 5);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->bn_check),
         bt_app_config_get_bool("blue_notes_sync", FALSE));
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->bn_meta_check),
+        bt_app_config_get_bool("records_meta_row", TRUE));
+    gchar *bniv = bt_app_config_get("records_sync_interval_min");
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->bn_interval_spin),
+                              bniv != NULL ? g_ascii_strtod(bniv, NULL) : 5);
+    g_free(bniv);
     if (bnc != NULL)
         gtk_entry_set_text(GTK_ENTRY(sw->bn_cli_entry), bnc);
     g_free(iv);

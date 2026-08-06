@@ -140,9 +140,10 @@ window per task: opening it again focuses the one you already have.
   file: if the target folder is empty the current database is copied
   there; if it already contains a database you choose whether to use
   the existing one or overwrite it with your current data.
-- **Records** — enable the Action Items list, point the app at
-  the `records` command (a path or a name on PATH), and choose
-  where the items appear (their own section or embedded in a list).
+- **Records** — mirror its action items as ordinary tasks, point the
+  app at the `records` command (a path or a name on PATH), choose which
+  list new items are filed into, set how often changes are sent back,
+  and show or hide the sidebar's Action Items view.
 - **Google Tasks** — the sync master switch, Sign In / Sign Out, the
   auto-sync interval in minutes (default 5; 0 turns the timer off while
   the toolbar Sync button always works), and whether the Sync button
@@ -209,27 +210,36 @@ myaccount.google.com/permissions at any time.
 
 If you keep meeting notes in
 [Records](https://github.com/IANatCAMBIO/records), its `!`
-action items can show up here: enable the integration in Settings and
-an **Action Items (from Records)** section appears under Lists
-while it's on.
+action items can live here as **ordinary tasks**. Enable the
+integration in Settings and Lists mirrors each item into a real list —
+the managed **Action Items** list by default, or any list you pick
+under "Mirror action items into".
 
-- **Embedding** — Settings' "Show action items in" can place the
-  items inside one of your regular lists instead (say, the list you
-  actually work from). The separate Action Items section disappears
-  and the items ride along in that list, each wearing a dimmed
-  "❗ Action Items · note N" tag so it's clear where they really
-  live. They stay Records items: the same reduced editor, the
-  same CLI write-through.
-- Tick the checkbox to mark an item done — the line strikes through
-  in the note itself. Double-click to open the reduced editor: done
-  and due date are editable; the text lives in the note, so title,
-  notes, subtasks and attachments are shown but locked.
-- **Favoriting works** and is Lists-local (Records has no such
-  concept); favorited action items appear in the Favorites view
-  alongside your tasks. **High Priority works the same way** —
-  Lists-local, never written to Records — and floats the item
-  to the top of whichever Lists view shows it.
+Because they are ordinary tasks, they behave like everything else:
+notes, subtasks, attachments, Favorites, High Priority, moving them to
+another list, and Google Tasks sync all work. Nothing is locked.
+
+- **Where they are** — the sidebar's **Action Items** row is a view,
+  not a list: it gathers every mirrored item wherever you have filed
+  it, so moving one into your working list doesn't lose track of it.
+  Turn the row off in Settings → Records if you don't want it.
+- **What flows back to Records** — ticking an item done and changing
+  its due date, because those are the only two things the Records
+  command line can write. The item's **text belongs to the note**: edit
+  it in Records, not here, or your change will be overwritten the next
+  time the two sync.
+- **When it flows back** — not instantly. Changes are cached and sent
+  in a batch on the interval in Settings → Records ("Sync action items
+  every N minutes", 5 by default; set 0 to only sync when you press
+  Sync). If Records can't be reached, your change simply waits and goes
+  out on a later pass — it is never dropped.
+- **Deleting** — an item deleted in Records disappears from Lists on
+  the next pass, along with any notes or subtasks you attached to it.
+  Deleting the task in Lists keeps it deleted: it will not come back on
+  the next sync, even though the item still exists in Records.
 - Everything goes through the `records` command-line interface —
   never its database file — so a running Records GUI and Lists
   cooperate safely (the CLI forwards to the GUI over its socket).
-  Action items are not part of Google Tasks sync.
+  This needs a current version of Records; against an older one Lists
+  says so and leaves your tasks alone rather than guessing which item
+  is which.
