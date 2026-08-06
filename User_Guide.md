@@ -221,9 +221,12 @@ Because they are ordinary tasks, they behave like everything else:
 notes, subtasks, attachments, Favorites, High Priority, moving them to
 another list, and Google Tasks sync all work. Nothing is locked.
 
-- **Where they are** — the sidebar's **Action Items** row is a view,
-  not a list: it gathers every mirrored item wherever you have filed
-  it, so moving one into your working list doesn't lose track of it.
+- **Where they are** — "Mirror action items into" picks the list they
+  live in; changing it moves the items you already have, not just the
+  next new one. Moving a single item to another list yourself sticks —
+  it is only overridden the next time you change that setting. The
+  sidebar's **Action Items** row is a view, not a list: it gathers
+  every mirrored item wherever it has ended up, so nothing gets lost.
   Turn the row off in Settings → Records if you don't want it.
 - **What flows back to Records** — ticking an item done and changing
   its due date, because those are the only two things the Records

@@ -186,10 +186,11 @@ on_bn_meta_toggled(GtkWidget *w, gpointer data)
     bt_app_notify_changed(sw->app);
 }
 
-/* on_bn_embed_changed() — where Records action items appear: their
- * own sidebar list (index 0) or embedded inside a chosen real list.
- * Persist the list id and refresh (the sidebar row and the target
- * list's view both change).                                                 */
+/* on_bn_embed_changed() — which list mirrored action items live in.
+ * Persists the choice, MOVES the existing items there (the setting
+ * names where they live, not merely where the next one lands), and
+ * runs a pass so the change is visible immediately.  A per-task move
+ * made by hand still sticks until this setting is touched again.           */
 static void
 on_bn_embed_changed(GtkComboBox *combo, gpointer data)
 {
@@ -207,6 +208,9 @@ on_bn_embed_changed(GtkComboBox *combo, gpointer data)
         bt_app_config_set("blue_notes_embed_list", v);
         g_free(v);
     }
+    bt_bnsync_reconcile_target(sw->app);
+    if (bt_app_config_get_bool("blue_notes_sync", FALSE))
+        bt_bnsync_start(sw->app, sw->db_path, NULL, NULL);
     bt_app_notify_changed(sw->app);
 }
 
@@ -672,8 +676,8 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     gtk_combo_box_set_active(GTK_COMBO_BOX(sw->bn_embed_combo),
                              embed_active);
     gtk_widget_set_tooltip_text(sw->bn_embed_combo,
-        "New action items are filed here; moving one to another list "
-        "afterwards is fine and sticks");
+        "Action items live here \xe2\x80\x94 changing this moves the "
+        "existing ones too");
     g_signal_connect(sw->bn_embed_combo, "changed",
                      G_CALLBACK(on_bn_embed_changed), sw);
     gtk_box_pack_start(GTK_BOX(embed_row), sw->bn_embed_combo,

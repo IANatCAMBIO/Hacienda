@@ -498,9 +498,19 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
   `bn_uid > 0` across every list, so an item filed anywhere still shows
   up in one place.  Toggled by `records_meta_row`; `virtual_view` stays
   TRUE so each row keeps its "in <list>" line.
-- New items are filed into `blue_notes_embed_list` when it names a live
-  list, else the managed "Action Items" list (❗), created on first use
-  — moving a task elsewhere afterwards sticks.
+- Items live in `blue_notes_embed_list` when it names a live list, else
+  the managed "Action Items" list (❗), created on first use.  The
+  target is consulted when a task is CREATED, so changing the setting
+  needs `bt_bnsync_reconcile_target` to carry the existing items over —
+  without it the setting silently only affects the next new item, which
+  reads as "the setting does nothing".  It compares against the applied
+  value in `sync_state.bn_target_list` and moves only on a real change,
+  so a task moved to another list BY HAND stays there; an ABSENT
+  applied value counts as "not yet applied" (the upgrade case).  It
+  runs on the main thread from `bt_bnsync_auto_start` and the Settings
+  combo, and goes through `bt_gtasks_move_task` because a cross-list
+  move has a remote half — a bare `list_id` update would strand the
+  Google copy in the old list.
 - Threading matches gtasks: own worker, own SQLite connection, CLI
   spawned there too, results marshalled with `g_idle_add`.  The toolbar
   Sync runs the mirror FIRST so a new action item reaches Google in one

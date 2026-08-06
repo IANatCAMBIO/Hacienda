@@ -4,6 +4,7 @@
 
 #include "bnsync.h"
 #include "bnotes.h"
+#include "gtasks.h"                  /* cross-list moves carry a remote half */
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -63,6 +64,59 @@ bt_bnsync_target_list(BtDatabase *db, gint64 configured)
     if (found != 0)
         return found;
     return bt_db_list_create(db, BN_LIST_NAME, BN_LIST_EMOJI);
+}
+
+/* ---------------------------------------------------------------------------
+ * bt_bnsync_reconcile_target() — apply a changed target list to the
+ * items already mirrored (see bnsync.h).
+ * ------------------------------------------------------------------------- */
+void
+bt_bnsync_reconcile_target(BtApp *app)
+{
+    if (!bt_app_config_get_bool("blue_notes_sync", FALSE))
+        return;
+    gchar *v = bt_app_config_get("blue_notes_embed_list");
+    gint64 configured = v != NULL ? g_ascii_strtoll(v, NULL, 10) : 0;
+    g_free(v);
+
+    gint64 target = bt_bnsync_target_list(app->db, configured);
+    if (target == 0)
+        return;                      /* the list could not be created       */
+
+    /* An ABSENT applied-value counts as "not applied yet", not as "same
+     * as now": that is the upgrade case, where tasks were mirrored by a
+     * build that only honored the setting at creation time and are
+     * sitting in the wrong list.                                           */
+    gchar *applied_s = bt_db_state_get(app->db, "bn_target_list");
+    gint64 applied = applied_s != NULL
+                   ? g_ascii_strtoll(applied_s, NULL, 10) : 0;
+    gboolean known = applied_s != NULL;
+    g_free(applied_s);
+    if (known && applied == target)
+        return;                      /* nothing changed — leave hand moves  */
+
+    GPtrArray *mirror = bt_db_tasks_bn_mirror(app->db);
+    guint moved = 0;                 /* rows that actually changed list     */
+    for (guint i = 0; i < mirror->len; i++) {
+        BtTask *t = g_ptr_array_index(mirror, i);
+        /* Subtasks travel with their parent; mirror rows are top-level
+         * anyway, so this only guards against hand-edited data.            */
+        if (t->parent_id == 0 && t->list_id != target) {
+            bt_gtasks_move_task(app, t->id, target);
+            moved++;
+        }
+    }
+    bt_ptr_array_free_tasks(mirror);
+
+    gchar *stamp = g_strdup_printf("%" G_GINT64_FORMAT, target);
+    bt_db_state_set(app->db, "bn_target_list", stamp);
+    g_free(stamp);
+
+    if (moved > 0) {
+        bt_app_status(app, "Moved %u action item%s", moved,
+                      moved == 1 ? "" : "s");
+        bt_app_notify_changed(app);
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -387,6 +441,11 @@ bt_bnsync_auto_start(BtApp *app, const gchar *db_path)
     }
     if (!bt_app_config_get_bool("blue_notes_sync", FALSE))
         return;                      /* integration off: no timer, no pass  */
+
+    /* Before the pass: a target list changed while this was switched off
+     * (or by an earlier build that only honored it at creation time)
+     * still has to reach the items already mirrored.                       */
+    bt_bnsync_reconcile_target(app);
 
     gchar *v = bt_app_config_get("records_sync_interval_min");
     gint minutes = v != NULL ? atoi(v) : 5;

@@ -73,6 +73,24 @@ void bt_bnsync_start(BtApp *app, const gchar *db_path,
 void bt_bnsync_auto_start(BtApp *app, const gchar *db_path);
 
 /* ---------------------------------------------------------------------------
+ * bt_bnsync_reconcile_target() — move every mirrored task into the
+ * configured list when that setting has CHANGED since it was last
+ * applied (the applied value lives in sync_state "bn_target_list").
+ *
+ * The mirror consults the target only when it CREATES a task, so
+ * without this, pointing the setting at a different list would leave
+ * every existing item where it was — the setting would look broken.
+ * Comparing against the last-applied value is what keeps it from
+ * fighting the user: a task moved to another list by hand stays there
+ * until the setting itself changes again.
+ *
+ * Goes through bt_gtasks_move_task, so the Google side moves too
+ * rather than stranding the remote copy in the old list — which is why
+ * this is MAIN THREAD ONLY and not part of the worker pass.
+ * ------------------------------------------------------------------------- */
+void bt_bnsync_reconcile_target(BtApp *app);
+
+/* ---------------------------------------------------------------------------
  * bt_bnsync_target_list() — the list mirrored items are filed into: the
  * one named by "blue_notes_embed_list" when it still exists, else the
  * app-managed "Action Items" list, created on first use.  Returns 0
