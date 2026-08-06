@@ -1656,12 +1656,13 @@ sidebar_set_visible(BtLibrary *lw, gboolean show)
  * compact_layout_apply() — put the window in (or take it out of) Compact
  * Layout, per the persisted `compact_layout` flag.
  *
- * Compact hides the whole top toolbar (and its rule) plus the lists pane,
- * and shows the floating New/Delete Task pair pinned to the bottom-right
- * of the task area instead.  Leaving compact restores the toolbar and
- * puts the sidebar back to the user's own `sidebar_visible` preference —
- * compact never overwrites it, so the pane returns as the user left it.
- * Show Sidebar still works while compact (an explicit override).
+ * Compact hides the whole top toolbar (and its rule) and shows the
+ * floating New/Delete Task pair pinned to the bottom-right of the task
+ * area instead.  It does NOT touch the lists pane: the sidebar follows
+ * the user's own `sidebar_visible` preference in both modes, so entering
+ * compact no longer makes an open sidebar vanish (it used to force-hide
+ * it, which read as compact silently overriding the toggle — and the
+ * Show Sidebar override it left behind was the only way back).
  *
  * gtk_widget_show() — never show_all() — on the toolbar: its children
  * carry their own visibility (a hidden Sync button must stay hidden).
@@ -1675,7 +1676,7 @@ compact_layout_apply(BtLibrary *lw)
     gtk_widget_set_visible(lw->toolbar_rule, !compact);
     gtk_widget_set_visible(lw->float_bar,     compact);
     gtk_widget_set_visible(lw->sidebar_box,
-        !compact && bt_app_config_get_bool("sidebar_visible", FALSE));
+        bt_app_config_get_bool("sidebar_visible", FALSE));
     sidebar_menu_sync(lw);
 }
 
@@ -3803,9 +3804,10 @@ bt_library_window_new(BtApp *app)
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
                           gtk_separator_menu_item_new());
     /* Show Sidebar mirrors the toolbar's Sidebar button (both write
-     * `sidebar_visible`); Compact Layout strips the chrome down to the
-     * task pane plus the floating New/Delete pair.  Both are applied
-     * after the construction-time show_all, at the end of this function.    */
+     * `sidebar_visible`); Compact Layout swaps the toolbar for the
+     * floating New/Delete pair, leaving the sidebar to Show Sidebar in
+     * either mode.  Both are applied after the construction-time
+     * show_all, at the end of this function.                               */
     lw->view_sidebar_item =
         gtk_check_menu_item_new_with_label("Show Sidebar");
     gtk_check_menu_item_set_active(
@@ -3919,6 +3921,13 @@ bt_library_window_new(BtApp *app)
     GtkWidget *overlay = gtk_overlay_new();
     gtk_box_pack_start(GTK_BOX(vbox), overlay, TRUE, TRUE, 0);
     GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+    /* A 6 px divider: wide-handle switches GtkPaned off its hairline
+     * style, and the exact width comes from CSS on the handle's own
+     * `separator` node (the horizontal paned's separator is vertical, so
+     * min-WIDTH is the lever).                                              */
+    gtk_paned_set_wide_handle(GTK_PANED(paned), TRUE);
+    bt_app_widget_add_css(paned,
+        "paned > separator { min-width: 6px; }");
     gchar *sbw = bt_app_config_get("sidebar_width");
     lw->sb_width = sbw != NULL ? atoi(sbw) : 220;
     g_free(sbw);

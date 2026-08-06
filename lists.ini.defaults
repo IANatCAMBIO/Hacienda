@@ -53,9 +53,9 @@ records_meta_row=1
 # View → Show Sidebar).
 sidebar_visible=0
 # Compact Layout (1|0, default 0; View → Compact Layout): hides the top
-# toolbar and the sidebar, and floats New/Delete Task 20 px in from the
-# bottom-right of the task area instead.  It does NOT touch
-# sidebar_visible, so leaving compact restores the pane as you left it.
+# toolbar and floats New/Delete Task 20 px in from the bottom-right of
+# the task area instead.  It leaves the sidebar alone — that stays under
+# sidebar_visible above, in compact mode just the same.
 compact_layout=0
 # Show the Weekly Forecast view in the sidebar (1|0, default 1;
 # Settings → Appearance).
